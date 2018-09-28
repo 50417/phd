@@ -3,6 +3,7 @@ from absl import flags
 
 from deeplearning.clgen import errors
 from deeplearning.clgen.preprocessors import public
+import re
 
 
 FLAGS = flags.FLAGS
@@ -74,3 +75,25 @@ def StripTrailingWhitespace(text: str) -> str:
     The input text, with trailing whitespace removed.
   """
   return '\n'.join(l.rstrip() for l in text.split('\n')).rstrip()
+
+@public.clgen_preprocessor
+def StripDuplicateWhiteSpaces(text: str) -> str:
+  """
+
+  Extra WhiteSpaces removed between Keywords and  and its assignment
+
+  Args:
+    text: The Simulink MdlFile source to preprocess.
+
+  Returns:
+    Simulink source code with middle or duplicate whitespaces stripped
+  """
+  last_line = None
+  lines = []
+  for line in text.split("\n"):
+    line = line.replace(" \t","  ")
+    line = re.sub("\s\s+"," ",line.lstrip())
+    lines.append(line) 
+  return "\n".join(lines)
+
+

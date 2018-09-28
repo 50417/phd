@@ -45,6 +45,9 @@ def test_StripDuplicateEmptyLines_empty_input():
   """Test StripDuplicateEmptyLines accepts an empty input."""
   assert common.StripDuplicateEmptyLines('') == ''
 
+def test_SStripDuplicateWhiteSpaces_empty_input():
+  """Test StripDuplicateWhiteSpaces accepts an empty input."""
+  assert common.StripDuplicateWhiteSpaces('') == ''
 
 # Benchmarks.
 
@@ -52,7 +55,7 @@ HELLO_WORLD_C = """
 #include <stdio.h>
 
 int main(int argc, char** argv) {
-  printf("Hello, world!\\n");
+  printf("Hello,   world!\\n");
   return 0;
 }
 """
@@ -66,6 +69,10 @@ def test_benchmark_MinimumLineCount3_c_hello_world(benchmark):
 def test_benchmark_StripDuplicateEmptyLines_c_hello_world(benchmark):
   """Benchmark StripDuplicateEmptyLines on a "hello world" C program."""
   benchmark(common.StripDuplicateEmptyLines, HELLO_WORLD_C)
+
+def test_benchmark_StripDuplicateWhiteSpaces_c_hello_world(benchmark):
+  """Benchmark StripDuplicateWhiteSpaces on a "hello world!" C program."""
+  benchmark(common.StripDuplicateWhiteSpaces, HELLO_WORLD_C)
 
 
 def main(argv):

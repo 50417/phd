@@ -192,6 +192,7 @@ def GetTrainingCorpus(
       encoded_corpus[:clipped_corpus_length],
       [training_opts.batch_size,
        steps_per_epoch * training_opts.sequence_length])
+  print(x)
   y = np.reshape(
       encoded_corpus[1:clipped_corpus_length + 1],
       [training_opts.batch_size,
