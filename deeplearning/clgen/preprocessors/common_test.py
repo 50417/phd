@@ -38,9 +38,21 @@ int main(int argc, char** argv) {
 }  
 """
 
+def test_RemoveAnnotationOnSimulink_program():
+  """Test that RemoveAnnotationOnSimulink produce correct output """
+
+  assert common.RemoveAnnotationOnSimulink("""
+Annotation {
+  name value
+}
+AnnotationDefaults{
+  parameter value
+  param2 value
+} 
+""") == """ 
+"""
 
 # StripDuplicateEmptyLines() tests.
-
 def test_StripDuplicateEmptyLines_empty_input():
   """Test StripDuplicateEmptyLines accepts an empty input."""
   assert common.StripDuplicateEmptyLines('') == ''
@@ -48,6 +60,10 @@ def test_StripDuplicateEmptyLines_empty_input():
 def test_SStripDuplicateWhiteSpaces_empty_input():
   """Test StripDuplicateWhiteSpaces accepts an empty input."""
   assert common.StripDuplicateWhiteSpaces('') == ''
+
+def test_RemoveAnnotationOnSimulink_empty_input():
+  """Test RemoveAnnotationOnSimulink accepts an empty input."""
+  assert common.RemoveAnnotationOnSimulink('') == ''
 
 # Benchmarks.
 
@@ -59,7 +75,16 @@ int main(int argc, char** argv) {
   return 0;
 }
 """
+ANNOTATION_SIMULINK= """
 
+Annotation {
+  name value
+}
+AnnotationDefaults{
+  parameter value
+  param2 value
+}
+"""
 
 def test_benchmark_MinimumLineCount3_c_hello_world(benchmark):
   """Benchmark MinimumLineCount3 on a "hello world" C program."""
@@ -73,6 +98,10 @@ def test_benchmark_StripDuplicateEmptyLines_c_hello_world(benchmark):
 def test_benchmark_StripDuplicateWhiteSpaces_c_hello_world(benchmark):
   """Benchmark StripDuplicateWhiteSpaces on a "hello world!" C program."""
   benchmark(common.StripDuplicateWhiteSpaces, HELLO_WORLD_C)
+
+def test_benchmark_RemoveAnnotation(benchmark):
+  """Benchmark RemoveAnnotationOnSimulink on a "ANNOTATION_SIMULINK"""
+  benchmark(common.RemoveAnnotationOnSimulink, ANNOTATION_SIMULINK)
 
 
 def main(argv):
