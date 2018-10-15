@@ -228,29 +228,3 @@ def StripDoubleUnderscorePrefixes(text: str) -> str:
   for old, new in replacements.items():
     text = text.replace(old, new)
   return text
-
-
-@public.clgen_preprocessor
-def replace_variables(text: str) -> str:
-  """Remove the optional __ qualifiers on OpenCL keywords.
-
-  The OpenCL spec allows __ prefix for OpenCL keywords, e.g. '__global' and
-  'global' are equivalent. This preprocessor removes the '__' prefix on those
-  keywords.
-
-  Args:
-    text: The OpenCL source to preprocess.
-
-  Returns:
-    OpenCL source with __ stripped from OpenCL keywords.
-  """
-  # List of keywords taken from the OpenCL 1.2. specification, page 169.
-  replacements = {'__constant': 'constant', '__global': 'global',
-                  '__kernel': 'kernel', '__local': 'local',
-                  '__private': 'private', '__read_only': 'read_only',
-                  '__read_write': 'read_write', '__write_only': 'write_only', }
-  for old, new in replacements.items():
-    text = text.replace(old, new)
-  return text
-
-

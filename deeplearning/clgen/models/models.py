@@ -64,7 +64,6 @@ class Model(object):
     self.config = model_pb2.Model()
     self.config.CopyFrom(builders.AssertIsBuildable(config))
     self.corpus = corpuses.Corpus(config.corpus)
-    print(self.corpus)
     self.hash = self._ComputeHash(self.corpus, self.config)
     self.cache = cache.mkcache('model', self.hash)
     # Create the necessary cache directories.
@@ -244,12 +243,12 @@ class Model(object):
                   num_tokens=len(samples_in_progress[i]))
               print(f'=== BEGIN CLGEN SAMPLE {sample_count} '
                     f'===\n\n{sample.text}\n')
-              
               sample_count += 1
               sample_id = crypto.sha256_str(sample.text)
-              sample_path = sample_dir / f'{sample_id}.mdl'
-              print(sample_path)
-              pbutil.ToFile(sample, sample_path)
+              sample_path = sample_dir / f'{sample_id}.txt'
+              with open(sample_path, 'w') as samplefile:
+                samplefile.write(''.join(samples_in_progress[i]))
+              #pbutil.ToFile(sample, sample_path)
               if min_num_samples > 0:
                 samples.append(sample)
               wall_time_start = labdate.MillisecondsTimestamp()
