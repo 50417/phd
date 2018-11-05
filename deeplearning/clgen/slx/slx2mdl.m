@@ -1,4 +1,4 @@
-path = "/var/slx/";
+path = "/var/phd/deeplearning/clgen/slx";
 dinfo = dir(path+"*.slx");
 cd(path);
 for K = 1 : length(dinfo)

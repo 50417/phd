@@ -1,5 +1,5 @@
 #!/bin/bash
-dir=/var/slx
+dir=/var/phd/deeplearning/clgen/slx
 zipdir=/var/zip/SourceForge
 cd $zipdir
 
