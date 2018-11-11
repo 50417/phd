@@ -90,6 +90,21 @@ list the available targets. E.g. to run the entire test suite, run:
 $ bazel test //lib/labm8:fs_test
 ```
 
+# Simulink Models
+
+## Pre-processing Simulink Models
+
+See Readme.md in `slearner` directory to learn how to run preprocessor.
+
+Next, collect only those models which still run after preprocessing.
+
+    cd slsf_randgen
+    export COVEXPEXPLORE="/location/of/preprocessed/files"
+    export COVEXPSUCCESS="/location/where/you/want/to/save/these/models"
+    matlab &
+    covexp.covcollect # Run in MATLAB prompt
+
+After running this, the pre-processed, valid models will be located in the directory pointed by `COVEXPSUCCESS`
 
 To train CLGen on Simulink corpus: 
 ```bash
