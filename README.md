@@ -104,15 +104,27 @@ Next, collect only those models which still run after preprocessing.
     matlab &
     covexp.covcollect # Run in MATLAB prompt
 
-After running this, the pre-processed, valid models will be located in the directory pointed by `COVEXPSUCCESS`
+After running this, the pre-processed, valid models will be located in the directory pointed by `$COVEXPSUCCESS`
+
+## Create Corpus
+
+Create .tar.bz2 file from the contents in 
+
+  cd $COVEXPSUCCESS
+  tar cvjf mycorpus.tar/bz2 * # j means bz2
+  
+Place the corpus in deeplearning/clgen/tests/data/mdl/mycorpus.tar.bz2
+And update the location in deeplearning/clgen/tests/data/mdl/mdl_config.pbtxt file
+
+## Training and Generating
 
 To train CLGen on Simulink corpus: 
 ```bash
 $ bazel run //deeplearning/clgen -- --config=/path/to/the/config/file
 ```
-# Example
+### Example
 ```bash
-$ bazel run //deeplearning/clgen -- --config=$PWD/deeplearning/clgen/tests/data/Simulink/config.pbtxt
+$ bazel run //deeplearning/clgen -- --config=$PWD/deeplearning/clgen/tests/data/mdl/mdl_config.pbtxt
 ```
 
 To run test cases typical to this project: 
