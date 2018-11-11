@@ -110,8 +110,8 @@ After running this, the pre-processed, valid models will be located in the direc
 
 Create .tar.bz2 file from the contents in 
 
-  cd $COVEXPSUCCESS
-  tar cvjf mycorpus.tar/bz2 * # j means bz2
+    cd $COVEXPSUCCESS
+    tar cvjf mycorpus.tar/bz2 * # j means bz2
   
 Place the corpus in deeplearning/clgen/tests/data/mdl/mycorpus.tar.bz2
 And update the location in deeplearning/clgen/tests/data/mdl/mdl_config.pbtxt file
