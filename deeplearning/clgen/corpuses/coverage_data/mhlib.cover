@@ -1,0 +1,1005 @@
+       """MH interface -- purely object-oriented (well, almost)
+       
+       Executive summary:
+       
+       import mhlib
+       
+       mh = mhlib.MH()         # use default mailbox directory and profile
+       mh = mhlib.MH(mailbox)  # override mailbox location (default from profile)
+       mh = mhlib.MH(mailbox, profile) # override mailbox and profile
+       
+       mh.error(format, ...)   # print error message -- can be overridden
+       s = mh.getprofile(key)  # profile entry (None if not set)
+       path = mh.getpath()     # mailbox pathname
+       name = mh.getcontext()  # name of current folder
+       mh.setcontext(name)     # set name of current folder
+       
+       list = mh.listfolders() # names of top-level folders
+       list = mh.listallfolders() # names of all folders, including subfolders
+       list = mh.listsubfolders(name) # direct subfolders of given folder
+       list = mh.listallsubfolders(name) # all subfolders of given folder
+       
+       mh.makefolder(name)     # create new folder
+       mh.deletefolder(name)   # delete folder -- must have no subfolders
+       
+       f = mh.openfolder(name) # new open folder object
+       
+       f.error(format, ...)    # same as mh.error(format, ...)
+       path = f.getfullname()  # folder's full pathname
+       path = f.getsequencesfilename() # full pathname of folder's sequences file
+       path = f.getmessagefilename(n)  # full pathname of message n in folder
+       
+       list = f.listmessages() # list of messages in folder (as numbers)
+       n = f.getcurrent()      # get current message
+       f.setcurrent(n)         # set current message
+       list = f.parsesequence(seq)     # parse msgs syntax into list of messages
+       n = f.getlast()         # get last message (0 if no messagse)
+       f.setlast(n)            # set last message (internal use only)
+       
+       dict = f.getsequences() # dictionary of sequences in folder {name: list}
+       f.putsequences(dict)    # write sequences back to folder
+       
+       f.createmessage(n, fp)  # add message from file f as number n
+       f.removemessages(list)  # remove messages in list from folder
+       f.refilemessages(list, tofolder) # move messages in list to other folder
+       f.movemessage(n, tofolder, ton)  # move one message to a given destination
+       f.copymessage(n, tofolder, ton)  # copy one message to a given destination
+       
+       m = f.openmessage(n)    # new open message object (costs a file descriptor)
+       m is a derived class of mimetools.Message(rfc822.Message), with:
+       s = m.getheadertext()   # text of message's headers
+       s = m.getheadertext(pred) # text of message's headers, filtered by pred
+       s = m.getbodytext()     # text of message's body, decoded
+       s = m.getbodytext(0)    # text of message's body, not decoded
+    1: """
+    1: from warnings import warnpy3k
+    1: warnpy3k("the mhlib module has been removed in Python 3.0; use the mailbox "
+    1:             "module instead", stacklevel=2)
+    1: del warnpy3k
+       
+       # XXX To do, functionality:
+       # - annotate messages
+       # - send messages
+       #
+       # XXX To do, organization:
+       # - move IntSet to separate file
+       # - move most Message functionality to module mimetools
+       
+       
+       # Customizable defaults
+       
+    1: MH_PROFILE = '~/.mh_profile'
+    1: PATH = '~/Mail'
+    1: MH_SEQUENCES = '.mh_sequences'
+    1: FOLDER_PROTECT = 0700
+       
+       
+       # Imported modules
+       
+    1: import os
+    1: import sys
+    1: import re
+    1: import mimetools
+    1: import multifile
+    1: import shutil
+    1: from bisect import bisect
+       
+    1: __all__ = ["MH","Error","Folder","Message"]
+       
+       # Exported constants
+       
+    2: class Error(Exception):
+    1:     pass
+       
+       
+    2: class MH:
+           """Class representing a particular collection of folders.
+           Optional constructor arguments are the pathname for the directory
+           containing the collection, and the MH profile to use.
+           If either is omitted or empty a default is used; the default
+    1:     directory is taken from the MH profile if it is specified there."""
+       
+    1:     def __init__(self, path = None, profile = None):
+               """Constructor."""
+    5:         if profile is None: profile = MH_PROFILE
+    5:         self.profile = os.path.expanduser(profile)
+    5:         if path is None: path = self.getprofile('Path')
+    5:         if not path: path = PATH
+    5:         if not os.path.isabs(path) and path[0] != '~':
+>>>>>>             path = os.path.join('~', path)
+    5:         path = os.path.expanduser(path)
+    5:         if not os.path.isdir(path): raise Error, 'MH() path not found'
+    5:         self.path = path
+       
+    1:     def __repr__(self):
+               """String representation."""
+>>>>>>         return 'MH(%r, %r)' % (self.path, self.profile)
+       
+    1:     def error(self, msg, *args):
+               """Routine to print an error.  May be overridden by a derived class."""
+>>>>>>         sys.stderr.write('MH error: %s\n' % (msg % args))
+       
+    1:     def getprofile(self, key):
+               """Return a profile entry, None if not found."""
+    2:         return pickline(self.profile, key)
+       
+    1:     def getpath(self):
+               """Return the path (the name of the collection's directory)."""
+   12:         return self.path
+       
+    1:     def getcontext(self):
+               """Return the name of the current folder."""
+    2:         context = pickline(os.path.join(self.getpath(), 'context'),
+    2:                   'Current-Folder')
+    2:         if not context: context = 'inbox'
+    2:         return context
+       
+    1:     def setcontext(self, context):
+               """Set the name of the current folder."""
+    2:         fn = os.path.join(self.getpath(), 'context')
+    2:         f = open(fn, "w")
+    2:         f.write("Current-Folder: %s\n" % context)
+    2:         f.close()
+       
+    1:     def listfolders(self):
+               """Return the names of the top-level folders."""
+    3:         folders = []
+    3:         path = self.getpath()
+   13:         for name in os.listdir(path):
+   10:             fullname = os.path.join(path, name)
+   10:             if os.path.isdir(fullname):
+   10:                 folders.append(name)
+    3:         folders.sort()
+    3:         return folders
+       
+    1:     def listsubfolders(self, name):
+               """Return the names of the subfolders in a given folder
+               (prefixed with the given folder name)."""
+    3:         fullname = os.path.join(self.path, name)
+               # Get the link count so we can avoid listing folders
+               # that have no subfolders.
+    3:         nlinks = os.stat(fullname).st_nlink
+    3:         if nlinks == 2:
+>>>>>>             return []
+    3:         subfolders = []
+    3:         subnames = os.listdir(fullname)
+   11:         for subname in subnames:
+    8:             fullsubname = os.path.join(fullname, subname)
+    8:             if os.path.isdir(fullsubname):
+    3:                 name_subname = os.path.join(name, subname)
+    3:                 subfolders.append(name_subname)
+                       # Stop looking for subfolders when
+                       # we've seen them all
+    3:                 nlinks = nlinks - 1
+    3:                 if nlinks == 2:
+>>>>>>                     break
+    3:         subfolders.sort()
+    3:         return subfolders
+       
+    1:     def listallfolders(self):
+               """Return the names of all folders and subfolders, recursively."""
+    1:         return self.listallsubfolders('')
+       
+    1:     def listallsubfolders(self, name):
+               """Return the names of subfolders in a given folder, recursively."""
+   12:         fullname = os.path.join(self.path, name)
+               # Get the link count so we can avoid listing folders
+               # that have no subfolders.
+   12:         nlinks = os.stat(fullname).st_nlink
+   12:         if nlinks == 2:
+>>>>>>             return []
+   12:         subfolders = []
+   12:         subnames = os.listdir(fullname)
+  186:         for subname in subnames:
+  175:             if subname[0] == ',' or isnumeric(subname): continue
+    9:             fullsubname = os.path.join(fullname, subname)
+    9:             if os.path.isdir(fullsubname):
+    9:                 name_subname = os.path.join(name, subname)
+    9:                 subfolders.append(name_subname)
+    9:                 if not os.path.islink(fullsubname):
+    9:                     subsubfolders = self.listallsubfolders(
+    9:                               name_subname)
+    9:                     subfolders = subfolders + subsubfolders
+                       # Stop looking for subfolders when
+                       # we've seen them all
+    9:                 nlinks = nlinks - 1
+    9:                 if nlinks == 2:
+    1:                     break
+   12:         subfolders.sort()
+   12:         return subfolders
+       
+    1:     def openfolder(self, name):
+               """Return a new Folder object for the named folder."""
+    5:         return Folder(self, name)
+       
+    1:     def makefolder(self, name):
+               """Create a new folder (or raise os.error if it cannot be created)."""
+    2:         protect = pickline(self.profile, 'Folder-Protect')
+    2:         if protect and isnumeric(protect):
+>>>>>>             mode = int(protect, 8)
+               else:
+    2:             mode = FOLDER_PROTECT
+    2:         os.mkdir(os.path.join(self.getpath(), name), mode)
+       
+    1:     def deletefolder(self, name):
+               """Delete a folder.  This removes files in the folder but not
+               subdirectories.  Raise os.error if deleting the folder itself fails."""
+    2:         fullname = os.path.join(self.getpath(), name)
+    9:         for subname in os.listdir(fullname):
+    7:             fullsubname = os.path.join(fullname, subname)
+    7:             try:
+    7:                 os.unlink(fullsubname)
+>>>>>>             except os.error:
+>>>>>>                 self.error('%s not deleted, continuing...' %
+>>>>>>                           fullsubname)
+    2:         os.rmdir(fullname)
+       
+       
+    1: numericprog = re.compile('^[1-9][0-9]*$')
+    1: def isnumeric(str):
+  206:     return numericprog.match(str) is not None
+       
+    2: class Folder:
+    1:     """Class representing a particular folder."""
+       
+    1:     def __init__(self, mh, name):
+               """Constructor."""
+    5:         self.mh = mh
+    5:         self.name = name
+    5:         if not os.path.isdir(self.getfullname()):
+>>>>>>             raise Error, 'no folder %s' % name
+       
+    1:     def __repr__(self):
+               """String representation."""
+>>>>>>         return 'Folder(%r, %r)' % (self.mh, self.name)
+       
+    1:     def error(self, *args):
+               """Error message handler."""
+>>>>>>         self.mh.error(*args)
+       
+    1:     def getfullname(self):
+               """Return the full pathname of the folder."""
+   89:         return os.path.join(self.mh.path, self.name)
+       
+    1:     def getsequencesfilename(self):
+               """Return the full pathname of the folder's sequences file."""
+   20:         return os.path.join(self.getfullname(), MH_SEQUENCES)
+       
+    1:     def getmessagefilename(self, n):
+               """Return the full pathname of a message in the folder."""
+   35:         return os.path.join(self.getfullname(), str(n))
+       
+    1:     def listsubfolders(self):
+               """Return list of direct subfolders."""
+>>>>>>         return self.mh.listsubfolders(self.name)
+       
+    1:     def listallsubfolders(self):
+               """Return list of all subfolders."""
+>>>>>>         return self.mh.listallsubfolders(self.name)
+       
+    1:     def listmessages(self):
+               """Return the list of messages currently present in the folder.
+               As a side effect, set self.last to the last message (or 0)."""
+   28:         messages = []
+   28:         match = numericprog.match
+   28:         append = messages.append
+ 2847:         for name in os.listdir(self.getfullname()):
+ 2819:             if match(name):
+ 2792:                 append(name)
+   28:         messages = map(int, messages)
+   28:         messages.sort()
+   28:         if messages:
+   26:             self.last = messages[-1]
+               else:
+    2:             self.last = 0
+   28:         return messages
+       
+    1:     def getsequences(self):
+               """Return the set of sequences for the folder."""
+   17:         sequences = {}
+   17:         fullname = self.getsequencesfilename()
+   17:         try:
+   17:             f = open(fullname, 'r')
+    4:         except IOError:
+    4:             return sequences
+   13:         while 1:
+   34:             line = f.readline()
+   34:             if not line: break
+   21:             fields = line.split(':')
+   21:             if len(fields) != 2:
+>>>>>>                 self.error('bad sequence in %s: %s' %
+>>>>>>                           (fullname, line.strip()))
+   21:             key = fields[0].strip()
+   21:             value = IntSet(fields[1].strip(), ' ').tolist()
+   21:             sequences[key] = value
+   13:         return sequences
+       
+    1:     def putsequences(self, sequences):
+               """Write the set of sequences back to the folder."""
+    1:         fullname = self.getsequencesfilename()
+    1:         f = None
+    4:         for key, seq in sequences.iteritems():
+    3:             s = IntSet('', ' ')
+    3:             s.fromlist(seq)
+    3:             if not f: f = open(fullname, 'w')
+    3:             f.write('%s: %s\n' % (key, s.tostring()))
+    1:         if not f:
+>>>>>>             try:
+>>>>>>                 os.unlink(fullname)
+>>>>>>             except os.error:
+>>>>>>                 pass
+               else:
+    1:             f.close()
+       
+    1:     def getcurrent(self):
+               """Return the current message.  Raise Error when there is none."""
+    9:         seqs = self.getsequences()
+    9:         try:
+    9:             return max(seqs['cur'])
+>>>>>>         except (ValueError, KeyError):
+>>>>>>             raise Error, "no cur message"
+       
+    1:     def setcurrent(self, n):
+               """Set the current message."""
+    1:         updateline(self.getsequencesfilename(), 'cur', str(n), 0)
+       
+    1:     def parsesequence(self, seq):
+               """Parse an MH sequence specification into a message list.
+               Attempt to mimic mh-sequence(5) as close as possible.
+               Also attempt to mimic observed behavior regarding which
+               conditions cause which error messages."""
+               # XXX Still not complete (see mh-format(5)).
+               # Missing are:
+               # - 'prev', 'next' as count
+               # - Sequence-Negation option
+   18:         all = self.listmessages()
+               # Observed behavior: test for empty folder is done first
+   18:         if not all:
+>>>>>>             raise Error, "no messages in %s" % self.name
+               # Common case first: all is frequently the default
+   18:         if seq == 'all':
+>>>>>>             return all
+               # Test for X:Y before X-Y because 'seq:-n' matches both
+   18:         i = seq.find(':')
+   18:         if i >= 0:
+    7:             head, dir, tail = seq[:i], '', seq[i+1:]
+    7:             if tail[:1] in '-+':
+    3:                 dir, tail = tail[:1], tail[1:]
+    7:             if not isnumeric(tail):
+>>>>>>                 raise Error, "bad message list %s" % seq
+    7:             try:
+    7:                 count = int(tail)
+>>>>>>             except (ValueError, OverflowError):
+                       # Can't use sys.maxint because of i+count below
+>>>>>>                 count = len(all)
+    7:             try:
+    7:                 anchor = self._parseindex(head, all)
+    3:             except Error, msg:
+    3:                 seqs = self.getsequences()
+    3:                 if not head in seqs:
+>>>>>>                     if not msg:
+>>>>>>                         msg = "bad message list %s" % seq
+>>>>>>                     raise Error, msg, sys.exc_info()[2]
+    3:                 msgs = seqs[head]
+    3:                 if not msgs:
+>>>>>>                     raise Error, "sequence %s empty" % head
+    3:                 if dir == '-':
+    1:                     return msgs[-count:]
+                       else:
+    2:                     return msgs[:count]
+                   else:
+    4:                 if not dir:
+    2:                     if head in ('prev', 'last'):
+>>>>>>                         dir = '-'
+    4:                 if dir == '-':
+    1:                     i = bisect(all, anchor)
+    1:                     return all[max(0, i-count):i]
+                       else:
+    3:                     i = bisect(all, anchor-1)
+    3:                     return all[i:i+count]
+               # Test for X-Y next
+   11:         i = seq.find('-')
+   11:         if i >= 0:
+    6:             begin = self._parseindex(seq[:i], all)
+    6:             end = self._parseindex(seq[i+1:], all)
+    6:             i = bisect(all, begin-1)
+    6:             j = bisect(all, end)
+    6:             r = all[i:j]
+    6:             if not r:
+>>>>>>                 raise Error, "bad message list %s" % seq
+    6:             return r
+               # Neither X:Y nor X-Y; must be a number or a (pseudo-)sequence
+    5:         try:
+    5:             n = self._parseindex(seq, all)
+    1:         except Error, msg:
+    1:             seqs = self.getsequences()
+    1:             if not seq in seqs:
+>>>>>>                 if not msg:
+>>>>>>                     msg = "bad message list %s" % seq
+>>>>>>                 raise Error, msg
+    1:             return seqs[seq]
+               else:
+    4:             if n not in all:
+>>>>>>                 if isnumeric(seq):
+>>>>>>                     raise Error, "message %d doesn't exist" % n
+                       else:
+>>>>>>                     raise Error, "no %s message" % seq
+                   else:
+    4:                 return [n]
+       
+    1:     def _parseindex(self, seq, all):
+               """Internal: parse a message number (or cur, first, etc.)."""
+   24:         if isnumeric(seq):
+   10:             try:
+   10:                 return int(seq)
+>>>>>>             except (OverflowError, ValueError):
+>>>>>>                 return sys.maxint
+   14:         if seq in ('cur', '.'):
+    4:             return self.getcurrent()
+   10:         if seq == 'first':
+    1:             return all[0]
+    9:         if seq == 'last':
+    1:             return all[-1]
+    8:         if seq == 'next':
+    2:             n = self.getcurrent()
+    2:             i = bisect(all, n)
+    2:             try:
+    2:                 return all[i]
+>>>>>>             except IndexError:
+>>>>>>                 raise Error, "no next message"
+    6:         if seq == 'prev':
+    2:             n = self.getcurrent()
+    2:             i = bisect(all, n-1)
+    2:             if i == 0:
+>>>>>>                 raise Error, "no prev message"
+    2:             try:
+    2:                 return all[i-1]
+>>>>>>             except IndexError:
+>>>>>>                 raise Error, "no prev message"
+    4:         raise Error, None
+       
+    1:     def openmessage(self, n):
+               """Open a message -- returns a Message object."""
+    1:         return Message(self, n)
+       
+    1:     def removemessages(self, list):
+               """Remove one or more messages -- may raise os.error."""
+    1:         errors = []
+    1:         deleted = []
+    3:         for n in list:
+    2:             path = self.getmessagefilename(n)
+    2:             commapath = self.getmessagefilename(',' + str(n))
+    2:             try:
+    2:                 os.unlink(commapath)
+    2:             except os.error:
+    2:                 pass
+    2:             try:
+    2:                 os.rename(path, commapath)
+>>>>>>             except os.error, msg:
+>>>>>>                 errors.append(msg)
+                   else:
+    2:                 deleted.append(n)
+    1:         if deleted:
+    1:             self.removefromallsequences(deleted)
+    1:         if errors:
+>>>>>>             if len(errors) == 1:
+>>>>>>                 raise os.error, errors[0]
+                   else:
+>>>>>>                 raise os.error, ('multiple errors:', errors)
+       
+    1:     def refilemessages(self, list, tofolder, keepsequences=0):
+               """Refile one or more messages -- may raise os.error.
+               'tofolder' is an open folder object."""
+    1:         errors = []
+    1:         refiled = {}
+    3:         for n in list:
+    2:             ton = tofolder.getlast() + 1
+    2:             path = self.getmessagefilename(n)
+    2:             topath = tofolder.getmessagefilename(ton)
+    2:             try:
+    2:                 os.rename(path, topath)
+>>>>>>             except os.error:
+                       # Try copying
+>>>>>>                 try:
+>>>>>>                     shutil.copy2(path, topath)
+>>>>>>                     os.unlink(path)
+>>>>>>                 except (IOError, os.error), msg:
+>>>>>>                     errors.append(msg)
+>>>>>>                     try:
+>>>>>>                         os.unlink(topath)
+>>>>>>                     except os.error:
+>>>>>>                         pass
+>>>>>>                     continue
+    2:             tofolder.setlast(ton)
+    2:             refiled[n] = ton
+    1:         if refiled:
+    1:             if keepsequences:
+>>>>>>                 tofolder._copysequences(self, refiled.items())
+    1:             self.removefromallsequences(refiled.keys())
+    1:         if errors:
+>>>>>>             if len(errors) == 1:
+>>>>>>                 raise os.error, errors[0]
+                   else:
+>>>>>>                 raise os.error, ('multiple errors:', errors)
+       
+    1:     def _copysequences(self, fromfolder, refileditems):
+               """Helper for refilemessages() to copy sequences."""
+>>>>>>         fromsequences = fromfolder.getsequences()
+>>>>>>         tosequences = self.getsequences()
+>>>>>>         changed = 0
+>>>>>>         for name, seq in fromsequences.items():
+>>>>>>             try:
+>>>>>>                 toseq = tosequences[name]
+>>>>>>                 new = 0
+>>>>>>             except KeyError:
+>>>>>>                 toseq = []
+>>>>>>                 new = 1
+>>>>>>             for fromn, ton in refileditems:
+>>>>>>                 if fromn in seq:
+>>>>>>                     toseq.append(ton)
+>>>>>>                     changed = 1
+>>>>>>             if new and toseq:
+>>>>>>                 tosequences[name] = toseq
+>>>>>>         if changed:
+>>>>>>             self.putsequences(tosequences)
+       
+    1:     def movemessage(self, n, tofolder, ton):
+               """Move one message over a specific destination message,
+               which may or may not already exist."""
+    2:         path = self.getmessagefilename(n)
+               # Open it to check that it exists
+    2:         f = open(path)
+    2:         f.close()
+    2:         del f
+    2:         topath = tofolder.getmessagefilename(ton)
+    2:         backuptopath = tofolder.getmessagefilename(',%d' % ton)
+    2:         try:
+    2:             os.rename(topath, backuptopath)
+    2:         except os.error:
+    2:             pass
+    2:         try:
+    2:             os.rename(path, topath)
+>>>>>>         except os.error:
+                   # Try copying
+>>>>>>             ok = 0
+>>>>>>             try:
+>>>>>>                 tofolder.setlast(None)
+>>>>>>                 shutil.copy2(path, topath)
+>>>>>>                 ok = 1
+                   finally:
+>>>>>>                 if not ok:
+>>>>>>                     try:
+>>>>>>                         os.unlink(topath)
+>>>>>>                     except os.error:
+>>>>>>                         pass
+>>>>>>             os.unlink(path)
+    2:         self.removefromallsequences([n])
+       
+    1:     def copymessage(self, n, tofolder, ton):
+               """Copy one message over a specific destination message,
+               which may or may not already exist."""
+    1:         path = self.getmessagefilename(n)
+               # Open it to check that it exists
+    1:         f = open(path)
+    1:         f.close()
+    1:         del f
+    1:         topath = tofolder.getmessagefilename(ton)
+    1:         backuptopath = tofolder.getmessagefilename(',%d' % ton)
+    1:         try:
+    1:             os.rename(topath, backuptopath)
+    1:         except os.error:
+    1:             pass
+    1:         ok = 0
+    1:         try:
+    1:             tofolder.setlast(None)
+    1:             shutil.copy2(path, topath)
+    1:             ok = 1
+               finally:
+    1:             if not ok:
+>>>>>>                 try:
+>>>>>>                     os.unlink(topath)
+>>>>>>                 except os.error:
+>>>>>>                     pass
+       
+    1:     def createmessage(self, n, txt):
+               """Create a message, with text from the open file txt."""
+    6:         path = self.getmessagefilename(n)
+    6:         backuppath = self.getmessagefilename(',%d' % n)
+    6:         try:
+    6:             os.rename(path, backuppath)
+    6:         except os.error:
+    6:             pass
+    6:         ok = 0
+    6:         BUFSIZE = 16*1024
+    6:         try:
+    6:             f = open(path, "w")
+    6:             while 1:
+   12:                 buf = txt.read(BUFSIZE)
+   12:                 if not buf:
+    6:                     break
+    6:                 f.write(buf)
+    6:             f.close()
+    6:             ok = 1
+               finally:
+    6:             if not ok:
+>>>>>>                 try:
+>>>>>>                     os.unlink(path)
+>>>>>>                 except os.error:
+>>>>>>                     pass
+       
+    1:     def removefromallsequences(self, list):
+               """Remove one or more messages from all sequences (including last)
+               -- but not from 'cur'!!!"""
+    4:         if hasattr(self, 'last') and self.last in list:
+    1:             del self.last
+    4:         sequences = self.getsequences()
+    4:         changed = 0
+    4:         for name, seq in sequences.items():
+>>>>>>             if name == 'cur':
+>>>>>>                 continue
+>>>>>>             for n in list:
+>>>>>>                 if n in seq:
+>>>>>>                     seq.remove(n)
+>>>>>>                     changed = 1
+>>>>>>                     if not seq:
+>>>>>>                         del sequences[name]
+    4:         if changed:
+>>>>>>             self.putsequences(sequences)
+       
+    1:     def getlast(self):
+               """Return the last message number."""
+    2:         if not hasattr(self, 'last'):
+    1:             self.listmessages() # Set self.last
+    2:         return self.last
+       
+    1:     def setlast(self, last):
+               """Set the last message number."""
+    3:         if last is None:
+    1:             if hasattr(self, 'last'):
+    1:                 del self.last
+               else:
+    2:             self.last = last
+       
+    2: class Message(mimetools.Message):
+       
+    1:     def __init__(self, f, n, fp = None):
+               """Constructor."""
+    1:         self.folder = f
+    1:         self.number = n
+    1:         if fp is None:
+    1:             path = f.getmessagefilename(n)
+    1:             fp = open(path, 'r')
+    1:         mimetools.Message.__init__(self, fp)
+       
+    1:     def __repr__(self):
+               """String representation."""
+>>>>>>         return 'Message(%s, %s)' % (repr(self.folder), self.number)
+       
+    1:     def getheadertext(self, pred = None):
+               """Return the message's header text as a string.  If an
+               argument is specified, it is used as a filter predicate to
+               decide which headers to return (its argument is the header
+               name converted to lower case)."""
+    2:         if pred is None:
+    1:             return ''.join(self.headers)
+    1:         headers = []
+    1:         hit = 0
+    4:         for line in self.headers:
+    3:             if not line[0].isspace():
+    3:                 i = line.find(':')
+    3:                 if i > 0:
+    3:                     hit = pred(line[:i].lower())
+    3:             if hit: headers.append(line)
+    1:         return ''.join(headers)
+       
+    1:     def getbodytext(self, decode = 1):
+               """Return the message's body text as string.  This undoes a
+               Content-Transfer-Encoding, but does not interpret other MIME
+               features (e.g. multipart messages).  To suppress decoding,
+               pass 0 as an argument."""
+    2:         self.fp.seek(self.startofbody)
+    2:         encoding = self.getencoding()
+    2:         if not decode or encoding in ('', '7bit', '8bit', 'binary'):
+    2:             return self.fp.read()
+>>>>>>         try:
+>>>>>>             from cStringIO import StringIO
+>>>>>>         except ImportError:
+>>>>>>             from StringIO import StringIO
+>>>>>>         output = StringIO()
+>>>>>>         mimetools.decode(self.fp, output, encoding)
+>>>>>>         return output.getvalue()
+       
+    1:     def getbodyparts(self):
+               """Only for multipart messages: return the message's body as a
+               list of SubMessage objects.  Each submessage object behaves
+               (almost) as a Message object."""
+>>>>>>         if self.getmaintype() != 'multipart':
+>>>>>>             raise Error, 'Content-Type is not multipart/*'
+>>>>>>         bdry = self.getparam('boundary')
+>>>>>>         if not bdry:
+>>>>>>             raise Error, 'multipart/* without boundary param'
+>>>>>>         self.fp.seek(self.startofbody)
+>>>>>>         mf = multifile.MultiFile(self.fp)
+>>>>>>         mf.push(bdry)
+>>>>>>         parts = []
+>>>>>>         while mf.next():
+>>>>>>             n = "%s.%r" % (self.number, 1 + len(parts))
+>>>>>>             part = SubMessage(self.folder, n, mf)
+>>>>>>             parts.append(part)
+>>>>>>         mf.pop()
+>>>>>>         return parts
+       
+    1:     def getbody(self):
+               """Return body, either a string or a list of messages."""
+>>>>>>         if self.getmaintype() == 'multipart':
+>>>>>>             return self.getbodyparts()
+               else:
+>>>>>>             return self.getbodytext()
+       
+       
+    2: class SubMessage(Message):
+       
+    1:     def __init__(self, f, n, fp):
+               """Constructor."""
+>>>>>>         Message.__init__(self, f, n, fp)
+>>>>>>         if self.getmaintype() == 'multipart':
+>>>>>>             self.body = Message.getbodyparts(self)
+               else:
+>>>>>>             self.body = Message.getbodytext(self)
+>>>>>>         self.bodyencoded = Message.getbodytext(self, decode=0)
+                   # XXX If this is big, should remember file pointers
+       
+    1:     def __repr__(self):
+               """String representation."""
+>>>>>>         f, n, fp = self.folder, self.number, self.fp
+>>>>>>         return 'SubMessage(%s, %s, %s)' % (f, n, fp)
+       
+    1:     def getbodytext(self, decode = 1):
+>>>>>>         if not decode:
+>>>>>>             return self.bodyencoded
+>>>>>>         if type(self.body) == type(''):
+>>>>>>             return self.body
+       
+    1:     def getbodyparts(self):
+>>>>>>         if type(self.body) == type([]):
+>>>>>>             return self.body
+       
+    1:     def getbody(self):
+>>>>>>         return self.body
+       
+       
+    2: class IntSet:
+           """Class implementing sets of integers.
+       
+           This is an efficient representation for sets consisting of several
+           continuous ranges, e.g. 1-100,200-400,402-1000 is represented
+           internally as a list of three pairs: [(1,100), (200,400),
+           (402,1000)].  The internal representation is always kept normalized.
+       
+           The constructor has up to three arguments:
+           - the string used to initialize the set (default ''),
+           - the separator between ranges (default ',')
+           - the separator between begin and end of a range (default '-')
+           The separators must be strings (not regexprs) and should be different.
+       
+           The tostring() function yields a string that can be passed to another
+           IntSet constructor; __repr__() is a valid IntSet constructor itself.
+    1:     """
+       
+           # XXX The default begin/end separator means that negative numbers are
+           #     not supported very well.
+           #
+           # XXX There are currently no operations to remove set elements.
+       
+    1:     def __init__(self, data = None, sep = ',', rng = '-'):
+   24:         self.pairs = []
+   24:         self.sep = sep
+   24:         self.rng = rng
+   24:         if data: self.fromstring(data)
+       
+    1:     def reset(self):
+>>>>>>         self.pairs = []
+       
+    1:     def __cmp__(self, other):
+>>>>>>         return cmp(self.pairs, other.pairs)
+       
+    1:     def __hash__(self):
+>>>>>>         return hash(self.pairs)
+       
+    1:     def __repr__(self):
+>>>>>>         return 'IntSet(%r, %r, %r)' % (self.tostring(), self.sep, self.rng)
+       
+    1:     def normalize(self):
+   21:         self.pairs.sort()
+   21:         i = 1
+   77:         while i < len(self.pairs):
+   56:             alo, ahi = self.pairs[i-1]
+   56:             blo, bhi = self.pairs[i]
+   56:             if ahi >= blo-1:
+>>>>>>                 self.pairs[i-1:i+1] = [(alo, max(ahi, bhi))]
+                   else:
+   56:                 i = i+1
+       
+    1:     def tostring(self):
+    3:         s = ''
+   20:         for lo, hi in self.pairs:
+   17:             if lo == hi: t = repr(lo)
+    4:             else: t = repr(lo) + self.rng + repr(hi)
+   17:             if s: s = s + (self.sep + t)
+    3:             else: s = t
+    3:         return s
+       
+    1:     def tolist(self):
+   21:         l = []
+   98:         for lo, hi in self.pairs:
+   77:             m = range(lo, hi+1)
+   77:             l = l + m
+   21:         return l
+       
+    1:     def fromlist(self, list):
+   30:         for i in list:
+   27:             self.append(i)
+       
+    1:     def clone(self):
+>>>>>>         new = IntSet()
+>>>>>>         new.pairs = self.pairs[:]
+>>>>>>         return new
+       
+    1:     def min(self):
+>>>>>>         return self.pairs[0][0]
+       
+    1:     def max(self):
+>>>>>>         return self.pairs[-1][-1]
+       
+    1:     def contains(self, x):
+>>>>>>         for lo, hi in self.pairs:
+>>>>>>             if lo <= x <= hi: return True
+>>>>>>         return False
+       
+    1:     def append(self, x):
+  135:         for i in range(len(self.pairs)):
+  108:             lo, hi = self.pairs[i]
+  108:             if x < lo: # Need to insert before
+>>>>>>                 if x+1 == lo:
+>>>>>>                     self.pairs[i] = (x, hi)
+                       else:
+>>>>>>                     self.pairs.insert(i, (x, x))
+>>>>>>                 if i > 0 and x-1 == self.pairs[i-1][1]:
+                           # Merge with previous
+                           self.pairs[i-1:i+1] = [
+>>>>>>                             (self.pairs[i-1][0],
+>>>>>>                              self.pairs[i][1])
+                                 ]
+>>>>>>                 return
+  108:             if x <= hi: # Already in set
+>>>>>>                 return
+   27:         i = len(self.pairs) - 1
+   27:         if i >= 0:
+   24:             lo, hi = self.pairs[i]
+   24:             if x-1 == hi:
+   10:                 self.pairs[i] = lo, x
+   10:                 return
+   17:         self.pairs.append((x, x))
+       
+    1:     def addpair(self, xlo, xhi):
+>>>>>>         if xlo > xhi: return
+>>>>>>         self.pairs.append((xlo, xhi))
+>>>>>>         self.normalize()
+       
+    1:     def fromstring(self, data):
+   21:         new = []
+   98:         for part in data.split(self.sep):
+   77:             list = []
+  170:             for subp in part.split(self.rng):
+   93:                 s = subp.strip()
+   93:                 list.append(int(s))
+   77:             if len(list) == 1:
+   61:                 new.append((list[0], list[0]))
+   16:             elif len(list) == 2 and list[0] <= list[1]:
+   16:                 new.append((list[0], list[1]))
+                   else:
+>>>>>>                 raise ValueError, 'bad data passed to IntSet'
+   21:         self.pairs = self.pairs + new
+   21:         self.normalize()
+       
+       
+       # Subroutines to read/write entries in .mh_profile and .mh_sequences
+       
+    1: def pickline(file, key, casefold = 1):
+    6:     try:
+    6:         f = open(file, 'r')
+>>>>>>     except IOError:
+>>>>>>         return None
+    6:     pat = re.escape(key) + ':'
+    6:     prog = re.compile(pat, casefold and re.IGNORECASE)
+    6:     while 1:
+   17:         line = f.readline()
+   17:         if not line: break
+   14:         if prog.match(line):
+    3:             text = line[len(key)+1:]
+    3:             while 1:
+    3:                 line = f.readline()
+    3:                 if not line or not line[0].isspace():
+    3:                     break
+>>>>>>                 text = text + line
+    3:             return text.strip()
+    3:     return None
+       
+    1: def updateline(file, key, value, casefold = 1):
+    1:     try:
+    1:         f = open(file, 'r')
+    1:         lines = f.readlines()
+    1:         f.close()
+>>>>>>     except IOError:
+>>>>>>         lines = []
+    1:     pat = re.escape(key) + ':(.*)\n'
+    1:     prog = re.compile(pat, casefold and re.IGNORECASE)
+    1:     if value is None:
+>>>>>>         newline = None
+           else:
+    1:         newline = '%s: %s\n' % (key, value)
+    1:     for i in range(len(lines)):
+    1:         line = lines[i]
+    1:         if prog.match(line):
+    1:             if newline is None:
+>>>>>>                 del lines[i]
+                   else:
+    1:                 lines[i] = newline
+    1:             break
+           else:
+>>>>>>         if newline is not None:
+>>>>>>             lines.append(newline)
+    1:     tempfile = file + "~"
+    1:     f = open(tempfile, 'w')
+    2:     for line in lines:
+    1:         f.write(line)
+    1:     f.close()
+    1:     os.rename(tempfile, file)
+       
+       
+       # Test program
+       
+    1: def test():
+           global mh, f
+>>>>>>     os.system('rm -rf $HOME/Mail/@test')
+>>>>>>     mh = MH()
+>>>>>>     def do(s): print s; print eval(s)
+>>>>>>     do('mh.listfolders()')
+>>>>>>     do('mh.listallfolders()')
+>>>>>>     testfolders = ['@test', '@test/test1', '@test/test2',
+>>>>>>                    '@test/test1/test11', '@test/test1/test12',
+>>>>>>                    '@test/test1/test11/test111']
+>>>>>>     for t in testfolders: do('mh.makefolder(%r)' % (t,))
+>>>>>>     do('mh.listsubfolders(\'@test\')')
+>>>>>>     do('mh.listallsubfolders(\'@test\')')
+>>>>>>     f = mh.openfolder('@test')
+>>>>>>     do('f.listsubfolders()')
+>>>>>>     do('f.listallsubfolders()')
+>>>>>>     do('f.getsequences()')
+>>>>>>     seqs = f.getsequences()
+>>>>>>     seqs['foo'] = IntSet('1-10 12-20', ' ').tolist()
+>>>>>>     print seqs
+>>>>>>     f.putsequences(seqs)
+>>>>>>     do('f.getsequences()')
+>>>>>>     for t in reversed(testfolders): do('mh.deletefolder(%r)' % (t,))
+>>>>>>     do('mh.getcontext()')
+>>>>>>     context = mh.getcontext()
+>>>>>>     f = mh.openfolder(context)
+>>>>>>     do('f.getcurrent()')
+>>>>>>     for seq in ('first', 'last', 'cur', '.', 'prev', 'next',
+                       'first:3', 'last:3', 'cur:3', 'cur:-3',
+                       'prev:3', 'next:3',
+                       '1:3', '1:-3', '100:3', '100:-3', '10000:3', '10000:-3',
+>>>>>>                 'all'):
+>>>>>>         try:
+>>>>>>             do('f.parsesequence(%r)' % (seq,))
+>>>>>>         except Error, msg:
+>>>>>>             print "Error:", msg
+>>>>>>         stuff = os.popen("pick %r 2>/dev/null" % (seq,)).read()
+>>>>>>         list = map(int, stuff.split())
+>>>>>>         print list, "<-- pick"
+>>>>>>     do('f.listmessages()')
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     test()

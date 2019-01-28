@@ -1,0 +1,319 @@
+    1: import timeit
+    1: import unittest
+    1: import sys
+    1: from StringIO import StringIO
+    1: import time
+    1: from textwrap import dedent
+       
+    1: from test.test_support import run_unittest
+    1: from test.test_support import captured_stdout
+    1: from test.test_support import captured_stderr
+       
+       # timeit's default number of iterations.
+    1: DEFAULT_NUMBER = 1000000
+       
+       # timeit's default number of repetitions.
+    1: DEFAULT_REPEAT = 3
+       
+       # XXX: some tests are commented out that would improve the coverage but take a
+       # long time to run because they test the default number of loops, which is
+       # large.  The tests could be enabled if there was a way to override the default
+       # number of loops during testing, but this would require changing the signature
+       # of some functions that use the default as a default argument.
+       
+    2: class FakeTimer:
+    1:     BASE_TIME = 42.0
+    1:     def __init__(self, seconds_per_increment=1.0):
+   29:         self.count = 0
+   29:         self.setup_calls = 0
+   29:         self.seconds_per_increment=seconds_per_increment
+   29:         timeit._fake_timer = self
+       
+    1:     def __call__(self):
+  148:         return self.BASE_TIME + self.count * self.seconds_per_increment
+       
+    1:     def inc(self):
+42382:         self.count += 1
+       
+    1:     def setup(self):
+   24:         self.setup_calls += 1
+       
+    1:     def wrap_timer(self, timer):
+               """Records 'timer' and returns self as callable timer."""
+   13:         self.saved_timer = timer
+   13:         return self
+       
+    2: class TestTimeit(unittest.TestCase):
+       
+    1:     def tearDown(self):
+   36:         try:
+   36:             del timeit._fake_timer
+    7:         except AttributeError:
+    7:             pass
+       
+    1:     def test_reindent_empty(self):
+    1:         self.assertEqual(timeit.reindent("", 0), "")
+    1:         self.assertEqual(timeit.reindent("", 4), "")
+       
+    1:     def test_reindent_single(self):
+    1:         self.assertEqual(timeit.reindent("pass", 0), "pass")
+    1:         self.assertEqual(timeit.reindent("pass", 4), "pass")
+       
+    1:     def test_reindent_multi_empty(self):
+    1:         self.assertEqual(timeit.reindent("\n\n", 0), "\n\n")
+    1:         self.assertEqual(timeit.reindent("\n\n", 4), "\n    \n    ")
+       
+    1:     def test_reindent_multi(self):
+    1:         self.assertEqual(timeit.reindent(
+    1:             "print()\npass\nbreak", 0),
+    1:             "print()\npass\nbreak")
+    1:         self.assertEqual(timeit.reindent(
+    1:             "print()\npass\nbreak", 4),
+    1:             "print()\n    pass\n    break")
+       
+    1:     def test_timer_invalid_stmt(self):
+    1:         self.assertRaises(ValueError, timeit.Timer, stmt=None)
+    1:         self.assertRaises(SyntaxError, timeit.Timer, stmt='return')
+    1:         self.assertRaises(SyntaxError, timeit.Timer, stmt='yield')
+    1:         self.assertRaises(SyntaxError, timeit.Timer, stmt='break')
+    1:         self.assertRaises(SyntaxError, timeit.Timer, stmt='continue')
+       
+    1:     def test_timer_invalid_setup(self):
+    1:         self.assertRaises(ValueError, timeit.Timer, setup=None)
+    1:         self.assertRaises(SyntaxError, timeit.Timer, setup='return')
+    1:         self.assertRaises(SyntaxError, timeit.Timer, setup='yield')
+    1:         self.assertRaises(SyntaxError, timeit.Timer, setup='break')
+    1:         self.assertRaises(SyntaxError, timeit.Timer, setup='continue')
+       
+    1:     fake_setup = "import timeit; timeit._fake_timer.setup()"
+    1:     fake_stmt = "import timeit; timeit._fake_timer.inc()"
+       
+    1:     def fake_callable_setup(self):
+    8:         self.fake_timer.setup()
+       
+    1:     def fake_callable_stmt(self):
+   36:         self.fake_timer.inc()
+       
+    1:     def timeit(self, stmt, setup, number=None):
+    5:         self.fake_timer = FakeTimer()
+    5:         t = timeit.Timer(stmt=stmt, setup=setup, timer=self.fake_timer)
+    5:         kwargs = {}
+    5:         if number is None:
+>>>>>>             number = DEFAULT_NUMBER
+               else:
+    5:             kwargs['number'] = number
+    5:         delta_time = t.timeit(**kwargs)
+    5:         self.assertEqual(self.fake_timer.setup_calls, 1)
+    5:         self.assertEqual(self.fake_timer.count, number)
+    5:         self.assertEqual(delta_time, number)
+       
+           # Takes too long to run in debug build.
+           #def test_timeit_default_iters(self):
+           #    self.timeit(self.fake_stmt, self.fake_setup)
+       
+    1:     def test_timeit_zero_iters(self):
+    1:         self.timeit(self.fake_stmt, self.fake_setup, number=0)
+       
+    1:     def test_timeit_few_iters(self):
+    1:         self.timeit(self.fake_stmt, self.fake_setup, number=3)
+       
+    1:     def test_timeit_callable_stmt(self):
+    1:         self.timeit(self.fake_callable_stmt, self.fake_setup, number=3)
+       
+    1:     def test_timeit_callable_setup(self):
+    1:         self.timeit(self.fake_stmt, self.fake_callable_setup, number=3)
+       
+    1:     def test_timeit_callable_stmt_and_setup(self):
+    1:         self.timeit(self.fake_callable_stmt,
+    1:                 self.fake_callable_setup, number=3)
+       
+           # Takes too long to run in debug build.
+           #def test_timeit_function(self):
+           #    delta_time = timeit.timeit(self.fake_stmt, self.fake_setup,
+           #            timer=FakeTimer())
+           #    self.assertEqual(delta_time, DEFAULT_NUMBER)
+       
+    1:     def test_timeit_function_zero_iters(self):
+    1:         delta_time = timeit.timeit(self.fake_stmt, self.fake_setup, number=0,
+    1:                 timer=FakeTimer())
+    1:         self.assertEqual(delta_time, 0)
+       
+    1:     def repeat(self, stmt, setup, repeat=None, number=None):
+    6:         self.fake_timer = FakeTimer()
+    6:         t = timeit.Timer(stmt=stmt, setup=setup, timer=self.fake_timer)
+    6:         kwargs = {}
+    6:         if repeat is None:
+    1:             repeat = DEFAULT_REPEAT
+               else:
+    5:             kwargs['repeat'] = repeat
+    6:         if number is None:
+    1:             number = DEFAULT_NUMBER
+               else:
+    5:             kwargs['number'] = number
+    6:         delta_times = t.repeat(**kwargs)
+    6:         self.assertEqual(self.fake_timer.setup_calls, repeat)
+    6:         self.assertEqual(self.fake_timer.count, repeat * number)
+    6:         self.assertEqual(delta_times, repeat * [float(number)])
+       
+           # Takes too long to run in debug build.
+           #def test_repeat_default(self):
+           #    self.repeat(self.fake_stmt, self.fake_setup)
+       
+    1:     def test_repeat_zero_reps(self):
+    1:         self.repeat(self.fake_stmt, self.fake_setup, repeat=0)
+       
+    1:     def test_repeat_zero_iters(self):
+    1:         self.repeat(self.fake_stmt, self.fake_setup, number=0)
+       
+    1:     def test_repeat_few_reps_and_iters(self):
+    1:         self.repeat(self.fake_stmt, self.fake_setup, repeat=3, number=5)
+       
+    1:     def test_repeat_callable_stmt(self):
+    1:         self.repeat(self.fake_callable_stmt, self.fake_setup,
+    1:                 repeat=3, number=5)
+       
+    1:     def test_repeat_callable_setup(self):
+    1:         self.repeat(self.fake_stmt, self.fake_callable_setup,
+    1:                 repeat=3, number=5)
+       
+    1:     def test_repeat_callable_stmt_and_setup(self):
+    1:         self.repeat(self.fake_callable_stmt, self.fake_callable_setup,
+    1:                 repeat=3, number=5)
+       
+           # Takes too long to run in debug build.
+           #def test_repeat_function(self):
+           #    delta_times = timeit.repeat(self.fake_stmt, self.fake_setup,
+           #            timer=FakeTimer())
+           #    self.assertEqual(delta_times, DEFAULT_REPEAT * [float(DEFAULT_NUMBER)])
+       
+    1:     def test_repeat_function_zero_reps(self):
+    1:         delta_times = timeit.repeat(self.fake_stmt, self.fake_setup, repeat=0,
+    1:                 timer=FakeTimer())
+    1:         self.assertEqual(delta_times, [])
+       
+    1:     def test_repeat_function_zero_iters(self):
+    1:         delta_times = timeit.repeat(self.fake_stmt, self.fake_setup, number=0,
+    1:                 timer=FakeTimer())
+    1:         self.assertEqual(delta_times, DEFAULT_REPEAT * [0.0])
+       
+    1:     def assert_exc_string(self, exc_string, expected_exc_name):
+    3:         exc_lines = exc_string.splitlines()
+    3:         self.assertGreater(len(exc_lines), 2)
+    3:         self.assertTrue(exc_lines[0].startswith('Traceback'))
+    3:         self.assertTrue(exc_lines[-1].startswith(expected_exc_name))
+       
+    1:     def test_print_exc(self):
+    1:         s = StringIO()
+    1:         t = timeit.Timer("1.0/0.0")
+    1:         try:
+    1:             t.timeit()
+    1:         except:
+    1:             t.print_exc(s)
+    1:         self.assert_exc_string(s.getvalue(), 'ZeroDivisionError')
+       
+    1:     MAIN_DEFAULT_OUTPUT = "10 loops, best of 3: 1 sec per loop\n"
+       
+    1:     def run_main(self, seconds_per_increment=1.0, switches=None, timer=None):
+   15:         if timer is None:
+   13:             timer = FakeTimer(seconds_per_increment=seconds_per_increment)
+   15:         if switches is None:
+    2:             args = []
+               else:
+   13:             args = switches[:]
+   15:         args.append(self.fake_stmt)
+               # timeit.main() modifies sys.path, so save and restore it.
+   15:         orig_sys_path = sys.path[:]
+   15:         with captured_stdout() as s:
+   15:             timeit.main(args=args, _wrap_timer=timer.wrap_timer)
+   15:         sys.path[:] = orig_sys_path[:]
+   15:         return s.getvalue()
+       
+    1:     def test_main_bad_switch(self):
+    1:         s = self.run_main(switches=['--bad-switch'])
+    1:         self.assertEqual(s, dedent("""\
+                   option --bad-switch not recognized
+                   use -h/--help for command line help
+    1:             """))
+       
+    1:     def test_main_seconds(self):
+    1:         s = self.run_main(seconds_per_increment=5.5)
+    1:         self.assertEqual(s, "10 loops, best of 3: 5.5 sec per loop\n")
+       
+    1:     def test_main_milliseconds(self):
+    1:         s = self.run_main(seconds_per_increment=0.0055)
+    1:         self.assertEqual(s, "100 loops, best of 3: 5.5 msec per loop\n")
+       
+    1:     def test_main_microseconds(self):
+    1:         s = self.run_main(seconds_per_increment=0.0000025, switches=['-n100'])
+    1:         self.assertEqual(s, "100 loops, best of 3: 2.5 usec per loop\n")
+       
+    1:     def test_main_fixed_iters(self):
+    1:         s = self.run_main(seconds_per_increment=2.0, switches=['-n35'])
+    1:         self.assertEqual(s, "35 loops, best of 3: 2 sec per loop\n")
+       
+    1:     def test_main_setup(self):
+    1:         s = self.run_main(seconds_per_increment=2.0,
+    1:                 switches=['-n35', '-s', 'print("CustomSetup")'])
+    1:         self.assertEqual(s, "CustomSetup\n" * 3 +
+    1:                 "35 loops, best of 3: 2 sec per loop\n")
+       
+    1:     def test_main_fixed_reps(self):
+    1:         s = self.run_main(seconds_per_increment=60.0, switches=['-r9'])
+    1:         self.assertEqual(s, "10 loops, best of 9: 60 sec per loop\n")
+       
+    1:     def test_main_negative_reps(self):
+    1:         s = self.run_main(seconds_per_increment=60.0, switches=['-r-5'])
+    1:         self.assertEqual(s, "10 loops, best of 1: 60 sec per loop\n")
+       
+    1:     @unittest.skipIf(sys.flags.optimize >= 2, "need __doc__")
+           def test_main_help(self):
+    1:         s = self.run_main(switches=['-h'])
+    1:         self.assertEqual(s, timeit.__doc__)
+       
+    1:     def test_main_using_time(self):
+    1:         fake_timer = FakeTimer()
+    1:         s = self.run_main(switches=['-t'], timer=fake_timer)
+    1:         self.assertEqual(s, self.MAIN_DEFAULT_OUTPUT)
+    1:         self.assertIs(fake_timer.saved_timer, time.time)
+       
+    1:     def test_main_using_clock(self):
+    1:         fake_timer = FakeTimer()
+    1:         s = self.run_main(switches=['-c'], timer=fake_timer)
+    1:         self.assertEqual(s, self.MAIN_DEFAULT_OUTPUT)
+    1:         self.assertIs(fake_timer.saved_timer, time.clock)
+       
+    1:     def test_main_verbose(self):
+    1:         s = self.run_main(switches=['-v'])
+    1:         self.assertEqual(s, dedent("""\
+                       10 loops -> 10 secs
+                       raw times: 10 10 10
+                       10 loops, best of 3: 1 sec per loop
+    1:             """))
+       
+    1:     def test_main_very_verbose(self):
+    1:         s = self.run_main(seconds_per_increment=0.000050, switches=['-vv'])
+    1:         self.assertEqual(s, dedent("""\
+                       10 loops -> 0.0005 secs
+                       100 loops -> 0.005 secs
+                       1000 loops -> 0.05 secs
+                       10000 loops -> 0.5 secs
+                       raw times: 0.5 0.5 0.5
+                       10000 loops, best of 3: 50 usec per loop
+    1:             """))
+       
+    1:     def test_main_exception(self):
+    1:         with captured_stderr() as error_stringio:
+    1:             s = self.run_main(switches=['1.0/0.0'])
+    1:         self.assert_exc_string(error_stringio.getvalue(), 'ZeroDivisionError')
+       
+    1:     def test_main_exception_fixed_reps(self):
+    1:         with captured_stderr() as error_stringio:
+    1:             s = self.run_main(switches=['-n1', '1.0/0.0'])
+    1:         self.assert_exc_string(error_stringio.getvalue(), 'ZeroDivisionError')
+       
+       
+    1: def test_main():
+    1:     run_unittest(TestTimeit)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

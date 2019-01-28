@@ -1,0 +1,713 @@
+       # Python test set -- part 5, built-in exceptions
+       
+    1: import os
+    1: import sys
+    1: import unittest
+    1: import pickle, cPickle
+       
+    1: from test.test_support import (TESTFN, unlink, run_unittest, captured_stderr,
+                                      check_warnings, cpython_only)
+    1: from test.test_pep352 import ignore_deprecation_warnings
+       
+    2: class BrokenStrException(Exception):
+    1:     def __str__(self):
+>>>>>>         raise Exception("str() is broken")
+    1:     __repr__ = __str__  # Python 2's PyErr_WriteUnraisable() uses repr()
+       
+       # XXX This is not really enough, each *operation* should be tested!
+       
+    2: class ExceptionTests(unittest.TestCase):
+       
+    1:     def testReload(self):
+               # Reloading the built-in exceptions module failed prior to Py2.2, while it
+               # should act the same as reloading built-in sys.
+>>>>>>         try:
+>>>>>>             from imp import reload
+>>>>>>             import exceptions
+>>>>>>             reload(exceptions)
+>>>>>>         except ImportError, e:
+>>>>>>             self.fail("reloading exceptions: %s" % e)
+       
+    1:     def raise_catch(self, exc, excname):
+>>>>>>         try:
+>>>>>>             raise exc, "spam"
+>>>>>>         except exc, err:
+>>>>>>             buf1 = str(err)
+>>>>>>         try:
+>>>>>>             raise exc("spam")
+>>>>>>         except exc, err:
+>>>>>>             buf2 = str(err)
+>>>>>>         self.assertEqual(buf1, buf2)
+>>>>>>         self.assertEqual(exc.__name__, excname)
+       
+    1:     def testRaising(self):
+>>>>>>         self.raise_catch(AttributeError, "AttributeError")
+>>>>>>         self.assertRaises(AttributeError, getattr, sys, "undefined_attribute")
+       
+>>>>>>         self.raise_catch(EOFError, "EOFError")
+>>>>>>         fp = open(TESTFN, 'w')
+>>>>>>         fp.close()
+>>>>>>         fp = open(TESTFN, 'r')
+>>>>>>         savestdin = sys.stdin
+>>>>>>         try:
+>>>>>>             try:
+>>>>>>                 sys.stdin = fp
+>>>>>>                 x = raw_input()
+>>>>>>             except EOFError:
+>>>>>>                 pass
+               finally:
+>>>>>>             sys.stdin = savestdin
+>>>>>>             fp.close()
+>>>>>>             unlink(TESTFN)
+       
+>>>>>>         self.raise_catch(IOError, "IOError")
+>>>>>>         self.assertRaises(IOError, open, 'this file does not exist', 'r')
+       
+>>>>>>         self.raise_catch(ImportError, "ImportError")
+>>>>>>         self.assertRaises(ImportError, __import__, "undefined_module")
+       
+>>>>>>         self.raise_catch(IndexError, "IndexError")
+>>>>>>         x = []
+>>>>>>         self.assertRaises(IndexError, x.__getitem__, 10)
+       
+>>>>>>         self.raise_catch(KeyError, "KeyError")
+>>>>>>         x = {}
+>>>>>>         self.assertRaises(KeyError, x.__getitem__, 'key')
+       
+>>>>>>         self.raise_catch(KeyboardInterrupt, "KeyboardInterrupt")
+       
+>>>>>>         self.raise_catch(MemoryError, "MemoryError")
+       
+>>>>>>         self.raise_catch(NameError, "NameError")
+>>>>>>         try: x = undefined_variable
+>>>>>>         except NameError: pass
+       
+>>>>>>         self.raise_catch(OverflowError, "OverflowError")
+>>>>>>         x = 1
+>>>>>>         for dummy in range(128):
+>>>>>>             x += x  # this simply shouldn't blow up
+       
+>>>>>>         self.raise_catch(RuntimeError, "RuntimeError")
+       
+>>>>>>         self.raise_catch(SyntaxError, "SyntaxError")
+>>>>>>         try: exec '/\n'
+>>>>>>         except SyntaxError: pass
+       
+>>>>>>         self.raise_catch(IndentationError, "IndentationError")
+       
+>>>>>>         self.raise_catch(TabError, "TabError")
+               # can only be tested under -tt, and is the only test for -tt
+               #try: compile("try:\n\t1.0/0.0\n    \t1.0/0.0\nfinally:\n pass\n", '<string>', 'exec')
+               #except TabError: pass
+               #else: self.fail("TabError not raised")
+       
+>>>>>>         self.raise_catch(SystemError, "SystemError")
+       
+>>>>>>         self.raise_catch(SystemExit, "SystemExit")
+>>>>>>         self.assertRaises(SystemExit, sys.exit, 0)
+       
+>>>>>>         self.raise_catch(TypeError, "TypeError")
+>>>>>>         try: [] + ()
+>>>>>>         except TypeError: pass
+       
+>>>>>>         self.raise_catch(ValueError, "ValueError")
+>>>>>>         self.assertRaises(ValueError, chr, 10000)
+       
+>>>>>>         self.raise_catch(ZeroDivisionError, "ZeroDivisionError")
+>>>>>>         try: x = 1 // 0
+>>>>>>         except ZeroDivisionError: pass
+       
+>>>>>>         self.raise_catch(Exception, "Exception")
+>>>>>>         try: x = 1 // 0
+>>>>>>         except Exception, e: pass
+       
+    1:     def testSyntaxErrorMessage(self):
+               # make sure the right exception message is raised for each of
+               # these code fragments
+       
+>>>>>>         def ckmsg(src, msg):
+>>>>>>             try:
+>>>>>>                 compile(src, '<fragment>', 'exec')
+>>>>>>             except SyntaxError, e:
+>>>>>>                 if e.msg != msg:
+>>>>>>                     self.fail("expected %s, got %s" % (msg, e.msg))
+                   else:
+>>>>>>                 self.fail("failed to get expected SyntaxError")
+       
+               s = '''while 1:
+                   try:
+                       pass
+                   finally:
+>>>>>>                 continue'''
+       
+>>>>>>         if not sys.platform.startswith('java'):
+>>>>>>             ckmsg(s, "'continue' not supported inside 'finally' clause")
+       
+               s = '''if 1:
+               try:
+                   continue
+               except:
+>>>>>>             pass'''
+       
+>>>>>>         ckmsg(s, "'continue' not properly in loop")
+>>>>>>         ckmsg("continue\n", "'continue' not properly in loop")
+       
+    1:     @cpython_only
+           def testSettingException(self):
+               # test that setting an exception at the C level works even if the
+               # exception object can't be constructed.
+       
+>>>>>>         class BadException:
+>>>>>>             def __init__(self_):
+>>>>>>                 raise RuntimeError, "can't instantiate BadException"
+       
+>>>>>>         def test_capi1():
+>>>>>>             import _testcapi
+>>>>>>             try:
+>>>>>>                 _testcapi.raise_exception(BadException, 1)
+>>>>>>             except TypeError, err:
+>>>>>>                 exc, err, tb = sys.exc_info()
+>>>>>>                 co = tb.tb_frame.f_code
+>>>>>>                 self.assertEqual(co.co_name, "test_capi1")
+>>>>>>                 self.assertTrue(co.co_filename.endswith('test_exceptions'+os.extsep+'py'))
+                   else:
+>>>>>>                 self.fail("Expected exception")
+       
+>>>>>>         def test_capi2():
+>>>>>>             import _testcapi
+>>>>>>             try:
+>>>>>>                 _testcapi.raise_exception(BadException, 0)
+>>>>>>             except RuntimeError, err:
+>>>>>>                 exc, err, tb = sys.exc_info()
+>>>>>>                 co = tb.tb_frame.f_code
+>>>>>>                 self.assertEqual(co.co_name, "__init__")
+>>>>>>                 self.assertTrue(co.co_filename.endswith('test_exceptions'+os.extsep+'py'))
+>>>>>>                 co2 = tb.tb_frame.f_back.f_code
+>>>>>>                 self.assertEqual(co2.co_name, "test_capi2")
+                   else:
+>>>>>>                 self.fail("Expected exception")
+       
+>>>>>>         if not sys.platform.startswith('java'):
+>>>>>>             test_capi1()
+>>>>>>             test_capi2()
+       
+    1:     def test_WindowsError(self):
+>>>>>>         try:
+>>>>>>             WindowsError
+>>>>>>         except NameError:
+>>>>>>             pass
+               else:
+>>>>>>             self.assertEqual(str(WindowsError(1001)),
+>>>>>>                                  "1001")
+>>>>>>             self.assertEqual(str(WindowsError(1001, "message")),
+>>>>>>                                  "[Error 1001] message")
+>>>>>>             self.assertEqual(WindowsError(1001, "message").errno, 22)
+>>>>>>             self.assertEqual(WindowsError(1001, "message").winerror, 1001)
+       
+    1:     @ignore_deprecation_warnings
+           def testAttributes(self):
+               # test that exception attributes are happy
+       
+               exceptionList = [
+    1:             (BaseException, (), {'message' : '', 'args' : ()}),
+    1:             (BaseException, (1, ), {'message' : 1, 'args' : (1,)}),
+    1:             (BaseException, ('foo',),
+    1:                 {'message' : 'foo', 'args' : ('foo',)}),
+    1:             (BaseException, ('foo', 1),
+    1:                 {'message' : '', 'args' : ('foo', 1)}),
+    1:             (SystemExit, ('foo',),
+    1:                 {'message' : 'foo', 'args' : ('foo',), 'code' : 'foo'}),
+    1:             (IOError, ('foo',),
+    1:                 {'message' : 'foo', 'args' : ('foo',), 'filename' : None,
+    1:                  'errno' : None, 'strerror' : None}),
+    1:             (IOError, ('foo', 'bar'),
+    1:                 {'message' : '', 'args' : ('foo', 'bar'), 'filename' : None,
+    1:                  'errno' : 'foo', 'strerror' : 'bar'}),
+    1:             (IOError, ('foo', 'bar', 'baz'),
+    1:                 {'message' : '', 'args' : ('foo', 'bar'), 'filename' : 'baz',
+    1:                  'errno' : 'foo', 'strerror' : 'bar'}),
+    1:             (IOError, ('foo', 'bar', 'baz', 'quux'),
+    1:                 {'message' : '', 'args' : ('foo', 'bar', 'baz', 'quux')}),
+    1:             (EnvironmentError, ('errnoStr', 'strErrorStr', 'filenameStr'),
+    1:                 {'message' : '', 'args' : ('errnoStr', 'strErrorStr'),
+    1:                  'strerror' : 'strErrorStr', 'errno' : 'errnoStr',
+    1:                  'filename' : 'filenameStr'}),
+    1:             (EnvironmentError, (1, 'strErrorStr', 'filenameStr'),
+    1:                 {'message' : '', 'args' : (1, 'strErrorStr'), 'errno' : 1,
+    1:                  'strerror' : 'strErrorStr', 'filename' : 'filenameStr'}),
+    1:             (SyntaxError, (), {'message' : '', 'msg' : None, 'text' : None,
+    1:                 'filename' : None, 'lineno' : None, 'offset' : None,
+    1:                 'print_file_and_line' : None}),
+    1:             (SyntaxError, ('msgStr',),
+    1:                 {'message' : 'msgStr', 'args' : ('msgStr',), 'text' : None,
+    1:                  'print_file_and_line' : None, 'msg' : 'msgStr',
+    1:                  'filename' : None, 'lineno' : None, 'offset' : None}),
+    1:             (SyntaxError, ('msgStr', ('filenameStr', 'linenoStr', 'offsetStr',
+    1:                            'textStr')),
+    1:                 {'message' : '', 'offset' : 'offsetStr', 'text' : 'textStr',
+    1:                  'args' : ('msgStr', ('filenameStr', 'linenoStr',
+    1:                                       'offsetStr', 'textStr')),
+    1:                  'print_file_and_line' : None, 'msg' : 'msgStr',
+    1:                  'filename' : 'filenameStr', 'lineno' : 'linenoStr'}),
+    1:             (SyntaxError, ('msgStr', 'filenameStr', 'linenoStr', 'offsetStr',
+    1:                            'textStr', 'print_file_and_lineStr'),
+    1:                 {'message' : '', 'text' : None,
+                        'args' : ('msgStr', 'filenameStr', 'linenoStr', 'offsetStr',
+    1:                            'textStr', 'print_file_and_lineStr'),
+    1:                  'print_file_and_line' : None, 'msg' : 'msgStr',
+    1:                  'filename' : None, 'lineno' : None, 'offset' : None}),
+    1:             (UnicodeError, (), {'message' : '', 'args' : (),}),
+    1:             (UnicodeEncodeError, ('ascii', u'a', 0, 1, 'ordinal not in range'),
+    1:                 {'message' : '', 'args' : ('ascii', u'a', 0, 1,
+    1:                                            'ordinal not in range'),
+    1:                  'encoding' : 'ascii', 'object' : u'a',
+    1:                  'start' : 0, 'reason' : 'ordinal not in range'}),
+    1:             (UnicodeDecodeError, ('ascii', '\xff', 0, 1, 'ordinal not in range'),
+    1:                 {'message' : '', 'args' : ('ascii', '\xff', 0, 1,
+    1:                                            'ordinal not in range'),
+    1:                  'encoding' : 'ascii', 'object' : '\xff',
+    1:                  'start' : 0, 'reason' : 'ordinal not in range'}),
+    1:             (UnicodeTranslateError, (u"\u3042", 0, 1, "ouch"),
+    1:                 {'message' : '', 'args' : (u'\u3042', 0, 1, 'ouch'),
+    1:                  'object' : u'\u3042', 'reason' : 'ouch',
+    1:                  'start' : 0, 'end' : 1}),
+               ]
+    1:         try:
+    1:             exceptionList.append(
+    1:                 (WindowsError, (1, 'strErrorStr', 'filenameStr'),
+>>>>>>                     {'message' : '', 'args' : (1, 'strErrorStr'),
+>>>>>>                      'strerror' : 'strErrorStr', 'winerror' : 1,
+>>>>>>                      'errno' : 22, 'filename' : 'filenameStr'})
+                   )
+    1:         except NameError:
+    1:             pass
+       
+   20:         for exc, args, expected in exceptionList:
+   19:             try:
+   19:                 raise exc(*args)
+   19:             except BaseException, e:
+   19:                 if type(e) is not exc:
+>>>>>>                     raise
+                       # Verify module name
+   19:                 self.assertEqual(type(e).__module__, 'exceptions')
+                       # Verify no ref leaks in Exc_str()
+   19:                 s = str(e)
+  108:                 for checkArgName in expected:
+   89:                     self.assertEqual(repr(getattr(e, checkArgName)),
+   89:                                      repr(expected[checkArgName]),
+   89:                                      'exception "%s", attribute "%s"' %
+   89:                                       (repr(e), checkArgName))
+       
+                       # test for pickling support
+   57:                 for p in pickle, cPickle:
+  152:                     for protocol in range(p.HIGHEST_PROTOCOL + 1):
+  114:                         new = p.loads(p.dumps(e, protocol))
+  648:                         for checkArgName in expected:
+  534:                             got = repr(getattr(new, checkArgName))
+  534:                             want = repr(expected[checkArgName])
+  534:                             self.assertEqual(got, want,
+  534:                                              'pickled "%r", attribute "%s"' %
+  534:                                              (e, checkArgName))
+       
+       
+    1:     def testDeprecatedMessageAttribute(self):
+               # Accessing BaseException.message and relying on its value set by
+               # BaseException.__init__ triggers a deprecation warning.
+    1:         exc = BaseException("foo")
+    1:         with check_warnings(("BaseException.message has been deprecated "
+    1:                              "as of Python 2.6", DeprecationWarning)) as w:
+    1:             self.assertEqual(exc.message, "foo")
+    1:         self.assertEqual(len(w.warnings), 1)
+       
+    1:     def testRegularMessageAttribute(self):
+               # Accessing BaseException.message after explicitly setting a value
+               # for it does not trigger a deprecation warning.
+>>>>>>         exc = BaseException("foo")
+>>>>>>         exc.message = "bar"
+>>>>>>         with check_warnings(quiet=True) as w:
+>>>>>>             self.assertEqual(exc.message, "bar")
+>>>>>>         self.assertEqual(len(w.warnings), 0)
+               # Deleting the message is supported, too.
+>>>>>>         del exc.message
+>>>>>>         with self.assertRaises(AttributeError):
+>>>>>>             exc.message
+       
+    1:     @ignore_deprecation_warnings
+           def testPickleMessageAttribute(self):
+               # Pickling with message attribute must work, as well.
+>>>>>>         e = Exception("foo")
+>>>>>>         f = Exception("foo")
+>>>>>>         f.message = "bar"
+>>>>>>         for p in pickle, cPickle:
+>>>>>>             ep = p.loads(p.dumps(e))
+>>>>>>             self.assertEqual(ep.message, "foo")
+>>>>>>             fp = p.loads(p.dumps(f))
+>>>>>>             self.assertEqual(fp.message, "bar")
+       
+    1:     @ignore_deprecation_warnings
+           def testSlicing(self):
+               # Test that you can slice an exception directly instead of requiring
+               # going through the 'args' attribute.
+>>>>>>         args = (1, 2, 3)
+>>>>>>         exc = BaseException(*args)
+>>>>>>         self.assertEqual(exc[:], args)
+>>>>>>         self.assertEqual(exc.args[:], args)
+       
+    1:     def testKeywordArgs(self):
+               # test that builtin exception don't take keyword args,
+               # but user-defined subclasses can if they want
+>>>>>>         self.assertRaises(TypeError, BaseException, a=1)
+       
+>>>>>>         class DerivedException(BaseException):
+>>>>>>             def __init__(self, fancy_arg):
+>>>>>>                 BaseException.__init__(self)
+>>>>>>                 self.fancy_arg = fancy_arg
+       
+>>>>>>         x = DerivedException(fancy_arg=42)
+>>>>>>         self.assertEqual(x.fancy_arg, 42)
+       
+    1:     def testInfiniteRecursion(self):
+    1:         def f():
+  957:             return f()
+    1:         self.assertRaises(RuntimeError, f)
+       
+>>>>>>         def g():
+>>>>>>             try:
+>>>>>>                 return g()
+>>>>>>             except ValueError:
+>>>>>>                 return -1
+       
+               # The test prints an unraisable recursion error when
+               # doing "except ValueError", this is because subclass
+               # checking has recursion checking too.
+>>>>>>         with captured_stderr():
+>>>>>>             try:
+>>>>>>                 g()
+>>>>>>             except RuntimeError:
+>>>>>>                 pass
+>>>>>>             except:
+>>>>>>                 self.fail("Should have raised KeyError")
+                   else:
+>>>>>>                 self.fail("Should have raised KeyError")
+       
+    1:     def testUnicodeStrUsage(self):
+               # Make sure both instances and classes have a str and unicode
+               # representation.
+>>>>>>         self.assertTrue(str(Exception))
+>>>>>>         self.assertTrue(unicode(Exception))
+>>>>>>         self.assertTrue(str(Exception('a')))
+>>>>>>         self.assertTrue(unicode(Exception(u'a')))
+>>>>>>         self.assertTrue(unicode(Exception(u'\xe1')))
+       
+    1:     def testUnicodeChangeAttributes(self):
+               # See issue 7309. This was a crasher.
+       
+>>>>>>         u = UnicodeEncodeError('baz', u'xxxxx', 1, 5, 'foo')
+>>>>>>         self.assertEqual(str(u), "'baz' codec can't encode characters in position 1-4: foo")
+>>>>>>         u.end = 2
+>>>>>>         self.assertEqual(str(u), "'baz' codec can't encode character u'\\x78' in position 1: foo")
+>>>>>>         u.end = 5
+>>>>>>         u.reason = 0x345345345345345345
+>>>>>>         self.assertEqual(str(u), "'baz' codec can't encode characters in position 1-4: 965230951443685724997")
+>>>>>>         u.encoding = 4000
+>>>>>>         self.assertEqual(str(u), "'4000' codec can't encode characters in position 1-4: 965230951443685724997")
+>>>>>>         u.start = 1000
+>>>>>>         self.assertEqual(str(u), "'4000' codec can't encode characters in position 1000-4: 965230951443685724997")
+       
+>>>>>>         u = UnicodeDecodeError('baz', 'xxxxx', 1, 5, 'foo')
+>>>>>>         self.assertEqual(str(u), "'baz' codec can't decode bytes in position 1-4: foo")
+>>>>>>         u.end = 2
+>>>>>>         self.assertEqual(str(u), "'baz' codec can't decode byte 0x78 in position 1: foo")
+>>>>>>         u.end = 5
+>>>>>>         u.reason = 0x345345345345345345
+>>>>>>         self.assertEqual(str(u), "'baz' codec can't decode bytes in position 1-4: 965230951443685724997")
+>>>>>>         u.encoding = 4000
+>>>>>>         self.assertEqual(str(u), "'4000' codec can't decode bytes in position 1-4: 965230951443685724997")
+>>>>>>         u.start = 1000
+>>>>>>         self.assertEqual(str(u), "'4000' codec can't decode bytes in position 1000-4: 965230951443685724997")
+       
+>>>>>>         u = UnicodeTranslateError(u'xxxx', 1, 5, 'foo')
+>>>>>>         self.assertEqual(str(u), "can't translate characters in position 1-4: foo")
+>>>>>>         u.end = 2
+>>>>>>         self.assertEqual(str(u), "can't translate character u'\\x78' in position 1: foo")
+>>>>>>         u.end = 5
+>>>>>>         u.reason = 0x345345345345345345
+>>>>>>         self.assertEqual(str(u), "can't translate characters in position 1-4: 965230951443685724997")
+>>>>>>         u.start = 1000
+>>>>>>         self.assertEqual(str(u), "can't translate characters in position 1000-4: 965230951443685724997")
+       
+    1:     def test_unicode_errors_no_object(self):
+               # See issue #21134.
+>>>>>>         klasses = UnicodeEncodeError, UnicodeDecodeError, UnicodeTranslateError
+>>>>>>         for klass in klasses:
+>>>>>>             self.assertEqual(str(klass.__new__(klass)), "")
+       
+    1:     def test_badisinstance(self):
+               # Bug #2542: if issubclass(e, MyException) raises an exception,
+               # it should be ignored
+>>>>>>         class Meta(type):
+>>>>>>             def __subclasscheck__(cls, subclass):
+>>>>>>                 raise ValueError()
+       
+>>>>>>         class MyException(Exception):
+>>>>>>             __metaclass__ = Meta
+>>>>>>             pass
+       
+>>>>>>         with captured_stderr() as stderr:
+>>>>>>             try:
+>>>>>>                 raise KeyError()
+>>>>>>             except MyException, e:
+>>>>>>                 self.fail("exception should not be a MyException")
+>>>>>>             except KeyError:
+>>>>>>                 pass
+>>>>>>             except:
+>>>>>>                 self.fail("Should have raised KeyError")
+                   else:
+>>>>>>                 self.fail("Should have raised KeyError")
+       
+>>>>>>         with captured_stderr() as stderr:
+>>>>>>             def g():
+>>>>>>                 try:
+>>>>>>                     return g()
+>>>>>>                 except RuntimeError:
+>>>>>>                     return sys.exc_info()
+>>>>>>             e, v, tb = g()
+>>>>>>             self.assertTrue(e is RuntimeError, e)
+>>>>>>             self.assertIn("maximum recursion depth exceeded", str(v))
+       
+    1:     def test_new_returns_invalid_instance(self):
+               # See issue #11627.
+>>>>>>         class MyException(Exception):
+>>>>>>             def __new__(cls, *args):
+>>>>>>                 return object()
+       
+>>>>>>         with self.assertRaises(TypeError):
+>>>>>>             raise MyException
+       
+    1:     def test_assert_with_tuple_arg(self):
+>>>>>>         try:
+>>>>>>             assert False, (3,)
+>>>>>>         except AssertionError as e:
+>>>>>>             self.assertEqual(str(e), "(3,)")
+       
+    1:     def test_bad_exception_clearing(self):
+               # See issue 16445: use of Py_XDECREF instead of Py_CLEAR in
+               # BaseException_set_message gave a possible way to segfault the
+               # interpreter.
+>>>>>>         class Nasty(str):
+>>>>>>             def __del__(message):
+>>>>>>                 del e.message
+       
+>>>>>>         e = ValueError(Nasty("msg"))
+>>>>>>         e.args = ()
+>>>>>>         del e.message
+       
+       
+       # Helper class used by TestSameStrAndUnicodeMsg
+    2: class ExcWithOverriddenStr(Exception):
+           """Subclass of Exception that accepts a keyword 'msg' arg that is
+    1:     returned by __str__. 'msg' won't be included in self.args"""
+    1:     def __init__(self, *args, **kwargs):
+>>>>>>         self.msg = kwargs.pop('msg') # msg should always be present
+>>>>>>         super(ExcWithOverriddenStr, self).__init__(*args, **kwargs)
+    1:     def __str__(self):
+>>>>>>         return self.msg
+       
+       
+    2: class TestSameStrAndUnicodeMsg(unittest.TestCase):
+    1:     """unicode(err) should return the same message of str(err). See #6108"""
+       
+    1:     def check_same_msg(self, exc, msg):
+               """Helper function that checks if str(exc) == unicode(exc) == msg"""
+>>>>>>         self.assertEqual(str(exc), msg)
+>>>>>>         self.assertEqual(str(exc), unicode(exc))
+       
+    1:     def test_builtin_exceptions(self):
+               """Check same msg for built-in exceptions"""
+               # These exceptions implement a __str__ method that uses the args
+               # to create a better error message. unicode(e) should return the same
+               # message.
+               exceptions = [
+>>>>>>             SyntaxError('invalid syntax', ('<string>', 1, 3, '2+*3')),
+>>>>>>             IOError(2, 'No such file or directory'),
+>>>>>>             KeyError('both should have the same quotes'),
+>>>>>>             UnicodeDecodeError('ascii', '\xc3\xa0', 0, 1,
+>>>>>>                                'ordinal not in range(128)'),
+>>>>>>             UnicodeEncodeError('ascii', u'\u1234', 0, 1,
+>>>>>>                                'ordinal not in range(128)')
+               ]
+>>>>>>         for exception in exceptions:
+>>>>>>             self.assertEqual(str(exception), unicode(exception))
+       
+    1:     def test_0_args(self):
+               """Check same msg for Exception with 0 args"""
+               # str() and unicode() on an Exception with no args should return an
+               # empty string
+>>>>>>         self.check_same_msg(Exception(), '')
+       
+    1:     def test_0_args_with_overridden___str__(self):
+               """Check same msg for exceptions with 0 args and overridden __str__"""
+               # str() and unicode() on an exception with overridden __str__ that
+               # returns an ascii-only string should return the same string
+>>>>>>         for msg in ('foo', u'foo'):
+>>>>>>             self.check_same_msg(ExcWithOverriddenStr(msg=msg), msg)
+       
+               # if __str__ returns a non-ascii unicode string str() should fail
+               # but unicode() should return the unicode string
+>>>>>>         e = ExcWithOverriddenStr(msg=u'f\xf6\xf6') # no args
+>>>>>>         self.assertRaises(UnicodeEncodeError, str, e)
+>>>>>>         self.assertEqual(unicode(e), u'f\xf6\xf6')
+       
+    1:     def test_1_arg(self):
+               """Check same msg for Exceptions with 1 arg"""
+>>>>>>         for arg in ('foo', u'foo'):
+>>>>>>             self.check_same_msg(Exception(arg), arg)
+       
+               # if __str__ is not overridden and self.args[0] is a non-ascii unicode
+               # string, str() should try to return str(self.args[0]) and fail.
+               # unicode() should return unicode(self.args[0]) and succeed.
+>>>>>>         e = Exception(u'f\xf6\xf6')
+>>>>>>         self.assertRaises(UnicodeEncodeError, str, e)
+>>>>>>         self.assertEqual(unicode(e), u'f\xf6\xf6')
+       
+    1:     def test_1_arg_with_overridden___str__(self):
+               """Check same msg for exceptions with overridden __str__ and 1 arg"""
+               # when __str__ is overridden and __unicode__ is not implemented
+               # unicode(e) returns the same as unicode(e.__str__()).
+>>>>>>         for msg in ('foo', u'foo'):
+>>>>>>             self.check_same_msg(ExcWithOverriddenStr('arg', msg=msg), msg)
+       
+               # if __str__ returns a non-ascii unicode string, str() should fail
+               # but unicode() should succeed.
+>>>>>>         e = ExcWithOverriddenStr('arg', msg=u'f\xf6\xf6') # 1 arg
+>>>>>>         self.assertRaises(UnicodeEncodeError, str, e)
+>>>>>>         self.assertEqual(unicode(e), u'f\xf6\xf6')
+       
+    1:     def test_many_args(self):
+               """Check same msg for Exceptions with many args"""
+               argslist = [
+>>>>>>             (3, 'foo'),
+>>>>>>             (1, u'foo', 'bar'),
+>>>>>>             (4, u'f\xf6\xf6', u'bar', 'baz')
+               ]
+               # both str() and unicode() should return a repr() of the args
+>>>>>>         for args in argslist:
+>>>>>>             self.check_same_msg(Exception(*args), repr(args))
+       
+    1:     def test_many_args_with_overridden___str__(self):
+               """Check same msg for exceptions with overridden __str__ and many args"""
+               # if __str__ returns an ascii string / ascii unicode string
+               # both str() and unicode() should succeed
+>>>>>>         for msg in ('foo', u'foo'):
+>>>>>>             e = ExcWithOverriddenStr('arg1', u'arg2', u'f\xf6\xf6', msg=msg)
+>>>>>>             self.check_same_msg(e, msg)
+       
+               # if __str__ returns a non-ascii unicode string, str() should fail
+               # but unicode() should succeed
+>>>>>>         e = ExcWithOverriddenStr('arg1', u'f\xf6\xf6', u'arg3', # 3 args
+>>>>>>                                  msg=u'f\xf6\xf6')
+>>>>>>         self.assertRaises(UnicodeEncodeError, str, e)
+>>>>>>         self.assertEqual(unicode(e), u'f\xf6\xf6')
+       
+    1:     @cpython_only
+           def test_exception_with_doc(self):
+>>>>>>         import _testcapi
+>>>>>>         doc2 = "This is a test docstring."
+>>>>>>         doc4 = "This is another test docstring."
+       
+>>>>>>         self.assertRaises(SystemError, _testcapi.make_exception_with_doc,
+>>>>>>                           "error1")
+       
+               # test basic usage of PyErr_NewException
+>>>>>>         error1 = _testcapi.make_exception_with_doc("_testcapi.error1")
+>>>>>>         self.assertIs(type(error1), type)
+>>>>>>         self.assertTrue(issubclass(error1, Exception))
+>>>>>>         self.assertIsNone(error1.__doc__)
+       
+               # test with given docstring
+>>>>>>         error2 = _testcapi.make_exception_with_doc("_testcapi.error2", doc2)
+>>>>>>         self.assertEqual(error2.__doc__, doc2)
+       
+               # test with explicit base (without docstring)
+>>>>>>         error3 = _testcapi.make_exception_with_doc("_testcapi.error3",
+>>>>>>                                                    base=error2)
+>>>>>>         self.assertTrue(issubclass(error3, error2))
+       
+               # test with explicit base tuple
+>>>>>>         class C(object):
+>>>>>>             pass
+>>>>>>         error4 = _testcapi.make_exception_with_doc("_testcapi.error4", doc4,
+>>>>>>                                                    (error3, C))
+>>>>>>         self.assertTrue(issubclass(error4, error3))
+>>>>>>         self.assertTrue(issubclass(error4, C))
+>>>>>>         self.assertEqual(error4.__doc__, doc4)
+       
+               # test with explicit dictionary
+>>>>>>         error5 = _testcapi.make_exception_with_doc("_testcapi.error5", "",
+>>>>>>                                                    error4, {'a': 1})
+>>>>>>         self.assertTrue(issubclass(error5, error4))
+>>>>>>         self.assertEqual(error5.a, 1)
+>>>>>>         self.assertEqual(error5.__doc__, "")
+       
+    1:     def test_unraisable(self):
+               # Issue #22836: PyErr_WriteUnraisable() should give sensible reports
+>>>>>>         class BrokenDel:
+>>>>>>             def __del__(self):
+>>>>>>                 exc = ValueError("del is broken")
+                       # In Python 3, the following line would be in the report:
+>>>>>>                 raise exc
+       
+>>>>>>         class BrokenRepr(BrokenDel):
+>>>>>>             def __repr__(self):
+>>>>>>                 raise AttributeError("repr() is broken")
+       
+>>>>>>         class BrokenExceptionDel:
+>>>>>>             def __del__(self):
+>>>>>>                 exc = BrokenStrException()
+                       # In Python 3, the following line would be in the report:
+>>>>>>                 raise exc
+       
+>>>>>>         for test_class in (BrokenDel, BrokenRepr, BrokenExceptionDel):
+>>>>>>             obj = test_class()
+>>>>>>             with captured_stderr() as stderr:
+>>>>>>                 del obj
+>>>>>>             report = stderr.getvalue()
+>>>>>>             self.assertRegexpMatches(report, "Exception.* ignored")
+>>>>>>             if test_class is BrokenRepr:
+>>>>>>                 self.assertIn("<object repr() failed>", report)
+                   else:
+>>>>>>                 self.assertIn("__del__", report)
+>>>>>>             if test_class is BrokenExceptionDel:
+>>>>>>                 self.assertIn("BrokenStrException", report)
+>>>>>>                 self.assertIn("<exception repr() failed>", report)
+                   else:
+>>>>>>                 self.assertIn("ValueError", report)
+>>>>>>                 self.assertIn("del is broken", report)
+>>>>>>             self.assertTrue(report.endswith("\n"))
+       
+    1:     def test_unhandled(self):
+               # Check for sensible reporting of unhandled exceptions
+>>>>>>         for exc_type in (ValueError, BrokenStrException):
+>>>>>>             try:
+>>>>>>                 exc = exc_type("test message")
+                       # The following line is included in the traceback report:
+>>>>>>                 raise exc
+>>>>>>             except exc_type:
+>>>>>>                 with captured_stderr() as stderr:
+>>>>>>                     sys.__excepthook__(*sys.exc_info())
+>>>>>>             report = stderr.getvalue()
+>>>>>>             self.assertIn("test_exceptions.py", report)
+>>>>>>             self.assertIn("raise exc", report)
+>>>>>>             self.assertIn(exc_type.__name__, report)
+>>>>>>             if exc_type is BrokenStrException:
+>>>>>>                 self.assertIn("<exception str() failed>", report)
+                   else:
+>>>>>>                 self.assertIn("test message", report)
+>>>>>>             self.assertTrue(report.endswith("\n"))
+       
+       
+    1: def test_main():
+    1:     run_unittest(ExceptionTests, TestSameStrAndUnicodeMsg)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

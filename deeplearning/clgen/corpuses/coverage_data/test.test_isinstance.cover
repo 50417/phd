@@ -1,0 +1,277 @@
+       # Tests some corner cases with isinstance() and issubclass().  While these
+       # tests use new style classes and properties, they actually do whitebox
+       # testing of error conditions uncovered when using extension types.
+       
+    1: import unittest
+    1: from test import test_support
+    1: import sys
+       
+       
+       
+    2: class TestIsInstanceExceptions(unittest.TestCase):
+           # Test to make sure that an AttributeError when accessing the instance's
+           # class's bases is masked.  This was actually a bug in Python 2.2 and
+           # 2.2.1 where the exception wasn't caught but it also wasn't being cleared
+           # (leading to an "undetected error" in the debug build).  Set up is,
+           # isinstance(inst, cls) where:
+           #
+           # - inst isn't an InstanceType
+           # - cls isn't a ClassType, a TypeType, or a TupleType
+           # - cls has a __bases__ attribute
+           # - inst has a __class__ attribute
+           # - inst.__class__ as no __bases__ attribute
+           #
+           # Sounds complicated, I know, but this mimics a situation where an
+           # extension type raises an AttributeError when its __bases__ attribute is
+           # gotten.  In that case, isinstance() should return False.
+    1:     def test_class_has_no_bases(self):
+    2:         class I(object):
+    1:             def getclass(self):
+                       # This must return an object that has no __bases__ attribute
+    1:                 return None
+    1:             __class__ = property(getclass)
+       
+    2:         class C(object):
+    1:             def getbases(self):
+    1:                 return ()
+    1:             __bases__ = property(getbases)
+       
+    1:         self.assertEqual(False, isinstance(I(), C()))
+       
+           # Like above except that inst.__class__.__bases__ raises an exception
+           # other than AttributeError
+    1:     def test_bases_raises_other_than_attribute_error(self):
+    2:         class E(object):
+    1:             def getbases(self):
+    1:                 raise RuntimeError
+    1:             __bases__ = property(getbases)
+       
+    2:         class I(object):
+    1:             def getclass(self):
+    1:                 return E()
+    1:             __class__ = property(getclass)
+       
+    2:         class C(object):
+    1:             def getbases(self):
+    1:                 return ()
+    1:             __bases__ = property(getbases)
+       
+    1:         self.assertRaises(RuntimeError, isinstance, I(), C())
+       
+           # Here's a situation where getattr(cls, '__bases__') raises an exception.
+           # If that exception is not AttributeError, it should not get masked
+    1:     def test_dont_mask_non_attribute_error(self):
+    2:         class I: pass
+       
+    2:         class C(object):
+    1:             def getbases(self):
+    1:                 raise RuntimeError
+    1:             __bases__ = property(getbases)
+       
+    1:         self.assertRaises(RuntimeError, isinstance, I(), C())
+       
+           # Like above, except that getattr(cls, '__bases__') raises an
+           # AttributeError, which /should/ get masked as a TypeError
+    1:     def test_mask_attribute_error(self):
+    2:         class I: pass
+       
+    2:         class C(object):
+    1:             def getbases(self):
+    1:                 raise AttributeError
+    1:             __bases__ = property(getbases)
+       
+    1:         self.assertRaises(TypeError, isinstance, I(), C())
+       
+       
+       
+       # These tests are similar to above, but tickle certain code paths in
+       # issubclass() instead of isinstance() -- really PyObject_IsSubclass()
+       # vs. PyObject_IsInstance().
+    2: class TestIsSubclassExceptions(unittest.TestCase):
+    1:     def test_dont_mask_non_attribute_error(self):
+    2:         class C(object):
+    1:             def getbases(self):
+    1:                 raise RuntimeError
+    1:             __bases__ = property(getbases)
+       
+    2:         class S(C): pass
+       
+    1:         self.assertRaises(RuntimeError, issubclass, C(), S())
+       
+    1:     def test_mask_attribute_error(self):
+    2:         class C(object):
+    1:             def getbases(self):
+    1:                 raise AttributeError
+    1:             __bases__ = property(getbases)
+       
+    2:         class S(C): pass
+       
+    1:         self.assertRaises(TypeError, issubclass, C(), S())
+       
+           # Like above, but test the second branch, where the __bases__ of the
+           # second arg (the cls arg) is tested.  This means the first arg must
+           # return a valid __bases__, and it's okay for it to be a normal --
+           # unrelated by inheritance -- class.
+    1:     def test_dont_mask_non_attribute_error_in_cls_arg(self):
+    2:         class B: pass
+       
+    2:         class C(object):
+    1:             def getbases(self):
+    1:                 raise RuntimeError
+    1:             __bases__ = property(getbases)
+       
+    1:         self.assertRaises(RuntimeError, issubclass, B, C())
+       
+    1:     def test_mask_attribute_error_in_cls_arg(self):
+    2:         class B: pass
+       
+    2:         class C(object):
+    1:             def getbases(self):
+    1:                 raise AttributeError
+    1:             __bases__ = property(getbases)
+       
+    1:         self.assertRaises(TypeError, issubclass, B, C())
+       
+       
+       
+       # meta classes for creating abstract classes and instances
+    2: class AbstractClass(object):
+    1:     def __init__(self, bases):
+    2:         self.bases = bases
+       
+    1:     def getbases(self):
+   35:         return self.bases
+    1:     __bases__ = property(getbases)
+       
+    1:     def __call__(self):
+    8:         return AbstractInstance(self)
+       
+    2: class AbstractInstance(object):
+    1:     def __init__(self, klass):
+    8:         self.klass = klass
+       
+    1:     def getclass(self):
+    8:         return self.klass
+    1:     __class__ = property(getclass)
+       
+       # abstract classes
+    1: AbstractSuper = AbstractClass(bases=())
+       
+    1: AbstractChild = AbstractClass(bases=(AbstractSuper,))
+       
+       # normal classes
+    2: class Super:
+    1:     pass
+       
+    2: class Child(Super):
+    1:     pass
+       
+       # new-style classes
+    2: class NewSuper(object):
+    1:     pass
+       
+    2: class NewChild(NewSuper):
+    1:     pass
+       
+       
+       
+    2: class TestIsInstanceIsSubclass(unittest.TestCase):
+           # Tests to ensure that isinstance and issubclass work on abstract
+           # classes and instances.  Before the 2.2 release, TypeErrors were
+           # raised when boolean values should have been returned.  The bug was
+           # triggered by mixing 'normal' classes and instances were with
+           # 'abstract' classes and instances.  This case tries to test all
+           # combinations.
+       
+    1:     def test_isinstance_normal(self):
+               # normal instances
+    1:         self.assertEqual(True, isinstance(Super(), Super))
+    1:         self.assertEqual(False, isinstance(Super(), Child))
+    1:         self.assertEqual(False, isinstance(Super(), AbstractSuper))
+    1:         self.assertEqual(False, isinstance(Super(), AbstractChild))
+       
+    1:         self.assertEqual(True, isinstance(Child(), Super))
+    1:         self.assertEqual(False, isinstance(Child(), AbstractSuper))
+       
+    1:     def test_isinstance_abstract(self):
+               # abstract instances
+    1:         self.assertEqual(True, isinstance(AbstractSuper(), AbstractSuper))
+    1:         self.assertEqual(False, isinstance(AbstractSuper(), AbstractChild))
+    1:         self.assertEqual(False, isinstance(AbstractSuper(), Super))
+    1:         self.assertEqual(False, isinstance(AbstractSuper(), Child))
+       
+    1:         self.assertEqual(True, isinstance(AbstractChild(), AbstractChild))
+    1:         self.assertEqual(True, isinstance(AbstractChild(), AbstractSuper))
+    1:         self.assertEqual(False, isinstance(AbstractChild(), Super))
+    1:         self.assertEqual(False, isinstance(AbstractChild(), Child))
+       
+    1:     def test_subclass_normal(self):
+               # normal classes
+    1:         self.assertEqual(True, issubclass(Super, Super))
+    1:         self.assertEqual(False, issubclass(Super, AbstractSuper))
+    1:         self.assertEqual(False, issubclass(Super, Child))
+       
+    1:         self.assertEqual(True, issubclass(Child, Child))
+    1:         self.assertEqual(True, issubclass(Child, Super))
+    1:         self.assertEqual(False, issubclass(Child, AbstractSuper))
+       
+    1:     def test_subclass_abstract(self):
+               # abstract classes
+    1:         self.assertEqual(True, issubclass(AbstractSuper, AbstractSuper))
+    1:         self.assertEqual(False, issubclass(AbstractSuper, AbstractChild))
+    1:         self.assertEqual(False, issubclass(AbstractSuper, Child))
+       
+    1:         self.assertEqual(True, issubclass(AbstractChild, AbstractChild))
+    1:         self.assertEqual(True, issubclass(AbstractChild, AbstractSuper))
+    1:         self.assertEqual(False, issubclass(AbstractChild, Super))
+    1:         self.assertEqual(False, issubclass(AbstractChild, Child))
+       
+    1:     def test_subclass_tuple(self):
+               # test with a tuple as the second argument classes
+    1:         self.assertEqual(True, issubclass(Child, (Child,)))
+    1:         self.assertEqual(True, issubclass(Child, (Super,)))
+    1:         self.assertEqual(False, issubclass(Super, (Child,)))
+    1:         self.assertEqual(True, issubclass(Super, (Child, Super)))
+    1:         self.assertEqual(False, issubclass(Child, ()))
+    1:         self.assertEqual(True, issubclass(Super, (Child, (Super,))))
+       
+    1:         self.assertEqual(True, issubclass(NewChild, (NewChild,)))
+    1:         self.assertEqual(True, issubclass(NewChild, (NewSuper,)))
+    1:         self.assertEqual(False, issubclass(NewSuper, (NewChild,)))
+    1:         self.assertEqual(True, issubclass(NewSuper, (NewChild, NewSuper)))
+    1:         self.assertEqual(False, issubclass(NewChild, ()))
+    1:         self.assertEqual(True, issubclass(NewSuper, (NewChild, (NewSuper,))))
+       
+    1:         self.assertEqual(True, issubclass(int, (long, (float, int))))
+    1:         if test_support.have_unicode:
+    1:             self.assertEqual(True, issubclass(str, (unicode, (Child, NewChild, basestring))))
+       
+    1:     def test_subclass_recursion_limit(self):
+               # make sure that issubclass raises RuntimeError before the C stack is
+               # blown
+    1:         self.assertRaises(RuntimeError, blowstack, issubclass, str, str)
+       
+    1:     def test_isinstance_recursion_limit(self):
+               # make sure that issubclass raises RuntimeError before the C stack is
+               # blown
+    1:         self.assertRaises(RuntimeError, blowstack, isinstance, '', str)
+       
+    1: def blowstack(fxn, arg, compare_to):
+           # Make sure that calling isinstance with a deeply nested tuple for its
+           # argument will raise RuntimeError eventually.
+    2:     tuple_arg = (compare_to,)
+ 1924:     for cnt in xrange(sys.getrecursionlimit()+5):
+ 1924:         tuple_arg = (tuple_arg,)
+ 1924:         fxn(arg, tuple_arg)
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(
+    1:         TestIsInstanceExceptions,
+    1:         TestIsSubclassExceptions,
+    1:         TestIsInstanceIsSubclass
+           )
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

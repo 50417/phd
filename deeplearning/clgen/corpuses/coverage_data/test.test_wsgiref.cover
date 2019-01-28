@@ -1,0 +1,571 @@
+    1: from unittest import TestCase
+    1: from wsgiref.util import setup_testing_defaults
+    1: from wsgiref.headers import Headers
+    1: from wsgiref.handlers import BaseHandler, BaseCGIHandler
+    1: from wsgiref import util
+    1: from wsgiref.validate import validator
+    1: from wsgiref.simple_server import WSGIServer, WSGIRequestHandler
+    1: from wsgiref.simple_server import make_server
+    1: from StringIO import StringIO
+    1: from SocketServer import BaseServer
+       
+    1: import os
+    1: import re
+    1: import sys
+       
+    1: from test import test_support
+       
+    2: class MockServer(WSGIServer):
+    1:     """Non-socket HTTP server"""
+       
+    1:     def __init__(self, server_address, RequestHandlerClass):
+    4:         BaseServer.__init__(self, server_address, RequestHandlerClass)
+    4:         self.server_bind()
+       
+    1:     def server_bind(self):
+    4:         host, port = self.server_address
+    4:         self.server_name = host
+    4:         self.server_port = port
+    4:         self.setup_environ()
+       
+       
+    2: class MockHandler(WSGIRequestHandler):
+    1:     """Non-socket HTTP handler"""
+    1:     def setup(self):
+    4:         self.connection = self.request
+    4:         self.rfile, self.wfile = self.connection
+       
+    1:     def finish(self):
+    4:         pass
+       
+       
+    1: def hello_app(environ,start_response):
+    2:     start_response("200 OK", [
+    2:         ('Content-Type','text/plain'),
+    2:         ('Date','Mon, 05 Jun 2006 18:49:54 GMT')
+           ])
+    2:     return ["Hello, world!"]
+       
+    1: def run_amock(app=hello_app, data="GET / HTTP/1.0\n\n"):
+    4:     server = make_server("", 80, app, MockServer, MockHandler)
+    4:     inp, out, err, olderr = StringIO(data), StringIO(), StringIO(), sys.stderr
+    4:     sys.stderr = err
+       
+    4:     try:
+    4:         server.finish_request((inp,out), ("127.0.0.1",8888))
+           finally:
+    4:         sys.stderr = olderr
+       
+    4:     return out.getvalue(), err.getvalue()
+       
+       
+    1: def compare_generic_iter(make_it,match):
+           """Utility to compare a generic 2.1/2.2+ iterator with an iterable
+       
+           If running under Python 2.2+, this tests the iterator using iter()/next(),
+           as well as __getitem__.  'make_it' must be a function returning a fresh
+           iterator to be tested (since this may test the iterator twice)."""
+       
+    1:     it = make_it()
+    1:     n = 0
+    3:     for item in match:
+    2:         if not it[n]==item: raise AssertionError
+    2:         n+=1
+    1:     try:
+    1:         it[n]
+    1:     except IndexError:
+    1:         pass
+           else:
+>>>>>>         raise AssertionError("Too many items from __getitem__",it)
+       
+    1:     try:
+    1:         iter, StopIteration
+>>>>>>     except NameError:
+>>>>>>         pass
+           else:
+               # Only test iter mode under 2.2+
+    1:         it = make_it()
+    1:         if not iter(it) is it: raise AssertionError
+    3:         for item in match:
+    2:             if not it.next()==item: raise AssertionError
+    1:         try:
+    1:             it.next()
+    1:         except StopIteration:
+    1:             pass
+               else:
+>>>>>>             raise AssertionError("Too many items from .next()",it)
+       
+       
+    2: class IntegrationTests(TestCase):
+       
+    1:     def check_hello(self, out, has_length=True):
+    2:         self.assertEqual(out,
+                   "HTTP/1.0 200 OK\r\n"
+                   "Server: WSGIServer/0.1 Python/"+sys.version.split()[0]+"\r\n"
+                   "Content-Type: text/plain\r\n"
+                   "Date: Mon, 05 Jun 2006 18:49:54 GMT\r\n" +
+    2:             (has_length and  "Content-Length: 13\r\n" or "") +
+    2:             "\r\n"
+                   "Hello, world!"
+               )
+       
+    1:     def test_plain_hello(self):
+    1:         out, err = run_amock()
+    1:         self.check_hello(out)
+       
+    1:     def test_request_length(self):
+    1:         out, err = run_amock(data="GET " + ("x" * 65537) + " HTTP/1.0\n\n")
+    1:         self.assertEqual(out.splitlines()[0],
+    1:                          "HTTP/1.0 414 Request-URI Too Long")
+       
+    1:     def test_validated_hello(self):
+    1:         out, err = run_amock(validator(hello_app))
+               # the middleware doesn't support len(), so content-length isn't there
+    1:         self.check_hello(out, has_length=False)
+       
+    1:     def test_simple_validation_error(self):
+    1:         def bad_app(environ,start_response):
+    1:             start_response("200 OK", ('Content-Type','text/plain'))
+>>>>>>             return ["Hello, world!"]
+    1:         out, err = run_amock(validator(bad_app))
+    1:         self.assertTrue(out.endswith(
+    1:             "A server error occurred.  Please contact the administrator."
+               ))
+    1:         self.assertEqual(
+    1:             err.splitlines()[-2],
+    1:             "AssertionError: Headers (('Content-Type', 'text/plain')) must"
+                   " be of type list: <type 'tuple'>"
+               )
+       
+       
+    2: class UtilityTests(TestCase):
+       
+    1:     def checkShift(self,sn_in,pi_in,part,sn_out,pi_out):
+   16:         env = {'SCRIPT_NAME':sn_in,'PATH_INFO':pi_in}
+   16:         util.setup_testing_defaults(env)
+   16:         self.assertEqual(util.shift_path_info(env),part)
+   16:         self.assertEqual(env['PATH_INFO'],pi_out)
+   16:         self.assertEqual(env['SCRIPT_NAME'],sn_out)
+   16:         return env
+       
+    1:     def checkDefault(self, key, value, alt=None):
+               # Check defaulting when empty
+   14:         env = {}
+   14:         util.setup_testing_defaults(env)
+   14:         if isinstance(value, StringIO):
+    2:             self.assertIsInstance(env[key], StringIO)
+               else:
+   12:             self.assertEqual(env[key], value)
+       
+               # Check existing value
+   14:         env = {key:alt}
+   14:         util.setup_testing_defaults(env)
+   14:         self.assertIs(env[key], alt)
+       
+    1:     def checkCrossDefault(self,key,value,**kw):
+    7:         util.setup_testing_defaults(kw)
+    7:         self.assertEqual(kw[key],value)
+       
+    1:     def checkAppURI(self,uri,**kw):
+    8:         util.setup_testing_defaults(kw)
+    8:         self.assertEqual(util.application_uri(kw),uri)
+       
+    1:     def checkReqURI(self,uri,query=1,**kw):
+   10:         util.setup_testing_defaults(kw)
+   10:         self.assertEqual(util.request_uri(kw,query),uri)
+       
+    1:     def checkFW(self,text,size,match):
+       
+    1:         def make_it(text=text,size=size):
+    3:             return util.FileWrapper(StringIO(text),size)
+       
+    1:         compare_generic_iter(make_it,match)
+       
+    1:         it = make_it()
+    1:         self.assertFalse(it.filelike.closed)
+       
+    3:         for item in it:
+    2:             pass
+       
+    1:         self.assertFalse(it.filelike.closed)
+       
+    1:         it.close()
+    1:         self.assertTrue(it.filelike.closed)
+       
+    1:     def testSimpleShifts(self):
+    1:         self.checkShift('','/', '', '/', '')
+    1:         self.checkShift('','/x', 'x', '/x', '')
+    1:         self.checkShift('/','', None, '/', '')
+    1:         self.checkShift('/a','/x/y', 'x', '/a/x', '/y')
+    1:         self.checkShift('/a','/x/',  'x', '/a/x', '/')
+       
+    1:     def testNormalizedShifts(self):
+    1:         self.checkShift('/a/b', '/../y', '..', '/a', '/y')
+    1:         self.checkShift('', '/../y', '..', '', '/y')
+    1:         self.checkShift('/a/b', '//y', 'y', '/a/b/y', '')
+    1:         self.checkShift('/a/b', '//y/', 'y', '/a/b/y', '/')
+    1:         self.checkShift('/a/b', '/./y', 'y', '/a/b/y', '')
+    1:         self.checkShift('/a/b', '/./y/', 'y', '/a/b/y', '/')
+    1:         self.checkShift('/a/b', '///./..//y/.//', '..', '/a', '/y/')
+    1:         self.checkShift('/a/b', '///', '', '/a/b/', '')
+    1:         self.checkShift('/a/b', '/.//', '', '/a/b/', '')
+    1:         self.checkShift('/a/b', '/x//', 'x', '/a/b/x', '/')
+    1:         self.checkShift('/a/b', '/.', None, '/a/b', '')
+       
+    1:     def testDefaults(self):
+    1:         for key, value in [
+    1:             ('SERVER_NAME','127.0.0.1'),
+    1:             ('SERVER_PORT', '80'),
+    1:             ('SERVER_PROTOCOL','HTTP/1.0'),
+    1:             ('HTTP_HOST','127.0.0.1'),
+    1:             ('REQUEST_METHOD','GET'),
+    1:             ('SCRIPT_NAME',''),
+    1:             ('PATH_INFO','/'),
+    1:             ('wsgi.version', (1,0)),
+    1:             ('wsgi.run_once', 0),
+    1:             ('wsgi.multithread', 0),
+    1:             ('wsgi.multiprocess', 0),
+    1:             ('wsgi.input', StringIO("")),
+    1:             ('wsgi.errors', StringIO()),
+   15:             ('wsgi.url_scheme','http'),
+               ]:
+   14:             self.checkDefault(key,value)
+       
+    1:     def testCrossDefaults(self):
+    1:         self.checkCrossDefault('HTTP_HOST',"foo.bar",SERVER_NAME="foo.bar")
+    1:         self.checkCrossDefault('wsgi.url_scheme',"https",HTTPS="on")
+    1:         self.checkCrossDefault('wsgi.url_scheme',"https",HTTPS="1")
+    1:         self.checkCrossDefault('wsgi.url_scheme',"https",HTTPS="yes")
+    1:         self.checkCrossDefault('wsgi.url_scheme',"http",HTTPS="foo")
+    1:         self.checkCrossDefault('SERVER_PORT',"80",HTTPS="foo")
+    1:         self.checkCrossDefault('SERVER_PORT',"443",HTTPS="on")
+       
+    1:     def testGuessScheme(self):
+    1:         self.assertEqual(util.guess_scheme({}), "http")
+    1:         self.assertEqual(util.guess_scheme({'HTTPS':"foo"}), "http")
+    1:         self.assertEqual(util.guess_scheme({'HTTPS':"on"}), "https")
+    1:         self.assertEqual(util.guess_scheme({'HTTPS':"yes"}), "https")
+    1:         self.assertEqual(util.guess_scheme({'HTTPS':"1"}), "https")
+       
+    1:     def testAppURIs(self):
+    1:         self.checkAppURI("http://127.0.0.1/")
+    1:         self.checkAppURI("http://127.0.0.1/spam", SCRIPT_NAME="/spam")
+    1:         self.checkAppURI("http://127.0.0.1/sp%E4m", SCRIPT_NAME="/sp\xe4m")
+    1:         self.checkAppURI("http://spam.example.com:2071/",
+    1:             HTTP_HOST="spam.example.com:2071", SERVER_PORT="2071")
+    1:         self.checkAppURI("http://spam.example.com/",
+    1:             SERVER_NAME="spam.example.com")
+    1:         self.checkAppURI("http://127.0.0.1/",
+    1:             HTTP_HOST="127.0.0.1", SERVER_NAME="spam.example.com")
+    1:         self.checkAppURI("https://127.0.0.1/", HTTPS="on")
+    1:         self.checkAppURI("http://127.0.0.1:8000/", SERVER_PORT="8000",
+    1:             HTTP_HOST=None)
+       
+    1:     def testReqURIs(self):
+    1:         self.checkReqURI("http://127.0.0.1/")
+    1:         self.checkReqURI("http://127.0.0.1/spam", SCRIPT_NAME="/spam")
+    1:         self.checkReqURI("http://127.0.0.1/sp%E4m", SCRIPT_NAME="/sp\xe4m")
+    1:         self.checkReqURI("http://127.0.0.1/spammity/spam",
+    1:             SCRIPT_NAME="/spammity", PATH_INFO="/spam")
+    1:         self.checkReqURI("http://127.0.0.1/spammity/sp%E4m",
+    1:             SCRIPT_NAME="/spammity", PATH_INFO="/sp\xe4m")
+    1:         self.checkReqURI("http://127.0.0.1/spammity/spam;ham",
+    1:             SCRIPT_NAME="/spammity", PATH_INFO="/spam;ham")
+    1:         self.checkReqURI("http://127.0.0.1/spammity/spam;cookie=1234,5678",
+    1:             SCRIPT_NAME="/spammity", PATH_INFO="/spam;cookie=1234,5678")
+    1:         self.checkReqURI("http://127.0.0.1/spammity/spam?say=ni",
+    1:             SCRIPT_NAME="/spammity", PATH_INFO="/spam",QUERY_STRING="say=ni")
+    1:         self.checkReqURI("http://127.0.0.1/spammity/spam?s%E4y=ni",
+    1:             SCRIPT_NAME="/spammity", PATH_INFO="/spam",QUERY_STRING="s%E4y=ni")
+    1:         self.checkReqURI("http://127.0.0.1/spammity/spam", 0,
+    1:             SCRIPT_NAME="/spammity", PATH_INFO="/spam",QUERY_STRING="say=ni")
+       
+    1:     def testFileWrapper(self):
+    1:         self.checkFW("xyz"*50, 120, ["xyz"*40,"xyz"*10])
+       
+    1:     def testHopByHop(self):
+    1:         for hop in (
+    9:             "Connection Keep-Alive Proxy-Authenticate Proxy-Authorization "
+                   "TE Trailers Transfer-Encoding Upgrade"
+               ).split():
+   40:             for alt in hop, hop.title(), hop.upper(), hop.lower():
+   32:                 self.assertTrue(util.is_hop_by_hop(alt))
+       
+               # Not comprehensive, just a few random header names
+    1:         for hop in (
+    8:             "Accept Cache-Control Date Pragma Trailer Via Warning"
+               ).split():
+   35:             for alt in hop, hop.title(), hop.upper(), hop.lower():
+   28:                 self.assertFalse(util.is_hop_by_hop(alt))
+       
+    2: class HeaderTests(TestCase):
+       
+    1:     def testMappingInterface(self):
+    1:         test = [('x','y')]
+    1:         self.assertEqual(len(Headers([])),0)
+    1:         self.assertEqual(len(Headers(test[:])),1)
+    1:         self.assertEqual(Headers(test[:]).keys(), ['x'])
+    1:         self.assertEqual(Headers(test[:]).values(), ['y'])
+    1:         self.assertEqual(Headers(test[:]).items(), test)
+    1:         self.assertIsNot(Headers(test).items(), test)  # must be copy!
+       
+    1:         h=Headers([])
+    1:         del h['foo']   # should not raise an error
+       
+    1:         h['Foo'] = 'bar'
+    6:         for m in h.has_key, h.__contains__, h.get, h.get_all, h.__getitem__:
+    5:             self.assertTrue(m('foo'))
+    5:             self.assertTrue(m('Foo'))
+    5:             self.assertTrue(m('FOO'))
+    5:             self.assertFalse(m('bar'))
+       
+    1:         self.assertEqual(h['foo'],'bar')
+    1:         h['foo'] = 'baz'
+    1:         self.assertEqual(h['FOO'],'baz')
+    1:         self.assertEqual(h.get_all('foo'),['baz'])
+       
+    1:         self.assertEqual(h.get("foo","whee"), "baz")
+    1:         self.assertEqual(h.get("zoo","whee"), "whee")
+    1:         self.assertEqual(h.setdefault("foo","whee"), "baz")
+    1:         self.assertEqual(h.setdefault("zoo","whee"), "whee")
+    1:         self.assertEqual(h["foo"],"baz")
+    1:         self.assertEqual(h["zoo"],"whee")
+       
+    1:     def testRequireList(self):
+    1:         self.assertRaises(TypeError, Headers, "foo")
+       
+       
+    1:     def testExtras(self):
+    1:         h = Headers([])
+    1:         self.assertEqual(str(h),'\r\n')
+       
+    1:         h.add_header('foo','bar',baz="spam")
+    1:         self.assertEqual(h['foo'], 'bar; baz="spam"')
+    1:         self.assertEqual(str(h),'foo: bar; baz="spam"\r\n\r\n')
+       
+    1:         h.add_header('Foo','bar',cheese=None)
+    1:         self.assertEqual(h.get_all('foo'),
+    1:             ['bar; baz="spam"', 'bar; cheese'])
+       
+    1:         self.assertEqual(str(h),
+    1:             'foo: bar; baz="spam"\r\n'
+                   'Foo: bar; cheese\r\n'
+                   '\r\n'
+               )
+       
+       
+    2: class ErrorHandler(BaseCGIHandler):
+    1:     """Simple handler subclass for testing BaseHandler"""
+       
+           # BaseHandler records the OS environment at import time, but envvars
+           # might have been changed later by other tests, which trips up
+           # HandlerTests.testEnviron().
+    1:     os_environ = dict(os.environ.items())
+       
+    1:     def __init__(self,**kw):
+   34:         setup_testing_defaults(kw)
+   34:         BaseCGIHandler.__init__(
+   34:             self, StringIO(''), StringIO(), StringIO(), kw,
+   34:             multithread=True, multiprocess=True
+               )
+       
+    2: class TestHandler(ErrorHandler):
+    1:     """Simple handler subclass for testing BaseHandler, w/error passthru"""
+       
+    1:     def handle_error(self):
+>>>>>>         raise   # for testing, we want to see what's happening
+       
+       
+    2: class HandlerTests(TestCase):
+       
+    1:     def checkEnvironAttrs(self, handler):
+    1:         env = handler.environ
+    1:         for attr in [
+    6:             'version','multithread','multiprocess','run_once','file_wrapper'
+               ]:
+    5:             if attr=='file_wrapper' and handler.wsgi_file_wrapper is None:
+>>>>>>                 continue
+    5:             self.assertEqual(getattr(handler,'wsgi_'+attr),env['wsgi.'+attr])
+       
+    1:     def checkOSEnviron(self,handler):
+    1:         empty = {}; setup_testing_defaults(empty)
+    1:         env = handler.environ
+    1:         from os import environ
+   23:         for k,v in environ.items():
+   22:             if k not in empty:
+   22:                 self.assertEqual(env[k],v)
+   15:         for k,v in empty.items():
+   14:             self.assertIn(k, env)
+       
+    1:     def testEnviron(self):
+    1:         h = TestHandler(X="Y")
+    1:         h.setup_environ()
+    1:         self.checkEnvironAttrs(h)
+    1:         self.checkOSEnviron(h)
+    1:         self.assertEqual(h.environ["X"],"Y")
+       
+    1:     def testCGIEnviron(self):
+    1:         h = BaseCGIHandler(None,None,None,{})
+    1:         h.setup_environ()
+    4:         for key in 'wsgi.url_scheme', 'wsgi.input', 'wsgi.errors':
+    3:             self.assertIn(key, h.environ)
+       
+    1:     def testScheme(self):
+    1:         h=TestHandler(HTTPS="on"); h.setup_environ()
+    1:         self.assertEqual(h.environ['wsgi.url_scheme'],'https')
+    1:         h=TestHandler(); h.setup_environ()
+    1:         self.assertEqual(h.environ['wsgi.url_scheme'],'http')
+       
+    1:     def testAbstractMethods(self):
+    1:         h = BaseHandler()
+    1:         for name in [
+    5:             '_flush','get_stdin','get_stderr','add_cgi_vars'
+               ]:
+    4:             self.assertRaises(NotImplementedError, getattr(h,name))
+    1:         self.assertRaises(NotImplementedError, h._write, "test")
+       
+    1:     def testContentLength(self):
+               # Demo one reason iteration is better than write()...  ;)
+       
+    1:         def trivial_app1(e,s):
+    1:             s('200 OK',[])
+    1:             return [e['wsgi.url_scheme']]
+       
+    1:         def trivial_app2(e,s):
+    1:             s('200 OK',[])(e['wsgi.url_scheme'])
+    1:             return []
+       
+    1:         def trivial_app4(e,s):
+                   # Simulate a response to a HEAD request
+    1:             s('200 OK',[('Content-Length', '12345')])
+    1:             return []
+       
+    1:         h = TestHandler()
+    1:         h.run(trivial_app1)
+    1:         self.assertEqual(h.stdout.getvalue(),
+    1:             "Status: 200 OK\r\n"
+                   "Content-Length: 4\r\n"
+                   "\r\n"
+                   "http")
+       
+    1:         h = TestHandler()
+    1:         h.run(trivial_app2)
+    1:         self.assertEqual(h.stdout.getvalue(),
+    1:             "Status: 200 OK\r\n"
+                   "\r\n"
+                   "http")
+       
+       
+    1:         h = TestHandler()
+    1:         h.run(trivial_app4)
+    1:         self.assertEqual(h.stdout.getvalue(),
+    1:             b'Status: 200 OK\r\n'
+                   b'Content-Length: 12345\r\n'
+                   b'\r\n')
+       
+    1:     def testBasicErrorOutput(self):
+       
+    1:         def non_error_app(e,s):
+    1:             s('200 OK',[])
+    1:             return []
+       
+    1:         def error_app(e,s):
+    1:             raise AssertionError("This should be caught by handler")
+       
+    1:         h = ErrorHandler()
+    1:         h.run(non_error_app)
+    1:         self.assertEqual(h.stdout.getvalue(),
+    1:             "Status: 200 OK\r\n"
+                   "Content-Length: 0\r\n"
+                   "\r\n")
+    1:         self.assertEqual(h.stderr.getvalue(),"")
+       
+    1:         h = ErrorHandler()
+    1:         h.run(error_app)
+    1:         self.assertEqual(h.stdout.getvalue(),
+    1:             "Status: %s\r\n"
+                   "Content-Type: text/plain\r\n"
+                   "Content-Length: %d\r\n"
+    1:             "\r\n%s" % (h.error_status,len(h.error_body),h.error_body))
+       
+    1:         self.assertNotEqual(h.stderr.getvalue().find("AssertionError"), -1)
+       
+    1:     def testErrorAfterOutput(self):
+    1:         MSG = "Some output has been sent"
+    1:         def error_app(e,s):
+    1:             s("200 OK",[])(MSG)
+    1:             raise AssertionError("This should be caught by handler")
+       
+    1:         h = ErrorHandler()
+    1:         h.run(error_app)
+    1:         self.assertEqual(h.stdout.getvalue(),
+    1:             "Status: 200 OK\r\n"
+    1:             "\r\n"+MSG)
+    1:         self.assertNotEqual(h.stderr.getvalue().find("AssertionError"), -1)
+       
+    1:     def testHeaderFormats(self):
+       
+    1:         def non_error_app(e,s):
+   24:             s('200 OK',[])
+   24:             return []
+       
+               stdpat = (
+    1:             r"HTTP/%s 200 OK\r\n"
+                   r"Date: \w{3}, [ 0123]\d \w{3} \d{4} \d\d:\d\d:\d\d GMT\r\n"
+                   r"%s" r"Content-Length: 0\r\n" r"\r\n"
+               )
+               shortpat = (
+    1:             "Status: 200 OK\r\n" "Content-Length: 0\r\n" "\r\n"
+               )
+       
+    3:         for ssw in "FooBar/1.0", None:
+    2:             sw = ssw and "Server: %s\r\n" % ssw or ""
+       
+    6:             for version in "1.0", "1.1":
+   16:                 for proto in "HTTP/0.9", "HTTP/1.0", "HTTP/1.1":
+       
+   12:                     h = TestHandler(SERVER_PROTOCOL=proto)
+   12:                     h.origin_server = False
+   12:                     h.http_version = version
+   12:                     h.server_software = ssw
+   12:                     h.run(non_error_app)
+   12:                     self.assertEqual(shortpat,h.stdout.getvalue())
+       
+   12:                     h = TestHandler(SERVER_PROTOCOL=proto)
+   12:                     h.origin_server = True
+   12:                     h.http_version = version
+   12:                     h.server_software = ssw
+   12:                     h.run(non_error_app)
+   12:                     if proto=="HTTP/0.9":
+    4:                         self.assertEqual(h.stdout.getvalue(),"")
+                           else:
+    8:                         self.assertTrue(
+    8:                             re.match(stdpat%(version,sw), h.stdout.getvalue()),
+    8:                             (stdpat%(version,sw), h.stdout.getvalue())
+                               )
+       
+    1:     def testCloseOnError(self):
+    1:         side_effects = {'close_called': False}
+    1:         MSG = b"Some output has been sent"
+    1:         def error_app(e,s):
+    1:             s("200 OK",[])(MSG)
+    2:             class CrashyIterable(object):
+    1:                 def __iter__(self):
+    1:                     while True:
+    1:                         yield b'blah'
+    1:                         raise AssertionError("This should be caught by handler")
+       
+    1:                 def close(self):
+    1:                     side_effects['close_called'] = True
+    1:             return CrashyIterable()
+       
+    1:         h = ErrorHandler()
+    1:         h.run(error_app)
+    1:         self.assertEqual(side_effects['close_called'], True)
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(__name__)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

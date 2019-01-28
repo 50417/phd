@@ -1,0 +1,172 @@
+       """Word completion for GNU readline.
+       
+       The completer completes keywords, built-ins and globals in a selectable
+       namespace (which defaults to __main__); when completing NAME.NAME..., it
+       evaluates (!) the expression up to the last dot and completes its attributes.
+       
+       It's very cool to do "import sys" type "sys.", hit the completion key (twice),
+       and see the list of names defined by the sys module!
+       
+       Tip: to use the tab key as the completion key, call
+       
+           readline.parse_and_bind("tab: complete")
+       
+       Notes:
+       
+       - Exceptions raised by the completer function are *ignored* (and generally cause
+         the completion to fail).  This is a feature -- since readline sets the tty
+         device in raw (or cbreak) mode, printing a traceback wouldn't work well
+         without some complicated hoopla to save, reset and restore the tty state.
+       
+       - The evaluation of the NAME.NAME... form may cause arbitrary application
+         defined code to be executed if an object with a __getattr__ hook is found.
+         Since it is the responsibility of the application (or the user) to enable this
+         feature, I consider this an acceptable risk.  More complicated expressions
+         (e.g. function calls or indexing operations) are *not* evaluated.
+       
+       - GNU readline is also used by the built-in functions input() and
+       raw_input(), and thus these also benefit/suffer from the completer
+       features.  Clearly an interactive application can benefit by
+       specifying its own completer function and using raw_input() for all
+       its input.
+       
+       - When the original stdin is not a tty device, GNU readline is never
+         used, and this module (and the readline module) are silently inactive.
+       
+    1: """
+       
+    1: import __builtin__
+    1: import __main__
+       
+    1: __all__ = ["Completer"]
+       
+    2: class Completer:
+    1:     def __init__(self, namespace = None):
+               """Create a new completer for the command line.
+       
+               Completer([namespace]) -> completer instance.
+       
+               If unspecified, the default namespace where completions are performed
+               is __main__ (technically, __main__.__dict__). Namespaces should be
+               given as dictionaries.
+       
+               Completer instances should be used as the completion mechanism of
+               readline via the set_completer() call:
+       
+               readline.set_completer(Completer(my_namespace).complete)
+               """
+       
+   12:         if namespace and not isinstance(namespace, dict):
+    1:             raise TypeError,'namespace must be a dictionary'
+       
+               # Don't bind to namespace quite yet, but flag whether the user wants a
+               # specific namespace or to use __main__.__dict__. This will allow us
+               # to bind to __main__.__dict__ at completion time, not now.
+   11:         if namespace is None:
+    5:             self.use_main_ns = 1
+               else:
+    6:             self.use_main_ns = 0
+    6:             self.namespace = namespace
+       
+    1:     def complete(self, text, state):
+               """Return the next possible completion for 'text'.
+       
+               This is called successively with state == 0, 1, 2, ... until it
+               returns None.  The completion should begin with 'text'.
+       
+               """
+    5:         if self.use_main_ns:
+    4:             self.namespace = __main__.__dict__
+       
+    5:         if state == 0:
+    5:             if "." in text:
+    1:                 self.matches = self.attr_matches(text)
+                   else:
+    4:                 self.matches = self.global_matches(text)
+    5:         try:
+    5:             return self.matches[state]
+>>>>>>         except IndexError:
+>>>>>>             return None
+       
+    1:     def _callable_postfix(self, val, word):
+  629:         if hasattr(val, '__call__'):
+  558:             word = word + "("
+  629:         return word
+       
+    1:     def global_matches(self, text):
+               """Compute matches when text is a simple name.
+       
+               Return a list of all keywords, built-in functions and names currently
+               defined in self.namespace that match.
+       
+               """
+   10:         import keyword
+   10:         matches = []
+   10:         seen = {"__builtins__"}
+   10:         n = len(text)
+  320:         for word in keyword.kwlist:
+  310:             if word[:n] == text:
+  124:                 seen.add(word)
+  124:                 matches.append(word)
+   30:         for nspace in [self.namespace, __builtin__.__dict__]:
+ 1560:             for word, val in nspace.items():
+ 1540:                 if word[:n] == text and word not in seen:
+  616:                     seen.add(word)
+  616:                     matches.append(self._callable_postfix(val, word))
+   10:         return matches
+       
+    1:     def attr_matches(self, text):
+               """Compute matches when text contains a dot.
+       
+               Assuming the text is of the form NAME.NAME....[NAME], and is
+               evaluable in self.namespace, it will be evaluated and its attributes
+               (as revealed by dir()) are used as possible completions.  (For class
+               instances, class members are also considered.)
+       
+               WARNING: this can still invoke arbitrary C code, if an object
+               with a __getattr__ hook is evaluated.
+       
+               """
+    7:         import re
+    7:         m = re.match(r"(\w+(\.\w+)*)\.(\w*)", text)
+    7:         if not m:
+>>>>>>             return []
+    7:         expr, attr = m.group(1, 3)
+    7:         try:
+    7:             thisobject = eval(expr, self.namespace)
+    1:         except Exception:
+    1:             return []
+       
+               # get the content of the object, except __builtins__
+    6:         words = set(dir(thisobject))
+    6:         words.discard("__builtins__")
+       
+    6:         if hasattr(thisobject, '__class__'):
+    6:             words.add('__class__')
+    6:             words.update(get_class_members(thisobject.__class__))
+    6:         matches = []
+    6:         n = len(attr)
+  317:         for word in words:
+  311:             if word[:n] == attr:
+   13:                 try:
+   13:                     val = getattr(thisobject, word)
+>>>>>>                 except Exception:
+>>>>>>                     continue  # Exclude properties that are not set
+   13:                 word = self._callable_postfix(val, "%s.%s" % (expr, word))
+   13:                 matches.append(word)
+    6:         matches.sort()
+    6:         return matches
+       
+    1: def get_class_members(klass):
+   11:     ret = dir(klass)
+   11:     if hasattr(klass,'__bases__'):
+   16:         for base in klass.__bases__:
+    5:             ret = ret + get_class_members(base)
+   11:     return ret
+       
+    1: try:
+    1:     import readline
+>>>>>> except ImportError:
+>>>>>>     pass
+       else:
+    1:     readline.set_completer(Completer().complete)

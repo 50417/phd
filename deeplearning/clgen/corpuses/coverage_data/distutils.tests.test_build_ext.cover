@@ -1,0 +1,524 @@
+    1: import sys
+    1: import os
+    1: from StringIO import StringIO
+    1: import textwrap
+       
+    1: from distutils.core import Extension, Distribution
+    1: from distutils.command.build_ext import build_ext
+    1: from distutils import sysconfig
+    1: from distutils.tests import support
+    1: from distutils.errors import (DistutilsSetupError, CompileError,
+                                     DistutilsPlatformError)
+       
+    1: import unittest
+    1: from test import test_support
+       
+       # http://bugs.python.org/issue4373
+       # Don't load the xx module more than once.
+    1: ALREADY_TESTED = False
+       
+       
+    2: class BuildExtTestCase(support.TempdirManager,
+    1:                        support.LoggingSilencer,
+    1:                        support.EnvironGuard,
+    1:                        unittest.TestCase):
+    1:     def setUp(self):
+   15:         super(BuildExtTestCase, self).setUp()
+   15:         self.tmp_dir = self.mkdtemp()
+   15:         self.xx_created = False
+   15:         sys.path.append(self.tmp_dir)
+   15:         self.addCleanup(sys.path.remove, self.tmp_dir)
+   15:         if sys.version > "2.6":
+   15:             import site
+   15:             self.old_user_base = site.USER_BASE
+   15:             site.USER_BASE = self.mkdtemp()
+   15:             from distutils.command import build_ext
+   15:             build_ext.USER_BASE = site.USER_BASE
+       
+    1:     def tearDown(self):
+   15:         if self.xx_created:
+    1:             test_support.unload('xx')
+                   # XXX on Windows the test leaves a directory
+                   # with xx module in TEMP
+   15:         super(BuildExtTestCase, self).tearDown()
+       
+    1:     def test_build_ext(self):
+               global ALREADY_TESTED
+    1:         support.copy_xxmodule_c(self.tmp_dir)
+    1:         self.xx_created = True
+    1:         xx_c = os.path.join(self.tmp_dir, 'xxmodule.c')
+    1:         xx_ext = Extension('xx', [xx_c])
+    1:         dist = Distribution({'name': 'xx', 'ext_modules': [xx_ext]})
+    1:         dist.package_dir = self.tmp_dir
+    1:         cmd = build_ext(dist)
+    1:         support.fixup_build_ext(cmd)
+    1:         cmd.build_lib = self.tmp_dir
+    1:         cmd.build_temp = self.tmp_dir
+       
+    1:         old_stdout = sys.stdout
+    1:         if not test_support.verbose:
+                   # silence compiler output
+    1:             sys.stdout = StringIO()
+    1:         try:
+    1:             cmd.ensure_finalized()
+    1:             cmd.run()
+               finally:
+    1:             sys.stdout = old_stdout
+       
+>>>>>>         if ALREADY_TESTED:
+>>>>>>             self.skipTest('Already tested in %s' % ALREADY_TESTED)
+               else:
+>>>>>>             ALREADY_TESTED = type(self).__name__
+       
+>>>>>>         import xx
+       
+>>>>>>         for attr in ('error', 'foo', 'new', 'roj'):
+>>>>>>             self.assertTrue(hasattr(xx, attr))
+       
+>>>>>>         self.assertEqual(xx.foo(2, 5), 7)
+>>>>>>         self.assertEqual(xx.foo(13,15), 28)
+>>>>>>         self.assertEqual(xx.new().demo(), None)
+>>>>>>         if test_support.HAVE_DOCSTRINGS:
+>>>>>>             doc = 'This is a template module just for instruction.'
+>>>>>>             self.assertEqual(xx.__doc__, doc)
+>>>>>>         self.assertIsInstance(xx.Null(), xx.Null)
+>>>>>>         self.assertIsInstance(xx.Str(), xx.Str)
+       
+    1:     def test_solaris_enable_shared(self):
+    1:         dist = Distribution({'name': 'xx'})
+    1:         cmd = build_ext(dist)
+    1:         old = sys.platform
+       
+    1:         sys.platform = 'sunos' # fooling finalize_options
+    1:         from distutils.sysconfig import  _config_vars
+    1:         old_var = _config_vars.get('Py_ENABLE_SHARED')
+    1:         _config_vars['Py_ENABLE_SHARED'] = 1
+    1:         try:
+    1:             cmd.ensure_finalized()
+               finally:
+    1:             sys.platform = old
+    1:             if old_var is None:
+>>>>>>                 del _config_vars['Py_ENABLE_SHARED']
+                   else:
+    1:                 _config_vars['Py_ENABLE_SHARED'] = old_var
+       
+               # make sure we get some library dirs under solaris
+    1:         self.assertGreater(len(cmd.library_dirs), 0)
+       
+    1:     @unittest.skipIf(sys.version < '2.6',
+    1:                      'site.USER_SITE was introduced in 2.6')
+           def test_user_site(self):
+    1:         import site
+    1:         dist = Distribution({'name': 'xx'})
+    1:         cmd = build_ext(dist)
+       
+               # making sure the user option is there
+    1:         options = [name for name, short, label in
+   19:                    cmd.user_options]
+    1:         self.assertIn('user', options)
+       
+               # setting a value
+    1:         cmd.user = 1
+       
+               # setting user based lib and include
+    1:         lib = os.path.join(site.USER_BASE, 'lib')
+    1:         incl = os.path.join(site.USER_BASE, 'include')
+    1:         os.mkdir(lib)
+    1:         os.mkdir(incl)
+       
+    1:         cmd.ensure_finalized()
+       
+               # see if include_dirs and library_dirs were set
+    1:         self.assertIn(lib, cmd.library_dirs)
+    1:         self.assertIn(lib, cmd.rpath)
+    1:         self.assertIn(incl, cmd.include_dirs)
+       
+    1:     def test_finalize_options(self):
+               # Make sure Python's include directories (for Python.h, pyconfig.h,
+               # etc.) are in the include search path.
+    1:         modules = [Extension('foo', ['xxx'])]
+    1:         dist = Distribution({'name': 'xx', 'ext_modules': modules})
+    1:         cmd = build_ext(dist)
+    1:         cmd.finalize_options()
+       
+    1:         py_include = sysconfig.get_python_inc()
+    1:         self.assertIn(py_include, cmd.include_dirs)
+       
+    1:         plat_py_include = sysconfig.get_python_inc(plat_specific=1)
+    1:         self.assertIn(plat_py_include, cmd.include_dirs)
+       
+               # make sure cmd.libraries is turned into a list
+               # if it's a string
+    1:         cmd = build_ext(dist)
+    1:         cmd.libraries = 'my_lib, other_lib lastlib'
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.libraries, ['my_lib', 'other_lib', 'lastlib'])
+       
+               # make sure cmd.library_dirs is turned into a list
+               # if it's a string
+    1:         cmd = build_ext(dist)
+    1:         cmd.library_dirs = 'my_lib_dir%sother_lib_dir' % os.pathsep
+    1:         cmd.finalize_options()
+    1:         self.assertIn('my_lib_dir', cmd.library_dirs)
+    1:         self.assertIn('other_lib_dir', cmd.library_dirs)
+       
+               # make sure rpath is turned into a list
+               # if it's a string
+    1:         cmd = build_ext(dist)
+    1:         cmd.rpath = 'one%stwo' % os.pathsep
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.rpath, ['one', 'two'])
+       
+               # make sure cmd.link_objects is turned into a list
+               # if it's a string
+    1:         cmd = build_ext(dist)
+    1:         cmd.link_objects = 'one two,three'
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.link_objects, ['one', 'two', 'three'])
+       
+               # XXX more tests to perform for win32
+       
+               # make sure define is turned into 2-tuples
+               # strings if they are ','-separated strings
+    1:         cmd = build_ext(dist)
+    1:         cmd.define = 'one,two'
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.define, [('one', '1'), ('two', '1')])
+       
+               # make sure undef is turned into a list of
+               # strings if they are ','-separated strings
+    1:         cmd = build_ext(dist)
+    1:         cmd.undef = 'one,two'
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.undef, ['one', 'two'])
+       
+               # make sure swig_opts is turned into a list
+    1:         cmd = build_ext(dist)
+    1:         cmd.swig_opts = None
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.swig_opts, [])
+       
+    1:         cmd = build_ext(dist)
+    1:         cmd.swig_opts = '1 2'
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.swig_opts, ['1', '2'])
+       
+    1:     def test_check_extensions_list(self):
+    1:         dist = Distribution()
+    1:         cmd = build_ext(dist)
+    1:         cmd.finalize_options()
+       
+               #'extensions' option must be a list of Extension instances
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_extensions_list, 'foo')
+       
+               # each element of 'ext_modules' option must be an
+               # Extension instance or 2-tuple
+    1:         exts = [('bar', 'foo', 'bar'), 'foo']
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_extensions_list, exts)
+       
+               # first element of each tuple in 'ext_modules'
+               # must be the extension name (a string) and match
+               # a python dotted-separated name
+    1:         exts = [('foo-bar', '')]
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_extensions_list, exts)
+       
+               # second element of each tuple in 'ext_modules'
+               # must be a dictionary (build info)
+    1:         exts = [('foo.bar', '')]
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_extensions_list, exts)
+       
+               # ok this one should pass
+    1:         exts = [('foo.bar', {'sources': [''], 'libraries': 'foo',
+    1:                              'some': 'bar'})]
+    1:         cmd.check_extensions_list(exts)
+    1:         ext = exts[0]
+    1:         self.assertIsInstance(ext, Extension)
+       
+               # check_extensions_list adds in ext the values passed
+               # when they are in ('include_dirs', 'library_dirs', 'libraries'
+               # 'extra_objects', 'extra_compile_args', 'extra_link_args')
+    1:         self.assertEqual(ext.libraries, 'foo')
+    1:         self.assertFalse(hasattr(ext, 'some'))
+       
+               # 'macros' element of build info dict must be 1- or 2-tuple
+    1:         exts = [('foo.bar', {'sources': [''], 'libraries': 'foo',
+    1:                 'some': 'bar', 'macros': [('1', '2', '3'), 'foo']})]
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_extensions_list, exts)
+       
+    1:         exts[0][1]['macros'] = [('1', '2'), ('3',)]
+    1:         cmd.check_extensions_list(exts)
+    1:         self.assertEqual(exts[0].undef_macros, ['3'])
+    1:         self.assertEqual(exts[0].define_macros, [('1', '2')])
+       
+    1:     def test_get_source_files(self):
+    1:         modules = [Extension('foo', ['xxx'])]
+    1:         dist = Distribution({'name': 'xx', 'ext_modules': modules})
+    1:         cmd = build_ext(dist)
+    1:         cmd.ensure_finalized()
+    1:         self.assertEqual(cmd.get_source_files(), ['xxx'])
+       
+    1:     def test_compiler_option(self):
+               # cmd.compiler is an option and
+               # should not be overridden by a compiler instance
+               # when the command is run
+    1:         dist = Distribution()
+    1:         cmd = build_ext(dist)
+    1:         cmd.compiler = 'unix'
+    1:         cmd.ensure_finalized()
+    1:         cmd.run()
+    1:         self.assertEqual(cmd.compiler, 'unix')
+       
+    1:     def test_get_outputs(self):
+    1:         tmp_dir = self.mkdtemp()
+    1:         c_file = os.path.join(tmp_dir, 'foo.c')
+    1:         self.write_file(c_file, 'void initfoo(void) {};\n')
+    1:         ext = Extension('foo', [c_file])
+    1:         dist = Distribution({'name': 'xx',
+    1:                              'ext_modules': [ext]})
+    1:         cmd = build_ext(dist)
+    1:         support.fixup_build_ext(cmd)
+    1:         cmd.ensure_finalized()
+    1:         self.assertEqual(len(cmd.get_outputs()), 1)
+       
+    1:         cmd.build_lib = os.path.join(self.tmp_dir, 'build')
+    1:         cmd.build_temp = os.path.join(self.tmp_dir, 'tempt')
+       
+               # issue #5977 : distutils build_ext.get_outputs
+               # returns wrong result with --inplace
+    1:         other_tmp_dir = os.path.realpath(self.mkdtemp())
+    1:         old_wd = os.getcwd()
+    1:         os.chdir(other_tmp_dir)
+    1:         try:
+    1:             cmd.inplace = 1
+    1:             cmd.run()
+    1:             so_file = cmd.get_outputs()[0]
+               finally:
+    1:             os.chdir(old_wd)
+    1:         self.assertTrue(os.path.exists(so_file))
+    1:         self.assertEqual(os.path.splitext(so_file)[-1],
+    1:                          sysconfig.get_config_var('SO'))
+    1:         so_dir = os.path.dirname(so_file)
+    1:         self.assertEqual(so_dir, other_tmp_dir)
+    1:         cmd.compiler = None
+    1:         cmd.inplace = 0
+    1:         cmd.run()
+    1:         so_file = cmd.get_outputs()[0]
+    1:         self.assertTrue(os.path.exists(so_file))
+    1:         self.assertEqual(os.path.splitext(so_file)[-1],
+    1:                          sysconfig.get_config_var('SO'))
+    1:         so_dir = os.path.dirname(so_file)
+    1:         self.assertEqual(so_dir, cmd.build_lib)
+       
+               # inplace = 0, cmd.package = 'bar'
+    1:         build_py = cmd.get_finalized_command('build_py')
+    1:         build_py.package_dir = {'': 'bar'}
+    1:         path = cmd.get_ext_fullpath('foo')
+               # checking that the last directory is the build_dir
+    1:         path = os.path.split(path)[0]
+    1:         self.assertEqual(path, cmd.build_lib)
+       
+               # inplace = 1, cmd.package = 'bar'
+    1:         cmd.inplace = 1
+    1:         other_tmp_dir = os.path.realpath(self.mkdtemp())
+    1:         old_wd = os.getcwd()
+    1:         os.chdir(other_tmp_dir)
+    1:         try:
+    1:             path = cmd.get_ext_fullpath('foo')
+               finally:
+    1:             os.chdir(old_wd)
+               # checking that the last directory is bar
+    1:         path = os.path.split(path)[0]
+    1:         lastdir = os.path.split(path)[-1]
+    1:         self.assertEqual(lastdir, 'bar')
+       
+    1:     def test_ext_fullpath(self):
+    1:         ext = sysconfig.get_config_vars()['SO']
+    1:         dist = Distribution()
+    1:         cmd = build_ext(dist)
+    1:         cmd.inplace = 1
+    1:         cmd.distribution.package_dir = {'': 'src'}
+    1:         cmd.distribution.packages = ['lxml', 'lxml.html']
+    1:         curdir = os.getcwd()
+    1:         wanted = os.path.join(curdir, 'src', 'lxml', 'etree' + ext)
+    1:         path = cmd.get_ext_fullpath('lxml.etree')
+    1:         self.assertEqual(wanted, path)
+       
+               # building lxml.etree not inplace
+    1:         cmd.inplace = 0
+    1:         cmd.build_lib = os.path.join(curdir, 'tmpdir')
+    1:         wanted = os.path.join(curdir, 'tmpdir', 'lxml', 'etree' + ext)
+    1:         path = cmd.get_ext_fullpath('lxml.etree')
+    1:         self.assertEqual(wanted, path)
+       
+               # building twisted.runner.portmap not inplace
+    1:         build_py = cmd.get_finalized_command('build_py')
+    1:         build_py.package_dir = {}
+    1:         cmd.distribution.packages = ['twisted', 'twisted.runner.portmap']
+    1:         path = cmd.get_ext_fullpath('twisted.runner.portmap')
+    1:         wanted = os.path.join(curdir, 'tmpdir', 'twisted', 'runner',
+    1:                               'portmap' + ext)
+    1:         self.assertEqual(wanted, path)
+       
+               # building twisted.runner.portmap inplace
+    1:         cmd.inplace = 1
+    1:         path = cmd.get_ext_fullpath('twisted.runner.portmap')
+    1:         wanted = os.path.join(curdir, 'twisted', 'runner', 'portmap' + ext)
+    1:         self.assertEqual(wanted, path)
+       
+    1:     def test_build_ext_inplace(self):
+    1:         etree_c = os.path.join(self.tmp_dir, 'lxml.etree.c')
+    1:         etree_ext = Extension('lxml.etree', [etree_c])
+    1:         dist = Distribution({'name': 'lxml', 'ext_modules': [etree_ext]})
+    1:         cmd = build_ext(dist)
+    1:         cmd.ensure_finalized()
+    1:         cmd.inplace = 1
+    1:         cmd.distribution.package_dir = {'': 'src'}
+    1:         cmd.distribution.packages = ['lxml', 'lxml.html']
+    1:         curdir = os.getcwd()
+    1:         ext = sysconfig.get_config_var("SO")
+    1:         wanted = os.path.join(curdir, 'src', 'lxml', 'etree' + ext)
+    1:         path = cmd.get_ext_fullpath('lxml.etree')
+    1:         self.assertEqual(wanted, path)
+       
+    1:     def test_setuptools_compat(self):
+    1:         import distutils.core, distutils.extension, distutils.command.build_ext
+    1:         saved_ext = distutils.extension.Extension
+    1:         try:
+                   # on some platforms, it loads the deprecated "dl" module
+    1:             test_support.import_module('setuptools_build_ext', deprecated=True)
+       
+                   # theses import patch Distutils' Extension class
+>>>>>>             from setuptools_build_ext import build_ext as setuptools_build_ext
+>>>>>>             from setuptools_extension import Extension
+       
+>>>>>>             etree_c = os.path.join(self.tmp_dir, 'lxml.etree.c')
+>>>>>>             etree_ext = Extension('lxml.etree', [etree_c])
+>>>>>>             dist = Distribution({'name': 'lxml', 'ext_modules': [etree_ext]})
+>>>>>>             cmd = setuptools_build_ext(dist)
+>>>>>>             cmd.ensure_finalized()
+>>>>>>             cmd.inplace = 1
+>>>>>>             cmd.distribution.package_dir = {'': 'src'}
+>>>>>>             cmd.distribution.packages = ['lxml', 'lxml.html']
+>>>>>>             curdir = os.getcwd()
+>>>>>>             ext = sysconfig.get_config_var("SO")
+>>>>>>             wanted = os.path.join(curdir, 'src', 'lxml', 'etree' + ext)
+>>>>>>             path = cmd.get_ext_fullpath('lxml.etree')
+>>>>>>             self.assertEqual(wanted, path)
+               finally:
+                   # restoring Distutils' Extension class otherwise its broken
+    1:             distutils.extension.Extension = saved_ext
+    1:             distutils.core.Extension = saved_ext
+    1:             distutils.command.build_ext.Extension = saved_ext
+       
+    1:     def test_build_ext_path_with_os_sep(self):
+    1:         dist = Distribution({'name': 'UpdateManager'})
+    1:         cmd = build_ext(dist)
+    1:         cmd.ensure_finalized()
+    1:         ext = sysconfig.get_config_var("SO")
+    1:         ext_name = os.path.join('UpdateManager', 'fdsend')
+    1:         ext_path = cmd.get_ext_fullpath(ext_name)
+    1:         wanted = os.path.join(cmd.build_lib, 'UpdateManager', 'fdsend' + ext)
+    1:         self.assertEqual(ext_path, wanted)
+       
+    1:     @unittest.skipUnless(sys.platform == 'win32', 'these tests require Windows')
+           def test_build_ext_path_cross_platform(self):
+>>>>>>         dist = Distribution({'name': 'UpdateManager'})
+>>>>>>         cmd = build_ext(dist)
+>>>>>>         cmd.ensure_finalized()
+>>>>>>         ext = sysconfig.get_config_var("SO")
+               # this needs to work even under win32
+>>>>>>         ext_name = 'UpdateManager/fdsend'
+>>>>>>         ext_path = cmd.get_ext_fullpath(ext_name)
+>>>>>>         wanted = os.path.join(cmd.build_lib, 'UpdateManager', 'fdsend' + ext)
+>>>>>>         self.assertEqual(ext_path, wanted)
+       
+    1:     @unittest.skipUnless(sys.platform == 'darwin', 'test only relevant for MacOSX')
+           def test_deployment_target_default(self):
+               # Issue 9516: Test that, in the absence of the environment variable,
+               # an extension module is compiled with the same deployment target as
+               #  the interpreter.
+    1:         self._try_compile_deployment_target('==', None)
+       
+    1:     @unittest.skipUnless(sys.platform == 'darwin', 'test only relevant for MacOSX')
+           def test_deployment_target_too_low(self):
+               # Issue 9516: Test that an extension module is not allowed to be
+               # compiled with a deployment target less than that of the interpreter.
+    1:         self.assertRaises(DistutilsPlatformError,
+    1:             self._try_compile_deployment_target, '>', '10.1')
+       
+    1:     @unittest.skipUnless(sys.platform == 'darwin', 'test only relevant for MacOSX')
+           def test_deployment_target_higher_ok(self):
+               # Issue 9516: Test that an extension module can be compiled with a
+               # deployment target higher than that of the interpreter: the ext
+               # module may depend on some newer OS feature.
+    1:         deptarget = sysconfig.get_config_var('MACOSX_DEPLOYMENT_TARGET')
+    1:         if deptarget:
+                   # increment the minor version number (i.e. 10.6 -> 10.7)
+    3:             deptarget = [int(x) for x in deptarget.split('.')]
+    1:             deptarget[-1] += 1
+    4:             deptarget = '.'.join(str(i) for i in deptarget)
+    1:             self._try_compile_deployment_target('<', deptarget)
+       
+    1:     def _try_compile_deployment_target(self, operator, target):
+    3:         orig_environ = os.environ
+    3:         os.environ = orig_environ.copy()
+    3:         self.addCleanup(setattr, os, 'environ', orig_environ)
+       
+    3:         if target is None:
+    1:             if os.environ.get('MACOSX_DEPLOYMENT_TARGET'):
+>>>>>>                 del os.environ['MACOSX_DEPLOYMENT_TARGET']
+               else:
+    2:             os.environ['MACOSX_DEPLOYMENT_TARGET'] = target
+       
+    3:         deptarget_c = os.path.join(self.tmp_dir, 'deptargetmodule.c')
+       
+    3:         with open(deptarget_c, 'w') as fp:
+    3:             fp.write(textwrap.dedent('''\
+                       #include <AvailabilityMacros.h>
+       
+                       int dummy;
+       
+                       #if TARGET %s MAC_OS_X_VERSION_MIN_REQUIRED
+                       #else
+                       #error "Unexpected target"
+                       #endif
+       
+    3:             ''' % operator))
+       
+               # get the deployment target that the interpreter was built with
+    3:         target = sysconfig.get_config_var('MACOSX_DEPLOYMENT_TARGET')
+    3:         target = tuple(map(int, target.split('.')[0:2]))
+               # format the target value as defined in the Apple
+               # Availability Macros.  We can't use the macro names since
+               # at least one value we test with will not exist yet.
+    3:         if target[1] < 10:
+                   # for 10.1 through 10.9.x -> "10n0"
+    3:             target = '%02d%01d0' % target
+               else:
+                   # for 10.10 and beyond -> "10nn00"
+>>>>>>             target = '%02d%02d00' % target
+    3:         deptarget_ext = Extension(
+    3:             'deptarget',
+    3:             [deptarget_c],
+    3:             extra_compile_args=['-DTARGET=%s'%(target,)],
+               )
+    3:         dist = Distribution({
+    3:             'name': 'deptarget',
+    3:             'ext_modules': [deptarget_ext]
+               })
+    3:         dist.package_dir = self.tmp_dir
+    3:         cmd = build_ext(dist)
+    3:         cmd.build_lib = self.tmp_dir
+    3:         cmd.build_temp = self.tmp_dir
+       
+    3:         try:
+    3:             cmd.ensure_finalized()
+    3:             cmd.run()
+    3:         except CompileError:
+    2:             self.fail("Wrong deployment target during compilation")
+       
+    1: def test_suite():
+    1:     return unittest.makeSuite(BuildExtTestCase)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_support.run_unittest(test_suite())

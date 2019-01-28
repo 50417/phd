@@ -1,0 +1,251 @@
+       """Thread-local objects.
+       
+       (Note that this module provides a Python version of the threading.local
+        class.  Depending on the version of Python you're using, there may be a
+        faster one available.  You should always import the `local` class from
+        `threading`.)
+       
+       Thread-local objects support the management of thread-local data.
+       If you have data that you want to be local to a thread, simply create
+       a thread-local object and use its attributes:
+       
+         >>> mydata = local()
+         >>> mydata.number = 42
+         >>> mydata.number
+         42
+       
+       You can also access the local-object's dictionary:
+       
+         >>> mydata.__dict__
+         {'number': 42}
+         >>> mydata.__dict__.setdefault('widgets', [])
+         []
+         >>> mydata.widgets
+         []
+       
+       What's important about thread-local objects is that their data are
+       local to a thread. If we access the data in a different thread:
+       
+         >>> log = []
+         >>> def f():
+         ...     items = mydata.__dict__.items()
+         ...     items.sort()
+         ...     log.append(items)
+         ...     mydata.number = 11
+         ...     log.append(mydata.number)
+       
+         >>> import threading
+         >>> thread = threading.Thread(target=f)
+         >>> thread.start()
+         >>> thread.join()
+         >>> log
+         [[], 11]
+       
+       we get different data.  Furthermore, changes made in the other thread
+       don't affect data seen in this thread:
+       
+         >>> mydata.number
+         42
+       
+       Of course, values you get from a local object, including a __dict__
+       attribute, are for whatever thread was current at the time the
+       attribute was read.  For that reason, you generally don't want to save
+       these values across threads, as they apply only to the thread they
+       came from.
+       
+       You can create custom local objects by subclassing the local class:
+       
+         >>> class MyLocal(local):
+         ...     number = 2
+         ...     initialized = False
+         ...     def __init__(self, **kw):
+         ...         if self.initialized:
+         ...             raise SystemError('__init__ called too many times')
+         ...         self.initialized = True
+         ...         self.__dict__.update(kw)
+         ...     def squared(self):
+         ...         return self.number ** 2
+       
+       This can be useful to support default values, methods and
+       initialization.  Note that if you define an __init__ method, it will be
+       called each time the local object is used in a separate thread.  This
+       is necessary to initialize each thread's dictionary.
+       
+       Now if we create a local object:
+       
+         >>> mydata = MyLocal(color='red')
+       
+       Now we have a default number:
+       
+         >>> mydata.number
+         2
+       
+       an initial color:
+       
+         >>> mydata.color
+         'red'
+         >>> del mydata.color
+       
+       And a method that operates on the data:
+       
+         >>> mydata.squared()
+         4
+       
+       As before, we can access the data in a separate thread:
+       
+         >>> log = []
+         >>> thread = threading.Thread(target=f)
+         >>> thread.start()
+         >>> thread.join()
+         >>> log
+         [[('color', 'red'), ('initialized', True)], 11]
+       
+       without affecting this thread's data:
+       
+         >>> mydata.number
+         2
+         >>> mydata.color
+         Traceback (most recent call last):
+         ...
+         AttributeError: 'MyLocal' object has no attribute 'color'
+       
+       Note that subclasses can define slots, but they are not thread
+       local. They are shared across threads:
+       
+         >>> class MyLocal(local):
+         ...     __slots__ = 'number'
+       
+         >>> mydata = MyLocal()
+         >>> mydata.number = 42
+         >>> mydata.color = 'red'
+       
+       So, the separate thread:
+       
+         >>> thread = threading.Thread(target=f)
+         >>> thread.start()
+         >>> thread.join()
+       
+       affects what we see:
+       
+         >>> mydata.number
+         11
+       
+       >>> del mydata
+    2: """
+       
+    2: __all__ = ["local"]
+       
+       # We need to use objects from the threading module, but the threading
+       # module may also want to use our `local` class, if support for locals
+       # isn't compiled in to the `thread` module.  This creates potential problems
+       # with circular imports.  For that reason, we don't import `threading`
+       # until the bottom of this file (a hack sufficient to worm around the
+       # potential problems).  Note that almost all platforms do have support for
+       # locals in the `thread` module, and there is no circular import problem
+       # then, so problems introduced by fiddling the order of imports here won't
+       # manifest on most boxes.
+       
+    4: class _localbase(object):
+    2:     __slots__ = '_local__key', '_local__args', '_local__lock'
+       
+    2:     def __new__(cls, *args, **kw):
+   33:         self = object.__new__(cls)
+   33:         key = '_local__key', 'thread.local.' + str(id(self))
+   33:         object.__setattr__(self, '_local__key', key)
+   33:         object.__setattr__(self, '_local__args', (args, kw))
+   33:         object.__setattr__(self, '_local__lock', RLock())
+       
+   33:         if (args or kw) and (cls.__init__ is object.__init__):
+    4:             raise TypeError("Initialization arguments are not supported")
+       
+               # We need to create the thread dict in anticipation of
+               # __init__ being called, to make sure we don't call it
+               # again ourselves.
+   29:         dict = object.__getattribute__(self, '__dict__')
+   29:         current_thread().__dict__[key] = dict
+       
+   29:         return self
+       
+    2: def _patch(self):
+  282:     key = object.__getattribute__(self, '_local__key')
+  282:     d = current_thread().__dict__.get(key)
+  282:     if d is None:
+  200:         d = {}
+  200:         current_thread().__dict__[key] = d
+  200:         object.__setattr__(self, '__dict__', d)
+       
+               # we have a new instance dict, so call out __init__ if we have
+               # one
+  200:         cls = type(self)
+  200:         if cls.__init__ is not object.__init__:
+   12:             args, kw = object.__getattribute__(self, '_local__args')
+   12:             cls.__init__(self, *args, **kw)
+           else:
+   82:         object.__setattr__(self, '__dict__', d)
+       
+    4: class local(_localbase):
+       
+    2:     def __getattribute__(self, name):
+   72:         lock = object.__getattribute__(self, '_local__lock')
+   72:         lock.acquire()
+   72:         try:
+   72:             _patch(self)
+   72:             return object.__getattribute__(self, name)
+               finally:
+   72:             lock.release()
+       
+    2:     def __setattr__(self, name, value):
+  208:         if name == '__dict__':
+    2:             raise AttributeError(
+    2:                 "%r object attribute '__dict__' is read-only"
+    2:                 % self.__class__.__name__)
+  206:         lock = object.__getattribute__(self, '_local__lock')
+  206:         lock.acquire()
+  206:         try:
+  206:             _patch(self)
+  206:             return object.__setattr__(self, name, value)
+               finally:
+  206:             lock.release()
+       
+    2:     def __delattr__(self, name):
+    6:         if name == '__dict__':
+    2:             raise AttributeError(
+    2:                 "%r object attribute '__dict__' is read-only"
+    2:                 % self.__class__.__name__)
+    4:         lock = object.__getattribute__(self, '_local__lock')
+    4:         lock.acquire()
+    4:         try:
+    4:             _patch(self)
+    4:             return object.__delattr__(self, name)
+               finally:
+    4:             lock.release()
+       
+    2:     def __del__(self):
+   33:         import threading
+       
+   33:         key = object.__getattribute__(self, '_local__key')
+       
+   33:         try:
+                   # We use the non-locking API since we might already hold the lock
+                   # (__del__ can be called at any point by the cyclic GC).
+   33:             threads = threading._enumerate()
+>>>>>>         except:
+                   # If enumerating the current threads fails, as it seems to do
+                   # during shutdown, we'll skip cleanup under the assumption
+                   # that there is nothing to clean up.
+>>>>>>             return
+       
+   67:         for thread in threads:
+   34:             try:
+   34:                 __dict__ = thread.__dict__
+>>>>>>             except AttributeError:
+                       # Thread is dying, rest in peace.
+>>>>>>                 continue
+       
+   34:             if key in __dict__:
+   29:                 try:
+   29:                     del __dict__[key]
+>>>>>>                 except KeyError:
+>>>>>>                     pass # didn't have anything in this thread
+       
+    2: from threading import current_thread, RLock

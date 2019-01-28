@@ -1,0 +1,260 @@
+    1: """Test cases for traceback module"""
+       
+    1: from StringIO import StringIO
+    1: import sys
+    1: import unittest
+    1: from imp import reload
+    1: from test.test_support import (run_unittest, is_jython, Error, cpython_only,
+                                      captured_output)
+       
+    1: import traceback
+       
+       
+    2: class TracebackCases(unittest.TestCase):
+           # For now, a very minimal set of tests.  I want to be sure that
+           # formatting of SyntaxErrors works based on changes for 2.1.
+       
+    1:     def get_exception_format(self, func, exc):
+    5:         try:
+    5:             func()
+    5:         except exc, value:
+    5:             return traceback.format_exception_only(exc, value)
+               else:
+>>>>>>             raise ValueError, "call did not raise exception"
+       
+    1:     def syntax_error_with_caret(self):
+    1:         compile("def fact(x):\n\treturn x!\n", "?", "exec")
+       
+    1:     def syntax_error_with_caret_2(self):
+    1:         compile("1 +\n", "?", "exec")
+       
+    1:     def syntax_error_without_caret(self):
+               # XXX why doesn't compile raise the same traceback?
+    1:         import test.badsyntax_nocaret
+       
+    1:     def syntax_error_bad_indentation(self):
+    1:         compile("def spam():\n  print 1\n print 2", "?", "exec")
+       
+    1:     def syntax_error_bad_indentation2(self):
+    1:         compile(" print(2)", "?", "exec")
+       
+    1:     def test_caret(self):
+    1:         err = self.get_exception_format(self.syntax_error_with_caret,
+    1:                                         SyntaxError)
+    1:         self.assertTrue(len(err) == 4)
+    1:         self.assertTrue(err[1].strip() == "return x!")
+    1:         self.assertIn("^", err[2]) # third line has caret
+    1:         self.assertTrue(err[1].find("!") == err[2].find("^")) # in the right place
+       
+    1:         err = self.get_exception_format(self.syntax_error_with_caret_2,
+    1:                                         SyntaxError)
+    1:         self.assertIn("^", err[2]) # third line has caret
+    1:         self.assertTrue(err[2].count('\n') == 1) # and no additional newline
+    1:         self.assertTrue(err[1].find("+") == err[2].find("^")) # in the right place
+       
+    1:     def test_nocaret(self):
+    1:         if is_jython:
+                   # jython adds a caret in this case (why shouldn't it?)
+>>>>>>             return
+    1:         err = self.get_exception_format(self.syntax_error_without_caret,
+    1:                                         SyntaxError)
+    1:         self.assertTrue(len(err) == 3)
+    1:         self.assertTrue(err[1].strip() == "[x for x in x] = x")
+       
+    1:     def test_bad_indentation(self):
+    1:         err = self.get_exception_format(self.syntax_error_bad_indentation,
+    1:                                         IndentationError)
+    1:         self.assertTrue(len(err) == 4)
+    1:         self.assertTrue(err[1].strip() == "print 2")
+    1:         self.assertIn("^", err[2])
+    1:         self.assertTrue(err[1].find("2") == err[2].find("^"))
+       
+    1:     def test_bug737473(self):
+    1:         import os, tempfile, time
+       
+    1:         savedpath = sys.path[:]
+    1:         testdir = tempfile.mkdtemp()
+    1:         try:
+    1:             sys.path.insert(0, testdir)
+    1:             testfile = os.path.join(testdir, 'test_bug737473.py')
+    1:             print >> open(testfile, 'w'), """
+       def test():
+    1:     raise ValueError"""
+       
+    1:             if 'test_bug737473' in sys.modules:
+>>>>>>                 del sys.modules['test_bug737473']
+    1:             import test_bug737473
+       
+    1:             try:
+    1:                 test_bug737473.test()
+    1:             except ValueError:
+                       # this loads source code to linecache
+    1:                 traceback.extract_tb(sys.exc_traceback)
+       
+                   # If this test runs too quickly, test_bug737473.py's mtime
+                   # attribute will remain unchanged even if the file is rewritten.
+                   # Consequently, the file would not reload.  So, added a sleep()
+                   # delay to assure that a new, distinct timestamp is written.
+                   # Since WinME with FAT32 has multisecond resolution, more than
+                   # three seconds are needed for this test to pass reliably :-(
+    1:             time.sleep(4)
+       
+    1:             print >> open(testfile, 'w'), """
+       def test():
+    1:     raise NotImplementedError"""
+    1:             reload(test_bug737473)
+    1:             try:
+    1:                 test_bug737473.test()
+    1:             except NotImplementedError:
+    1:                 src = traceback.extract_tb(sys.exc_traceback)[-1][-1]
+    1:                 self.assertEqual(src, 'raise NotImplementedError')
+               finally:
+    1:             sys.path[:] = savedpath
+    3:             for f in os.listdir(testdir):
+    2:                 os.unlink(os.path.join(testdir, f))
+    1:             os.rmdir(testdir)
+       
+    1:         err = self.get_exception_format(self.syntax_error_bad_indentation2,
+    1:                                         IndentationError)
+    1:         self.assertEqual(len(err), 4)
+    1:         self.assertEqual(err[1].strip(), "print(2)")
+    1:         self.assertIn("^", err[2])
+    1:         self.assertEqual(err[1].find("p"), err[2].find("^"))
+       
+    1:     def test_base_exception(self):
+               # Test that exceptions derived from BaseException are formatted right
+    1:         e = KeyboardInterrupt()
+    1:         lst = traceback.format_exception_only(e.__class__, e)
+    1:         self.assertEqual(lst, ['KeyboardInterrupt\n'])
+       
+           # String exceptions are deprecated, but legal.  The quirky form with
+           # separate "type" and "value" tends to break things, because
+           #     not isinstance(value, type)
+           # and a string cannot be the first argument to issubclass.
+           #
+           # Note that sys.last_type and sys.last_value do not get set if an
+           # exception is caught, so we sort of cheat and just emulate them.
+           #
+           # test_string_exception1 is equivalent to
+           #
+           # >>> raise "String Exception"
+           #
+           # test_string_exception2 is equivalent to
+           #
+           # >>> raise "String Exception", "String Value"
+           #
+    1:     def test_string_exception1(self):
+    1:         str_type = "String Exception"
+    1:         err = traceback.format_exception_only(str_type, None)
+    1:         self.assertEqual(len(err), 1)
+    1:         self.assertEqual(err[0], str_type + '\n')
+       
+    1:     def test_string_exception2(self):
+    1:         str_type = "String Exception"
+    1:         str_value = "String Value"
+    1:         err = traceback.format_exception_only(str_type, str_value)
+    1:         self.assertEqual(len(err), 1)
+    1:         self.assertEqual(err[0], str_type + ': ' + str_value + '\n')
+       
+    1:     def test_format_exception_only_bad__str__(self):
+    2:         class X(Exception):
+    1:             def __str__(self):
+    2:                 1 // 0
+    1:         err = traceback.format_exception_only(X, X())
+    1:         self.assertEqual(len(err), 1)
+    1:         str_value = '<unprintable %s object>' % X.__name__
+    1:         self.assertEqual(err[0], X.__name__ + ': ' + str_value + '\n')
+       
+    1:     def test_without_exception(self):
+    1:         err = traceback.format_exception_only(None, None)
+    1:         self.assertEqual(err, ['None\n'])
+       
+    1:     def test_unicode(self):
+    1:         err = AssertionError('\xff')
+    1:         lines = traceback.format_exception_only(type(err), err)
+    1:         self.assertEqual(lines, ['AssertionError: \xff\n'])
+       
+    1:         err = AssertionError(u'\xe9')
+    1:         lines = traceback.format_exception_only(type(err), err)
+    1:         self.assertEqual(lines, ['AssertionError: \\xe9\n'])
+       
+       
+    2: class TracebackFormatTests(unittest.TestCase):
+       
+    1:     @cpython_only
+           def test_traceback_format(self):
+    1:         from _testcapi import traceback_print
+    1:         try:
+    1:             raise KeyError('blah')
+    1:         except KeyError:
+    1:             type_, value, tb = sys.exc_info()
+    1:             traceback_fmt = 'Traceback (most recent call last):\n' + \
+    1:                             ''.join(traceback.format_tb(tb))
+    1:             file_ = StringIO()
+    1:             traceback_print(tb, file_)
+    1:             python_fmt  = file_.getvalue()
+               else:
+>>>>>>             raise Error("unable to create test traceback string")
+       
+               # Make sure that Python and the traceback module format the same thing
+    1:         self.assertEqual(traceback_fmt, python_fmt)
+       
+               # Make sure that the traceback is properly indented.
+    1:         tb_lines = python_fmt.splitlines()
+    1:         self.assertEqual(len(tb_lines), 3)
+    1:         banner, location, source_line = tb_lines
+    1:         self.assertTrue(banner.startswith('Traceback'))
+    1:         self.assertTrue(location.startswith('  File'))
+    1:         self.assertTrue(source_line.startswith('    raise'))
+       
+    1:     def test_print_stack(self):
+    1:         def prn():
+    1:             traceback.print_stack()
+    1:         with captured_output("stderr") as stderr:
+    1:             prn()
+    1:         lineno = prn.__code__.co_firstlineno
+    1:         file = prn.__code__.co_filename
+    1:         self.assertEqual(stderr.getvalue().splitlines()[-4:], [
+    1:             '  File "%s", line %d, in test_print_stack' % (file, lineno+3),
+    1:             '    prn()',
+    1:             '  File "%s", line %d, in prn' % (file, lineno+1),
+    1:             '    traceback.print_stack()',
+               ])
+       
+    1:     def test_format_stack(self):
+    1:         def fmt():
+    1:             return traceback.format_stack()
+    1:         result = fmt()
+    1:         lineno = fmt.__code__.co_firstlineno
+    1:         file = fmt.__code__.co_filename
+    1:         self.assertEqual(result[-2:], [
+    1:             '  File "%s", line %d, in test_format_stack\n'
+    1:             '    result = fmt()\n' % (file, lineno+2),
+    1:             '  File "%s", line %d, in fmt\n'
+    1:             '    return traceback.format_stack()\n' % (file, lineno+1),
+               ])
+       
+       
+    2: class MiscTracebackCases(unittest.TestCase):
+           #
+           # Check non-printing functions in traceback module
+           #
+       
+    1:     def test_extract_stack(self):
+    1:         def extract():
+    1:             return traceback.extract_stack()
+    1:         result = extract()
+    1:         lineno = extract.__code__.co_firstlineno
+    1:         file = extract.__code__.co_filename
+    1:         self.assertEqual(result[-2:], [
+    1:             (file, lineno+2, 'test_extract_stack', 'result = extract()'),
+    1:             (file, lineno+1, 'extract', 'return traceback.extract_stack()'),
+               ])
+       
+       
+    1: def test_main():
+    1:     run_unittest(TracebackCases, TracebackFormatTests, MiscTracebackCases)
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

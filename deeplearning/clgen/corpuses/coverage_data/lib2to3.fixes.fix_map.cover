@@ -1,0 +1,91 @@
+       # Copyright 2007 Google, Inc. All Rights Reserved.
+       # Licensed to PSF under a Contributor Agreement.
+       
+       """Fixer that changes map(F, ...) into list(map(F, ...)) unless there
+       exists a 'from future_builtins import map' statement in the top-level
+       namespace.
+       
+       As a special case, map(None, X) is changed into list(X).  (This is
+       necessary because the semantics are changed in this case -- the new
+       map(None, X) is equivalent to [(x,) for x in X].)
+       
+       We avoid the transformation (except for the special case mentioned
+       above) if the map() call is directly contained in iter(<>), list(<>),
+       tuple(<>), sorted(<>), ...join(<>), or for V in <>:.
+       
+       NOTE: This is still not correct if the original code was depending on
+       map(F, X, Y, ...) to go on until the longest argument is exhausted,
+       substituting None for missing values -- like zip(), it now stops as
+       soon as the shortest argument is exhausted.
+    1: """
+       
+       # Local imports
+    1: from ..pgen2 import token
+    1: from .. import fixer_base
+    1: from ..fixer_util import Name, Call, ListComp, in_special_context
+    1: from ..pygram import python_symbols as syms
+       
+    2: class FixMap(fixer_base.ConditionalFix):
+    1:     BM_compatible = True
+       
+           PATTERN = """
+           map_none=power<
+               'map'
+               trailer< '(' arglist< 'None' ',' arg=any [','] > ')' >
+           >
+           |
+           map_lambda=power<
+               'map'
+               trailer<
+                   '('
+                   arglist<
+                       lambdef< 'lambda'
+                                (fp=NAME | vfpdef< '(' fp=NAME ')'> ) ':' xp=any
+                       >
+                       ','
+                       it=any
+                   >
+                   ')'
+               >
+           >
+           |
+           power<
+               'map' trailer< '(' [arglist=any] ')' >
+           >
+    1:     """
+       
+    1:     skip_on = 'future_builtins.map'
+       
+    1:     def transform(self, node, results):
+   71:         if self.should_skip(node):
+   22:             return
+       
+   49:         if node.parent.type == syms.simple_stmt:
+    1:             self.warning(node, "You should use a for loop here")
+    1:             new = node.clone()
+    1:             new.prefix = u""
+    1:             new = Call(Name(u"list"), [new])
+   48:         elif "map_lambda" in results:
+    2:             new = ListComp(results["xp"].clone(),
+    2:                            results["fp"].clone(),
+    2:                            results["it"].clone())
+               else:
+   46:             if "map_none" in results:
+    1:                 new = results["arg"].clone()
+                   else:
+   45:                 if "arglist" in results:
+   45:                     args = results["arglist"]
+   45:                     if args.type == syms.arglist and \
+   45:                        args.children[0].type == token.NAME and \
+   45:                        args.children[0].value == "None":
+    2:                         self.warning(node, "cannot convert map(None, ...) "
+                                            "with multiple arguments because map() "
+                                            "now truncates to the shortest sequence")
+    2:                         return
+   43:                 if in_special_context(node):
+   38:                     return None
+    5:                 new = node.clone()
+    6:             new.prefix = u""
+    6:             new = Call(Name(u"list"), [new])
+    9:         new.prefix = node.prefix
+    9:         return new

@@ -1,0 +1,427 @@
+    1: from test.test_support import run_unittest, check_warnings
+    1: import cgi
+    1: import os
+    1: import sys
+    1: import tempfile
+    1: import unittest
+       
+    1: from collections import namedtuple
+       
+    2: class HackedSysModule:
+           # The regression test will have real values in sys.argv, which
+           # will completely confuse the test of the cgi module
+    1:     argv = []
+    1:     stdin = sys.stdin
+       
+    1: cgi.sys = HackedSysModule()
+       
+    1: try:
+    1:     from cStringIO import StringIO
+>>>>>> except ImportError:
+>>>>>>     from StringIO import StringIO
+       
+    2: class ComparableException:
+    1:     def __init__(self, err):
+   20:         self.err = err
+       
+    1:     def __str__(self):
+>>>>>>         return str(self.err)
+       
+    1:     def __cmp__(self, anExc):
+   20:         if not isinstance(anExc, Exception):
+>>>>>>             return -1
+   20:         x = cmp(self.err.__class__, anExc.__class__)
+   20:         if x != 0:
+>>>>>>             return x
+   20:         return cmp(self.err.args, anExc.args)
+       
+    1:     def __getattr__(self, attr):
+   40:         return getattr(self.err, attr)
+       
+    1: def do_test(buf, method):
+   50:     env = {}
+   50:     if method == "GET":
+   25:         fp = None
+   25:         env['REQUEST_METHOD'] = 'GET'
+   25:         env['QUERY_STRING'] = buf
+   25:     elif method == "POST":
+   25:         fp = StringIO(buf)
+   25:         env['REQUEST_METHOD'] = 'POST'
+   25:         env['CONTENT_TYPE'] = 'application/x-www-form-urlencoded'
+   25:         env['CONTENT_LENGTH'] = str(len(buf))
+           else:
+>>>>>>         raise ValueError, "unknown method: %s" % method
+   50:     try:
+   50:         return cgi.parse(fp, env, strict_parsing=1)
+   20:     except StandardError, err:
+   20:         return ComparableException(err)
+       
+       parse_strict_test_cases = [
+    1:     ("", ValueError("bad query field: ''")),
+    1:     ("&", ValueError("bad query field: ''")),
+    1:     ("&&", ValueError("bad query field: ''")),
+    1:     (";", ValueError("bad query field: ''")),
+    1:     (";&;", ValueError("bad query field: ''")),
+           # Should the next few really be valid?
+    1:     ("=", {}),
+    1:     ("=&=", {}),
+    1:     ("=;=", {}),
+           # This rest seem to make sense
+    1:     ("=a", {'': ['a']}),
+    1:     ("&=a", ValueError("bad query field: ''")),
+    1:     ("=a&", ValueError("bad query field: ''")),
+    1:     ("=&a", ValueError("bad query field: 'a'")),
+    1:     ("b=a", {'b': ['a']}),
+    1:     ("b+=a", {'b ': ['a']}),
+    1:     ("a=b=a", {'a': ['b=a']}),
+    1:     ("a=+b=a", {'a': [' b=a']}),
+    1:     ("&b=a", ValueError("bad query field: ''")),
+    1:     ("b&=a", ValueError("bad query field: 'b'")),
+    1:     ("a=a+b&b=b+c", {'a': ['a b'], 'b': ['b c']}),
+    1:     ("a=a+b&a=b+a", {'a': ['a b', 'b a']}),
+    1:     ("x=1&y=2.0&z=2-3.%2b0", {'x': ['1'], 'y': ['2.0'], 'z': ['2-3.+0']}),
+    1:     ("x=1;y=2.0&z=2-3.%2b0", {'x': ['1'], 'y': ['2.0'], 'z': ['2-3.+0']}),
+    1:     ("x=1;y=2.0;z=2-3.%2b0", {'x': ['1'], 'y': ['2.0'], 'z': ['2-3.+0']}),
+    1:     ("Hbc5161168c542333633315dee1182227:key_store_seqid=400006&cuyer=r&view=bustomer&order_id=0bb2e248638833d48cb7fed300000f1b&expire=964546263&lobale=en-US&kid=130003.300038&ss=env",
+    1:      {'Hbc5161168c542333633315dee1182227:key_store_seqid': ['400006'],
+    1:       'cuyer': ['r'],
+    1:       'expire': ['964546263'],
+    1:       'kid': ['130003.300038'],
+    1:       'lobale': ['en-US'],
+    1:       'order_id': ['0bb2e248638833d48cb7fed300000f1b'],
+    1:       'ss': ['env'],
+    1:       'view': ['bustomer'],
+             }),
+       
+    1:     ("group_id=5470&set=custom&_assigned_to=31392&_status=1&_category=100&SUBMIT=Browse",
+    1:      {'SUBMIT': ['Browse'],
+    1:       '_assigned_to': ['31392'],
+    1:       '_category': ['100'],
+    1:       '_status': ['1'],
+    1:       'group_id': ['5470'],
+    1:       'set': ['custom'],
+             })
+           ]
+       
+    1: def first_elts(list):
+  166:     return map(lambda x:x[0], list)
+       
+    1: def first_second_elts(list):
+  166:     return map(lambda p:(p[0], p[1][0]), list)
+       
+    1: def gen_result(data, environ):
+    6:     fake_stdin = StringIO(data)
+    6:     fake_stdin.seek(0)
+    6:     form = cgi.FieldStorage(fp=fake_stdin, environ=environ)
+       
+    6:     result = {}
+   22:     for k, v in dict(form).items():
+   16:         result[k] = isinstance(v, list) and form.getlist(k) or v.value
+       
+    6:     return result
+       
+    2: class CgiTests(unittest.TestCase):
+       
+    1:     def test_escape(self):
+    1:         self.assertEqual("test &amp; string", cgi.escape("test & string"))
+    1:         self.assertEqual("&lt;test string&gt;", cgi.escape("<test string>"))
+    1:         self.assertEqual("&quot;test string&quot;", cgi.escape('"test string"', True))
+       
+    1:     def test_strict(self):
+   26:         for orig, expect in parse_strict_test_cases:
+                   # Test basic parsing
+   25:             d = do_test(orig, "GET")
+   25:             self.assertEqual(d, expect, "Error parsing %s" % repr(orig))
+   25:             d = do_test(orig, "POST")
+   25:             self.assertEqual(d, expect, "Error parsing %s" % repr(orig))
+       
+   25:             env = {'QUERY_STRING': orig}
+   25:             fcd = cgi.FormContentDict(env)
+   25:             sd = cgi.SvFormContentDict(env)
+   25:             fs = cgi.FieldStorage(environ=env)
+   25:             if isinstance(expect, dict):
+                       # test dict interface
+   15:                 self.assertEqual(len(expect), len(fcd))
+   15:                 self.assertItemsEqual(expect.keys(), fcd.keys())
+   15:                 self.assertItemsEqual(expect.values(), fcd.values())
+   15:                 self.assertItemsEqual(expect.items(), fcd.items())
+   15:                 self.assertEqual(fcd.get("nonexistent field", "default"), "default")
+   15:                 self.assertEqual(len(sd), len(fs))
+   15:                 self.assertItemsEqual(sd.keys(), fs.keys())
+   15:                 self.assertEqual(fs.getvalue("nonexistent field", "default"), "default")
+                       # test individual fields
+   46:                 for key in expect.keys():
+   31:                     expect_val = expect[key]
+   31:                     self.assertTrue(fcd.has_key(key))
+   31:                     self.assertItemsEqual(fcd[key], expect[key])
+   31:                     self.assertEqual(fcd.get(key, "default"), fcd[key])
+   31:                     self.assertTrue(fs.has_key(key))
+   31:                     if len(expect_val) > 1:
+    1:                         single_value = 0
+                           else:
+   30:                         single_value = 1
+   31:                     try:
+   31:                         val = sd[key]
+    1:                     except IndexError:
+    1:                         self.assertFalse(single_value)
+    1:                         self.assertEqual(fs.getvalue(key), expect_val)
+                           else:
+   30:                         self.assertTrue(single_value)
+   30:                         self.assertEqual(val, expect_val[0])
+   30:                         self.assertEqual(fs.getvalue(key), expect_val[0])
+   31:                     self.assertItemsEqual(sd.getlist(key), expect_val)
+   31:                     if single_value:
+   30:                         self.assertItemsEqual(sd.values(),
+   30:                                                 first_elts(expect.values()))
+   30:                         self.assertItemsEqual(sd.items(),
+   30:                                                 first_second_elts(expect.items()))
+       
+    1:     def test_weird_formcontentdict(self):
+               # Test the weird FormContentDict classes
+    1:         env = {'QUERY_STRING': "x=1&y=2.0&z=2-3.%2b0&1=1abc"}
+    1:         expect = {'x': 1, 'y': 2.0, 'z': '2-3.+0', '1': '1abc'}
+    1:         d = cgi.InterpFormContentDict(env)
+    5:         for k, v in expect.items():
+    4:             self.assertEqual(d[k], v)
+    5:         for k, v in d.items():
+    4:             self.assertEqual(expect[k], v)
+    1:         self.assertItemsEqual(expect.values(), d.values())
+       
+    1:     def test_log(self):
+    1:         cgi.log("Testing")
+       
+    1:         cgi.logfp = StringIO()
+    1:         cgi.initlog("%s", "Testing initlog 1")
+    1:         cgi.log("%s", "Testing log 2")
+    1:         self.assertEqual(cgi.logfp.getvalue(), "Testing initlog 1\nTesting log 2\n")
+    1:         if os.path.exists("/dev/null"):
+    1:             cgi.logfp = None
+    1:             cgi.logfile = "/dev/null"
+    1:             cgi.initlog("%s", "Testing log 3")
+    1:             cgi.log("Testing log 4")
+       
+    1:     def test_fieldstorage_readline(self):
+               # FieldStorage uses readline, which has the capacity to read all
+               # contents of the input file into memory; we use readline's size argument
+               # to prevent that for files that do not contain any newlines in
+               # non-GET/HEAD requests
+    2:         class TestReadlineFile:
+    1:             def __init__(self, file):
+    1:                 self.file = file
+    1:                 self.numcalls = 0
+       
+    1:             def readline(self, size=None):
+    5:                 self.numcalls += 1
+    5:                 if size:
+    5:                     return self.file.readline(size)
+                       else:
+>>>>>>                     return self.file.readline()
+       
+    1:             def __getattr__(self, name):
+    4:                 file = self.__dict__['file']
+    4:                 a = getattr(file, name)
+    2:                 if not isinstance(a, int):
+    2:                     setattr(self, name, a)
+    2:                 return a
+       
+    1:         f = TestReadlineFile(tempfile.TemporaryFile())
+    1:         f.write('x' * 256 * 1024)
+    1:         f.seek(0)
+    1:         env = {'REQUEST_METHOD':'PUT'}
+    1:         fs = cgi.FieldStorage(fp=f, environ=env)
+               # if we're not chunking properly, readline is only called twice
+               # (by read_binary); if we are chunking properly, it will be called 5 times
+               # as long as the chunksize is 1 << 16.
+    1:         self.assertGreater(f.numcalls, 2)
+       
+    1:     def test_fieldstorage_invalid(self):
+    1:         fs = cgi.FieldStorage()
+    1:         self.assertFalse(fs)
+    1:         self.assertRaises(TypeError, bool(fs))
+    1:         self.assertEqual(list(fs), list(fs.keys()))
+    1:         fs.list.append(namedtuple('MockFieldStorage', 'name')('fieldvalue'))
+    1:         self.assertTrue(fs)
+       
+    1:     def test_fieldstorage_multipart(self):
+               #Test basic FieldStorage multipart parsing
+    1:         env = {'REQUEST_METHOD':'POST', 'CONTENT_TYPE':'multipart/form-data; boundary=---------------------------721837373350705526688164684', 'CONTENT_LENGTH':'558'}
+               postdata = """-----------------------------721837373350705526688164684
+       Content-Disposition: form-data; name="id"
+       
+       1234
+       -----------------------------721837373350705526688164684
+       Content-Disposition: form-data; name="title"
+       
+       
+       -----------------------------721837373350705526688164684
+       Content-Disposition: form-data; name="file"; filename="test.txt"
+       Content-Type: text/plain
+       
+       Testing 123.
+       
+       -----------------------------721837373350705526688164684
+       Content-Disposition: form-data; name="submit"
+       
+        Add\x20
+       -----------------------------721837373350705526688164684--
+    1: """
+    1:         fs = cgi.FieldStorage(fp=StringIO(postdata), environ=env)
+    1:         self.assertEqual(len(fs.list), 4)
+    1:         expect = [{'name':'id', 'filename':None, 'value':'1234'},
+    1:                   {'name':'title', 'filename':None, 'value':''},
+    1:                   {'name':'file', 'filename':'test.txt','value':'Testing 123.\n'},
+    1:                   {'name':'submit', 'filename':None, 'value':' Add '}]
+    5:         for x in range(len(fs.list)):
+   16:             for k, exp in expect[x].items():
+   12:                 got = getattr(fs.list[x], k)
+   12:                 self.assertEqual(got, exp)
+       
+    1:     def test_fieldstorage_multipart_maxline(self):
+               # Issue #18167
+    1:         maxline = 1 << 16
+    1:         self.maxDiff = None
+    1:         def check(content):
+                   data = """
+       ---123
+       Content-Disposition: form-data; name="upload"; filename="fake.txt"
+       Content-Type: text/plain
+       
+       %s
+       ---123--
+    3: """.replace('\n', '\r\n') % content
+    3:             environ = {
+    3:                 'CONTENT_LENGTH':   str(len(data)),
+    3:                 'CONTENT_TYPE':     'multipart/form-data; boundary=-123',
+    3:                 'REQUEST_METHOD':   'POST',
+                   }
+    3:             self.assertEqual(gen_result(data, environ), {'upload': content})
+    1:         check('x' * (maxline - 1))
+    1:         check('x' * (maxline - 1) + '\r')
+    1:         check('x' * (maxline - 1) + '\r' + 'y' * (maxline - 1))
+       
+    1:     _qs_result = {
+    1:         'key1': 'value1',
+    1:         'key2': ['value2x', 'value2y'],
+    1:         'key3': 'value3',
+    1:         'key4': 'value4'
+           }
+    1:     def testQSAndUrlEncode(self):
+    1:         data = "key2=value2x&key3=value3&key4=value4"
+    1:         environ = {
+    1:             'CONTENT_LENGTH':   str(len(data)),
+    1:             'CONTENT_TYPE':     'application/x-www-form-urlencoded',
+    1:             'QUERY_STRING':     'key1=value1&key2=value2y',
+    1:             'REQUEST_METHOD':   'POST',
+               }
+    1:         v = gen_result(data, environ)
+    1:         self.assertEqual(self._qs_result, v)
+       
+    1:     def testQSAndFormData(self):
+               data = """
+       ---123
+       Content-Disposition: form-data; name="key2"
+       
+       value2y
+       ---123
+       Content-Disposition: form-data; name="key3"
+       
+       value3
+       ---123
+       Content-Disposition: form-data; name="key4"
+       
+       value4
+       ---123--
+    1: """
+    1:         environ = {
+    1:             'CONTENT_LENGTH':   str(len(data)),
+    1:             'CONTENT_TYPE':     'multipart/form-data; boundary=-123',
+    1:             'QUERY_STRING':     'key1=value1&key2=value2x',
+    1:             'REQUEST_METHOD':   'POST',
+               }
+    1:         v = gen_result(data, environ)
+    1:         self.assertEqual(self._qs_result, v)
+       
+    1:     def testQSAndFormDataFile(self):
+               data = """
+       ---123
+       Content-Disposition: form-data; name="key2"
+       
+       value2y
+       ---123
+       Content-Disposition: form-data; name="key3"
+       
+       value3
+       ---123
+       Content-Disposition: form-data; name="key4"
+       
+       value4
+       ---123
+       Content-Disposition: form-data; name="upload"; filename="fake.txt"
+       Content-Type: text/plain
+       
+       this is the content of the fake file
+       
+       ---123--
+    1: """
+    1:         environ = {
+    1:             'CONTENT_LENGTH':   str(len(data)),
+    1:             'CONTENT_TYPE':     'multipart/form-data; boundary=-123',
+    1:             'QUERY_STRING':     'key1=value1&key2=value2x',
+    1:             'REQUEST_METHOD':   'POST',
+               }
+    1:         result = self._qs_result.copy()
+    1:         result.update({
+    1:             'upload': 'this is the content of the fake file\n'
+               })
+    1:         v = gen_result(data, environ)
+    1:         self.assertEqual(result, v)
+       
+    1:     def test_deprecated_parse_qs(self):
+               # this func is moved to urlparse, this is just a sanity check
+    1:         with check_warnings(('cgi.parse_qs is deprecated, use urlparse.'
+    1:                              'parse_qs instead', PendingDeprecationWarning)):
+    1:             self.assertEqual({'a': ['A1'], 'B': ['B3'], 'b': ['B2']},
+    1:                              cgi.parse_qs('a=A1&b=B2&B=B3'))
+       
+    1:     def test_deprecated_parse_qsl(self):
+               # this func is moved to urlparse, this is just a sanity check
+    1:         with check_warnings(('cgi.parse_qsl is deprecated, use urlparse.'
+    1:                              'parse_qsl instead', PendingDeprecationWarning)):
+    1:             self.assertEqual([('a', 'A1'), ('b', 'B2'), ('B', 'B3')],
+    1:                              cgi.parse_qsl('a=A1&b=B2&B=B3'))
+       
+    1:     def test_parse_header(self):
+    1:         self.assertEqual(
+    1:             cgi.parse_header("text/plain"),
+    1:             ("text/plain", {}))
+    1:         self.assertEqual(
+    1:             cgi.parse_header("text/vnd.just.made.this.up ; "),
+    1:             ("text/vnd.just.made.this.up", {}))
+    1:         self.assertEqual(
+    1:             cgi.parse_header("text/plain;charset=us-ascii"),
+    1:             ("text/plain", {"charset": "us-ascii"}))
+    1:         self.assertEqual(
+    1:             cgi.parse_header('text/plain ; charset="us-ascii"'),
+    1:             ("text/plain", {"charset": "us-ascii"}))
+    1:         self.assertEqual(
+    1:             cgi.parse_header('text/plain ; charset="us-ascii"; another=opt'),
+    1:             ("text/plain", {"charset": "us-ascii", "another": "opt"}))
+    1:         self.assertEqual(
+    1:             cgi.parse_header('attachment; filename="silly.txt"'),
+    1:             ("attachment", {"filename": "silly.txt"}))
+    1:         self.assertEqual(
+    1:             cgi.parse_header('attachment; filename="strange;name"'),
+    1:             ("attachment", {"filename": "strange;name"}))
+    1:         self.assertEqual(
+    1:             cgi.parse_header('attachment; filename="strange;name";size=123;'),
+    1:             ("attachment", {"filename": "strange;name", "size": "123"}))
+    1:         self.assertEqual(
+    1:             cgi.parse_header('form-data; name="files"; filename="fo\\"o;bar"'),
+    1:             ("form-data", {"name": "files", "filename": 'fo"o;bar'}))
+       
+       
+    1: def test_main():
+    1:     run_unittest(CgiTests)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

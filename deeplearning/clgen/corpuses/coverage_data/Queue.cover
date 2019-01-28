@@ -1,0 +1,244 @@
+    1: """A multi-producer, multi-consumer queue."""
+       
+    1: from time import time as _time
+    1: try:
+    1:     import threading as _threading
+>>>>>> except ImportError:
+>>>>>>     import dummy_threading as _threading
+    1: from collections import deque
+    1: import heapq
+       
+    1: __all__ = ['Empty', 'Full', 'Queue', 'PriorityQueue', 'LifoQueue']
+       
+    2: class Empty(Exception):
+    1:     "Exception raised by Queue.get(block=0)/get_nowait()."
+    1:     pass
+       
+    2: class Full(Exception):
+    1:     "Exception raised by Queue.put(block=0)/put_nowait()."
+    1:     pass
+       
+    2: class Queue:
+           """Create a queue object with a given maximum size.
+       
+           If maxsize is <= 0, the queue size is infinite.
+    1:     """
+    1:     def __init__(self, maxsize=0):
+  187:         self.maxsize = maxsize
+  187:         self._init(maxsize)
+               # mutex must be held whenever the queue is mutating.  All methods
+               # that acquire mutex must release it before returning.  mutex
+               # is shared between the three conditions, so acquiring and
+               # releasing the conditions also acquires and releases mutex.
+  187:         self.mutex = _threading.Lock()
+               # Notify not_empty whenever an item is added to the queue; a
+               # thread waiting to get is notified then.
+  187:         self.not_empty = _threading.Condition(self.mutex)
+               # Notify not_full whenever an item is removed from the queue;
+               # a thread waiting to put is notified then.
+  187:         self.not_full = _threading.Condition(self.mutex)
+               # Notify all_tasks_done whenever the number of unfinished tasks
+               # drops to zero; thread waiting to join() is notified to resume
+  187:         self.all_tasks_done = _threading.Condition(self.mutex)
+  187:         self.unfinished_tasks = 0
+       
+    1:     def task_done(self):
+               """Indicate that a formerly enqueued task is complete.
+       
+               Used by Queue consumer threads.  For each get() used to fetch a task,
+               a subsequent call to task_done() tells the queue that the processing
+               on the task is complete.
+       
+               If a join() is currently blocking, it will resume when all items
+               have been processed (meaning that a task_done() call was received
+               for every item that had been put() into the queue).
+       
+               Raises a ValueError if called more times than there were items
+               placed in the queue.
+               """
+  677:         self.all_tasks_done.acquire()
+  677:         try:
+  677:             unfinished = self.unfinished_tasks - 1
+  677:             if unfinished <= 0:
+   73:                 if unfinished < 0:
+    6:                     raise ValueError('task_done() called too many times')
+   67:                 self.all_tasks_done.notify_all()
+  671:             self.unfinished_tasks = unfinished
+               finally:
+  677:             self.all_tasks_done.release()
+       
+    1:     def join(self):
+               """Blocks until all items in the Queue have been gotten and processed.
+       
+               The count of unfinished tasks goes up whenever an item is added to the
+               queue. The count goes down whenever a consumer thread calls task_done()
+               to indicate the item was retrieved and all work on it is complete.
+       
+               When the count of unfinished tasks drops to zero, join() unblocks.
+               """
+   62:         self.all_tasks_done.acquire()
+   62:         try:
+  124:             while self.unfinished_tasks:
+   62:                 self.all_tasks_done.wait()
+               finally:
+   62:             self.all_tasks_done.release()
+       
+    1:     def qsize(self):
+               """Return the approximate size of the queue (not reliable!)."""
+   18:         self.mutex.acquire()
+   18:         n = self._qsize()
+   18:         self.mutex.release()
+   18:         return n
+       
+    1:     def empty(self):
+               """Return True if the queue is empty, False otherwise (not reliable!)."""
+  131:         self.mutex.acquire()
+  131:         n = not self._qsize()
+  131:         self.mutex.release()
+  131:         return n
+       
+    1:     def full(self):
+               """Return True if the queue is full, False otherwise (not reliable!)."""
+   23:         self.mutex.acquire()
+   23:         n = 0 < self.maxsize == self._qsize()
+   23:         self.mutex.release()
+   23:         return n
+       
+    1:     def put(self, item, block=True, timeout=None):
+               """Put an item into the queue.
+       
+               If optional args 'block' is true and 'timeout' is None (the default),
+               block if necessary until a free slot is available. If 'timeout' is
+               a non-negative number, it blocks at most 'timeout' seconds and raises
+               the Full exception if no free slot was available within that time.
+               Otherwise ('block' is false), put an item on the queue if a free slot
+               is immediately available, else raise the Full exception ('timeout'
+               is ignored in that case).
+               """
+ 3246:         self.not_full.acquire()
+ 3243:         try:
+ 3245:             if self.maxsize > 0:
+  139:                 if not block:
+   15:                     if self._qsize() == self.maxsize:
+   10:                         raise Full
+  124:                 elif timeout is None:
+  118:                     while self._qsize() == self.maxsize:
+   12:                         self.not_full.wait()
+   18:                 elif timeout < 0:
+>>>>>>                     raise ValueError("'timeout' must be a non-negative number")
+                       else:
+   18:                     endtime = _time() + timeout
+   34:                     while self._qsize() == self.maxsize:
+   24:                         remaining = endtime - _time()
+   24:                         if remaining <= 0.0:
+    8:                             raise Full
+   16:                         self.not_full.wait(remaining)
+ 3228:             self._put(item)
+ 3220:             self.unfinished_tasks += 1
+ 3220:             self.not_empty.notify()
+               finally:
+ 3246:             self.not_full.release()
+       
+    1:     def put_nowait(self, item):
+               """Put an item into the queue without blocking.
+       
+               Only enqueue the item if a free slot is immediately available.
+               Otherwise raise the Full exception.
+               """
+    2:         return self.put(item, False)
+       
+    1:     def get(self, block=True, timeout=None):
+               """Remove and return an item from the queue.
+       
+               If optional args 'block' is true and 'timeout' is None (the default),
+               block if necessary until an item is available. If 'timeout' is
+               a non-negative number, it blocks at most 'timeout' seconds and raises
+               the Empty exception if no item was available within that time.
+               Otherwise ('block' is false), return an item if one is immediately
+               available, else raise the Empty exception ('timeout' is ignored
+               in that case).
+               """
+ 3235:         self.not_empty.acquire()
+ 3226:         try:
+ 3235:             if not block:
+   12:                 if not self._qsize():
+   11:                     raise Empty
+ 3223:             elif timeout is None:
+ 3438:                 while not self._qsize():
+  281:                     self.not_empty.wait()
+   66:             elif timeout < 0:
+>>>>>>                 raise ValueError("'timeout' must be a non-negative number")
+                   else:
+   66:                 endtime = _time() + timeout
+   80:                 while not self._qsize():
+   22:                     remaining = endtime - _time()
+   22:                     if remaining <= 0.0:
+    8:                         raise Empty
+   14:                     self.not_empty.wait(remaining)
+ 3216:             item = self._get()
+ 3210:             self.not_full.notify()
+ 3210:             return item
+               finally:
+ 3235:             self.not_empty.release()
+       
+    1:     def get_nowait(self):
+               """Remove and return an item from the queue without blocking.
+       
+               Only get an item if one is immediately available. Otherwise
+               raise the Empty exception.
+               """
+    2:         return self.get(False)
+       
+           # Override these methods to implement other queue organizations
+           # (e.g. stack or priority queue).
+           # These will only be called with appropriate locks held
+       
+           # Initialize the queue representation
+    1:     def _init(self, maxsize):
+  181:         self.queue = deque()
+       
+    1:     def _qsize(self, len=len):
+ 3273:         return len(self.queue)
+       
+           # Put a new item in the queue
+    1:     def _put(self, item):
+ 2764:         self.queue.append(item)
+       
+           # Get an item from the queue
+    1:     def _get(self):
+ 2754:         return self.queue.popleft()
+       
+       
+    2: class PriorityQueue(Queue):
+           '''Variant of Queue that retrieves open entries in priority order (lowest first).
+       
+           Entries are typically tuples of the form:  (priority number, data).
+    1:     '''
+       
+    1:     def _init(self, maxsize):
+    3:         self.queue = []
+       
+    1:     def _qsize(self, len=len):
+  300:         return len(self.queue)
+       
+    1:     def _put(self, item, heappush=heapq.heappush):
+  228:         heappush(self.queue, item)
+       
+    1:     def _get(self, heappop=heapq.heappop):
+  228:         return heappop(self.queue)
+       
+       
+    2: class LifoQueue(Queue):
+    1:     '''Variant of Queue that retrieves most recently added entries first.'''
+       
+    1:     def _init(self, maxsize):
+    3:         self.queue = []
+       
+    1:     def _qsize(self, len=len):
+  296:         return len(self.queue)
+       
+    1:     def _put(self, item):
+  228:         self.queue.append(item)
+       
+    1:     def _get(self):
+  228:         return self.queue.pop()

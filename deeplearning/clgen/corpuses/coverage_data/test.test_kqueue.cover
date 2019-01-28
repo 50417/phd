@@ -1,0 +1,212 @@
+       """
+       Tests for kqueue wrapper.
+    1: """
+    1: import socket
+    1: import errno
+    1: import time
+    1: import select
+    1: import sys
+    1: import unittest
+       
+    1: from test import test_support
+    1: if not hasattr(select, "kqueue"):
+>>>>>>     raise unittest.SkipTest("test works only on BSD")
+       
+    2: class TestKQueue(unittest.TestCase):
+    1:     def test_create_queue(self):
+    1:         kq = select.kqueue()
+    1:         self.assertTrue(kq.fileno() > 0, kq.fileno())
+    1:         self.assertTrue(not kq.closed)
+    1:         kq.close()
+    1:         self.assertTrue(kq.closed)
+    1:         self.assertRaises(ValueError, kq.fileno)
+       
+    1:     def test_create_event(self):
+    1:         fd = sys.stderr.fileno()
+    1:         ev = select.kevent(fd)
+    1:         other = select.kevent(1000)
+    1:         self.assertEqual(ev.ident, fd)
+    1:         self.assertEqual(ev.filter, select.KQ_FILTER_READ)
+    1:         self.assertEqual(ev.flags, select.KQ_EV_ADD)
+    1:         self.assertEqual(ev.fflags, 0)
+    1:         self.assertEqual(ev.data, 0)
+    1:         self.assertEqual(ev.udata, 0)
+    1:         self.assertEqual(ev, ev)
+    1:         self.assertNotEqual(ev, other)
+    1:         self.assertEqual(cmp(ev, other), -1)
+    1:         self.assertTrue(ev < other)
+    1:         self.assertTrue(other >= ev)
+    1:         self.assertRaises(TypeError, cmp, ev, None)
+    1:         self.assertRaises(TypeError, cmp, ev, 1)
+    1:         self.assertRaises(TypeError, cmp, ev, "ev")
+       
+    1:         ev = select.kevent(fd, select.KQ_FILTER_WRITE)
+    1:         self.assertEqual(ev.ident, fd)
+    1:         self.assertEqual(ev.filter, select.KQ_FILTER_WRITE)
+    1:         self.assertEqual(ev.flags, select.KQ_EV_ADD)
+    1:         self.assertEqual(ev.fflags, 0)
+    1:         self.assertEqual(ev.data, 0)
+    1:         self.assertEqual(ev.udata, 0)
+    1:         self.assertEqual(ev, ev)
+    1:         self.assertNotEqual(ev, other)
+       
+    1:         ev = select.kevent(fd, select.KQ_FILTER_WRITE, select.KQ_EV_ONESHOT)
+    1:         self.assertEqual(ev.ident, fd)
+    1:         self.assertEqual(ev.filter, select.KQ_FILTER_WRITE)
+    1:         self.assertEqual(ev.flags, select.KQ_EV_ONESHOT)
+    1:         self.assertEqual(ev.fflags, 0)
+    1:         self.assertEqual(ev.data, 0)
+    1:         self.assertEqual(ev.udata, 0)
+    1:         self.assertEqual(ev, ev)
+    1:         self.assertNotEqual(ev, other)
+       
+    1:         ev = select.kevent(1, 2, 3, 4, 5, 6)
+    1:         self.assertEqual(ev.ident, 1)
+    1:         self.assertEqual(ev.filter, 2)
+    1:         self.assertEqual(ev.flags, 3)
+    1:         self.assertEqual(ev.fflags, 4)
+    1:         self.assertEqual(ev.data, 5)
+    1:         self.assertEqual(ev.udata, 6)
+    1:         self.assertEqual(ev, ev)
+    1:         self.assertNotEqual(ev, other)
+       
+    1:         bignum = 0x7fff
+    1:         ev = select.kevent(bignum, 1, 2, 3, bignum - 1, bignum)
+    1:         self.assertEqual(ev.ident, bignum)
+    1:         self.assertEqual(ev.filter, 1)
+    1:         self.assertEqual(ev.flags, 2)
+    1:         self.assertEqual(ev.fflags, 3)
+    1:         self.assertEqual(ev.data, bignum - 1)
+    1:         self.assertEqual(ev.udata, bignum)
+    1:         self.assertEqual(ev, ev)
+    1:         self.assertNotEqual(ev, other)
+       
+               # Issue 11973
+    1:         bignum = 0xffff
+    1:         ev = select.kevent(0, 1, bignum)
+    1:         self.assertEqual(ev.ident, 0)
+    1:         self.assertEqual(ev.filter, 1)
+    1:         self.assertEqual(ev.flags, bignum)
+    1:         self.assertEqual(ev.fflags, 0)
+    1:         self.assertEqual(ev.data, 0)
+    1:         self.assertEqual(ev.udata, 0)
+    1:         self.assertEqual(ev, ev)
+    1:         self.assertNotEqual(ev, other)
+       
+               # Issue 11973
+    1:         bignum = 0xffffffff
+    1:         ev = select.kevent(0, 1, 2, bignum)
+    1:         self.assertEqual(ev.ident, 0)
+    1:         self.assertEqual(ev.filter, 1)
+    1:         self.assertEqual(ev.flags, 2)
+    1:         self.assertEqual(ev.fflags, bignum)
+    1:         self.assertEqual(ev.data, 0)
+    1:         self.assertEqual(ev.udata, 0)
+    1:         self.assertEqual(ev, ev)
+    1:         self.assertNotEqual(ev, other)
+       
+       
+    1:     def test_queue_event(self):
+    1:         serverSocket = socket.socket()
+    1:         serverSocket.bind(('127.0.0.1', 0))
+    1:         serverSocket.listen(1)
+    1:         client = socket.socket()
+    1:         client.setblocking(False)
+    1:         try:
+    1:             client.connect(('127.0.0.1', serverSocket.getsockname()[1]))
+    1:         except socket.error, e:
+    1:             self.assertEqual(e.args[0], errno.EINPROGRESS)
+               else:
+                   #raise AssertionError("Connect should have raised EINPROGRESS")
+                   pass # FreeBSD doesn't raise an exception here
+    1:         server, addr = serverSocket.accept()
+       
+    1:         kq = select.kqueue()
+    1:         kq2 = select.kqueue.fromfd(kq.fileno())
+       
+    1:         ev = select.kevent(server.fileno(),
+    1:                            select.KQ_FILTER_WRITE,
+    1:                            select.KQ_EV_ADD | select.KQ_EV_ENABLE)
+    1:         kq.control([ev], 0)
+    1:         ev = select.kevent(server.fileno(),
+    1:                            select.KQ_FILTER_READ,
+    1:                            select.KQ_EV_ADD | select.KQ_EV_ENABLE)
+    1:         kq.control([ev], 0)
+    1:         ev = select.kevent(client.fileno(),
+    1:                            select.KQ_FILTER_WRITE,
+    1:                            select.KQ_EV_ADD | select.KQ_EV_ENABLE)
+    1:         kq2.control([ev], 0)
+    1:         ev = select.kevent(client.fileno(),
+    1:                            select.KQ_FILTER_READ,
+    1:                            select.KQ_EV_ADD | select.KQ_EV_ENABLE)
+    1:         kq2.control([ev], 0)
+       
+    1:         events = kq.control(None, 4, 1)
+    4:         events = set((e.ident, e.filter) for e in events)
+    1:         self.assertEqual(events, set([
+    1:             (client.fileno(), select.KQ_FILTER_WRITE),
+    1:             (server.fileno(), select.KQ_FILTER_WRITE)]))
+       
+    1:         client.send("Hello!")
+    1:         server.send("world!!!")
+       
+               # We may need to call it several times
+    2:         for i in range(10):
+    2:             events = kq.control(None, 4, 1)
+    2:             if len(events) == 4:
+    1:                 break
+    1:             time.sleep(1.0)
+               else:
+>>>>>>             self.fail('timeout waiting for event notifications')
+       
+    6:         events = set((e.ident, e.filter) for e in events)
+    1:         self.assertEqual(events, set([
+    1:             (client.fileno(), select.KQ_FILTER_WRITE),
+    1:             (client.fileno(), select.KQ_FILTER_READ),
+    1:             (server.fileno(), select.KQ_FILTER_WRITE),
+    1:             (server.fileno(), select.KQ_FILTER_READ)]))
+       
+               # Remove completely client, and server read part
+    1:         ev = select.kevent(client.fileno(),
+    1:                            select.KQ_FILTER_WRITE,
+    1:                            select.KQ_EV_DELETE)
+    1:         kq.control([ev], 0)
+    1:         ev = select.kevent(client.fileno(),
+    1:                            select.KQ_FILTER_READ,
+    1:                            select.KQ_EV_DELETE)
+    1:         kq.control([ev], 0)
+    1:         ev = select.kevent(server.fileno(),
+    1:                            select.KQ_FILTER_READ,
+    1:                            select.KQ_EV_DELETE)
+    1:         kq.control([ev], 0, 0)
+       
+    1:         events = kq.control([], 4, 0.99)
+    3:         events = set((e.ident, e.filter) for e in events)
+    1:         self.assertEqual(events, set([
+    1:             (server.fileno(), select.KQ_FILTER_WRITE)]))
+       
+    1:         client.close()
+    1:         server.close()
+    1:         serverSocket.close()
+       
+    1:     def testPair(self):
+    1:         kq = select.kqueue()
+    1:         a, b = socket.socketpair()
+       
+    1:         a.send(b'foo')
+    1:         event1 = select.kevent(a, select.KQ_FILTER_READ, select.KQ_EV_ADD | select.KQ_EV_ENABLE)
+    1:         event2 = select.kevent(b, select.KQ_FILTER_READ, select.KQ_EV_ADD | select.KQ_EV_ENABLE)
+    1:         r = kq.control([event1, event2], 1, 1)
+    1:         self.assertTrue(r)
+    1:         self.assertFalse(r[0].flags & select.KQ_EV_ERROR)
+    1:         self.assertEqual(b.recv(r[0].data), b'foo')
+       
+    1:         a.close()
+    1:         b.close()
+    1:         kq.close()
+       
+    1: def test_main():
+    1:     test_support.run_unittest(TestKQueue)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

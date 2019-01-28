@@ -1,0 +1,1452 @@
+       # test for xml.dom.minidom
+       
+    1: import copy
+    1: import pickle
+    1: from StringIO import StringIO
+    1: from test.test_support import verbose, run_unittest, findfile
+    1: import unittest
+       
+    1: import xml.dom
+    1: import xml.dom.minidom
+    1: import xml.parsers.expat
+       
+    1: from xml.dom.minidom import parse, Node, Document, parseString
+    1: from xml.dom.minidom import getDOMImplementation
+       
+       
+    1: tstfile = findfile("test.xml", subdir="xmltestdata")
+    1: sample = ("<?xml version='1.0' encoding='us-ascii'?>\n"
+                 "<!DOCTYPE doc PUBLIC 'http://xml.python.org/public'"
+                 " 'http://xml.python.org/system' [\n"
+                 "  <!ELEMENT e EMPTY>\n"
+                 "  <!ENTITY ent SYSTEM 'http://xml.python.org/entity'>\n"
+                 "]><doc attr='value'> text\n"
+                 "<?pi sample?> <!-- comment --> <e/> </doc>")
+       
+       # The tests of DocumentType importing use these helpers to construct
+       # the documents to work with, since not all DOM builders actually
+       # create the DocumentType nodes.
+    1: def create_doc_without_doctype(doctype=None):
+    7:     return getDOMImplementation().createDocument(None, "doc", doctype)
+       
+    1: def create_nonempty_doctype():
+    6:     doctype = getDOMImplementation().createDocumentType("doc", None, None)
+    6:     doctype.entities._seq = []
+    6:     doctype.notations._seq = []
+    6:     notation = xml.dom.minidom.Notation("my-notation", None,
+    6:                                         "http://xml.python.org/notations/my")
+    6:     doctype.notations._seq.append(notation)
+    6:     entity = xml.dom.minidom.Entity("my-entity", None,
+    6:                                     "http://xml.python.org/entities/my",
+    6:                                     "my-notation")
+    6:     entity.version = "1.0"
+    6:     entity.encoding = "utf-8"
+    6:     entity.actualEncoding = "us-ascii"
+    6:     doctype.entities._seq.append(entity)
+    6:     return doctype
+       
+    1: def create_doc_with_doctype():
+    4:     doctype = create_nonempty_doctype()
+    4:     doc = create_doc_without_doctype(doctype)
+    4:     doctype.entities.item(0).ownerDocument = doc
+    4:     doctype.notations.item(0).ownerDocument = doc
+    4:     return doc
+       
+    2: class MinidomTest(unittest.TestCase):
+    1:     def confirm(self, test, testname = "Test"):
+  191:         self.assertTrue(test, testname)
+       
+    1:     def checkWholeText(self, node, s):
+   16:         t = node.wholeText
+   16:         self.confirm(t == s, "looking for %s, found %s" % (repr(s), repr(t)))
+       
+    1:     def testParseFromFile(self):
+    1:         dom = parse(StringIO(open(tstfile).read()))
+    1:         dom.unlink()
+    1:         self.confirm(isinstance(dom,Document))
+       
+    1:     def testGetElementsByTagName(self):
+    1:         dom = parse(tstfile)
+    1:         self.confirm(dom.getElementsByTagName("LI") == \
+    1:                 dom.documentElement.getElementsByTagName("LI"))
+    1:         dom.unlink()
+       
+    1:     def testInsertBefore(self):
+    1:         dom = parseString("<doc><foo/></doc>")
+    1:         root = dom.documentElement
+    1:         elem = root.childNodes[0]
+    1:         nelem = dom.createElement("element")
+    1:         root.insertBefore(nelem, elem)
+    1:         self.confirm(len(root.childNodes) == 2
+    1:                 and root.childNodes.length == 2
+    1:                 and root.childNodes[0] is nelem
+    1:                 and root.childNodes.item(0) is nelem
+    1:                 and root.childNodes[1] is elem
+    1:                 and root.childNodes.item(1) is elem
+    1:                 and root.firstChild is nelem
+    1:                 and root.lastChild is elem
+    1:                 and root.toxml() == "<doc><element/><foo/></doc>"
+    1:                 , "testInsertBefore -- node properly placed in tree")
+    1:         nelem = dom.createElement("element")
+    1:         root.insertBefore(nelem, None)
+    1:         self.confirm(len(root.childNodes) == 3
+    1:                 and root.childNodes.length == 3
+    1:                 and root.childNodes[1] is elem
+    1:                 and root.childNodes.item(1) is elem
+    1:                 and root.childNodes[2] is nelem
+    1:                 and root.childNodes.item(2) is nelem
+    1:                 and root.lastChild is nelem
+    1:                 and nelem.previousSibling is elem
+    1:                 and root.toxml() == "<doc><element/><foo/><element/></doc>"
+    1:                 , "testInsertBefore -- node properly placed in tree")
+    1:         nelem2 = dom.createElement("bar")
+    1:         root.insertBefore(nelem2, nelem)
+    1:         self.confirm(len(root.childNodes) == 4
+    1:                 and root.childNodes.length == 4
+    1:                 and root.childNodes[2] is nelem2
+    1:                 and root.childNodes.item(2) is nelem2
+    1:                 and root.childNodes[3] is nelem
+    1:                 and root.childNodes.item(3) is nelem
+    1:                 and nelem2.nextSibling is nelem
+    1:                 and nelem.previousSibling is nelem2
+    1:                 and root.toxml() ==
+    1:                 "<doc><element/><foo/><bar/><element/></doc>"
+    1:                 , "testInsertBefore -- node properly placed in tree")
+    1:         dom.unlink()
+       
+    1:     def _create_fragment_test_nodes(self):
+    4:         dom = parseString("<doc/>")
+    4:         orig = dom.createTextNode("original")
+    4:         c1 = dom.createTextNode("foo")
+    4:         c2 = dom.createTextNode("bar")
+    4:         c3 = dom.createTextNode("bat")
+    4:         dom.documentElement.appendChild(orig)
+    4:         frag = dom.createDocumentFragment()
+    4:         frag.appendChild(c1)
+    4:         frag.appendChild(c2)
+    4:         frag.appendChild(c3)
+    4:         return dom, orig, c1, c2, c3, frag
+       
+    1:     def testInsertBeforeFragment(self):
+    1:         dom, orig, c1, c2, c3, frag = self._create_fragment_test_nodes()
+    1:         dom.documentElement.insertBefore(frag, None)
+    1:         self.confirm(tuple(dom.documentElement.childNodes) ==
+    1:                      (orig, c1, c2, c3),
+    1:                      "insertBefore(<fragment>, None)")
+    1:         frag.unlink()
+    1:         dom.unlink()
+       
+    1:         dom, orig, c1, c2, c3, frag = self._create_fragment_test_nodes()
+    1:         dom.documentElement.insertBefore(frag, orig)
+    1:         self.confirm(tuple(dom.documentElement.childNodes) ==
+    1:                      (c1, c2, c3, orig),
+    1:                      "insertBefore(<fragment>, orig)")
+    1:         frag.unlink()
+    1:         dom.unlink()
+       
+    1:     def testAppendChild(self):
+    1:         dom = parse(tstfile)
+    1:         dom.documentElement.appendChild(dom.createComment(u"Hello"))
+    1:         self.confirm(dom.documentElement.childNodes[-1].nodeName == "#comment")
+    1:         self.confirm(dom.documentElement.childNodes[-1].data == "Hello")
+    1:         dom.unlink()
+       
+    1:     def testAppendChildFragment(self):
+    1:         dom, orig, c1, c2, c3, frag = self._create_fragment_test_nodes()
+    1:         dom.documentElement.appendChild(frag)
+    1:         self.confirm(tuple(dom.documentElement.childNodes) ==
+    1:                      (orig, c1, c2, c3),
+    1:                      "appendChild(<fragment>)")
+    1:         frag.unlink()
+    1:         dom.unlink()
+       
+    1:     def testReplaceChildFragment(self):
+    1:         dom, orig, c1, c2, c3, frag = self._create_fragment_test_nodes()
+    1:         dom.documentElement.replaceChild(frag, orig)
+    1:         orig.unlink()
+    1:         self.confirm(tuple(dom.documentElement.childNodes) == (c1, c2, c3),
+    1:                 "replaceChild(<fragment>)")
+    1:         frag.unlink()
+    1:         dom.unlink()
+       
+    1:     def testLegalChildren(self):
+    1:         dom = Document()
+    1:         elem = dom.createElement('element')
+    1:         text = dom.createTextNode('text')
+    1:         self.assertRaises(xml.dom.HierarchyRequestErr, dom.appendChild, text)
+       
+    1:         dom.appendChild(elem)
+    1:         self.assertRaises(xml.dom.HierarchyRequestErr, dom.insertBefore, text,
+    1:                           elem)
+    1:         self.assertRaises(xml.dom.HierarchyRequestErr, dom.replaceChild, text,
+    1:                           elem)
+       
+    1:         nodemap = elem.attributes
+    1:         self.assertRaises(xml.dom.HierarchyRequestErr, nodemap.setNamedItem,
+    1:                           text)
+    1:         self.assertRaises(xml.dom.HierarchyRequestErr, nodemap.setNamedItemNS,
+    1:                           text)
+       
+    1:         elem.appendChild(text)
+    1:         dom.unlink()
+       
+    1:     def testNamedNodeMapSetItem(self):
+    1:         dom = Document()
+    1:         elem = dom.createElement('element')
+    1:         attrs = elem.attributes
+    1:         attrs["foo"] = "bar"
+    1:         a = attrs.item(0)
+    1:         self.confirm(a.ownerDocument is dom,
+    1:                 "NamedNodeMap.__setitem__() sets ownerDocument")
+    1:         self.confirm(a.ownerElement is elem,
+    1:                 "NamedNodeMap.__setitem__() sets ownerElement")
+    1:         self.confirm(a.value == "bar",
+    1:                 "NamedNodeMap.__setitem__() sets value")
+    1:         self.confirm(a.nodeValue == "bar",
+    1:                 "NamedNodeMap.__setitem__() sets nodeValue")
+    1:         elem.unlink()
+    1:         dom.unlink()
+       
+    1:     def testNonZero(self):
+    1:         dom = parse(tstfile)
+    1:         self.confirm(dom)# should not be zero
+    1:         dom.appendChild(dom.createComment("foo"))
+    1:         self.confirm(not dom.childNodes[-1].childNodes)
+    1:         dom.unlink()
+       
+    1:     def testUnlink(self):
+    1:         dom = parse(tstfile)
+    1:         dom.unlink()
+       
+    1:     def testElement(self):
+    1:         dom = Document()
+    1:         dom.appendChild(dom.createElement("abc"))
+    1:         self.confirm(dom.documentElement)
+    1:         dom.unlink()
+       
+    1:     def testAAA(self):
+    1:         dom = parseString("<abc/>")
+    1:         el = dom.documentElement
+    1:         el.setAttribute("spam", "jam2")
+    1:         self.confirm(el.toxml() == '<abc spam="jam2"/>', "testAAA")
+    1:         a = el.getAttributeNode("spam")
+    1:         self.confirm(a.ownerDocument is dom,
+    1:                 "setAttribute() sets ownerDocument")
+    1:         self.confirm(a.ownerElement is dom.documentElement,
+    1:                 "setAttribute() sets ownerElement")
+    1:         dom.unlink()
+       
+    1:     def testAAB(self):
+    1:         dom = parseString("<abc/>")
+    1:         el = dom.documentElement
+    1:         el.setAttribute("spam", "jam")
+    1:         el.setAttribute("spam", "jam2")
+    1:         self.confirm(el.toxml() == '<abc spam="jam2"/>', "testAAB")
+    1:         dom.unlink()
+       
+    1:     def testAddAttr(self):
+    1:         dom = Document()
+    1:         child = dom.appendChild(dom.createElement("abc"))
+       
+    1:         child.setAttribute("def", "ghi")
+    1:         self.confirm(child.getAttribute("def") == "ghi")
+    1:         self.confirm(child.attributes["def"].value == "ghi")
+       
+    1:         child.setAttribute("jkl", "mno")
+    1:         self.confirm(child.getAttribute("jkl") == "mno")
+    1:         self.confirm(child.attributes["jkl"].value == "mno")
+       
+    1:         self.confirm(len(child.attributes) == 2)
+       
+    1:         child.setAttribute("def", "newval")
+    1:         self.confirm(child.getAttribute("def") == "newval")
+    1:         self.confirm(child.attributes["def"].value == "newval")
+       
+    1:         self.confirm(len(child.attributes) == 2)
+    1:         dom.unlink()
+       
+    1:     def testDeleteAttr(self):
+    1:         dom = Document()
+    1:         child = dom.appendChild(dom.createElement("abc"))
+       
+    1:         self.confirm(len(child.attributes) == 0)
+    1:         child.setAttribute("def", "ghi")
+    1:         self.confirm(len(child.attributes) == 1)
+    1:         del child.attributes["def"]
+    1:         self.confirm(len(child.attributes) == 0)
+    1:         dom.unlink()
+       
+    1:     def testRemoveAttr(self):
+    1:         dom = Document()
+    1:         child = dom.appendChild(dom.createElement("abc"))
+       
+    1:         child.setAttribute("def", "ghi")
+    1:         self.confirm(len(child.attributes) == 1)
+    1:         child.removeAttribute("def")
+    1:         self.confirm(len(child.attributes) == 0)
+    1:         dom.unlink()
+       
+    1:     def testRemoveAttrNS(self):
+    1:         dom = Document()
+    1:         child = dom.appendChild(
+    1:                 dom.createElementNS("http://www.python.org", "python:abc"))
+    1:         child.setAttributeNS("http://www.w3.org", "xmlns:python",
+    1:                                                 "http://www.python.org")
+    1:         child.setAttributeNS("http://www.python.org", "python:abcattr", "foo")
+    1:         self.confirm(len(child.attributes) == 2)
+    1:         child.removeAttributeNS("http://www.python.org", "abcattr")
+    1:         self.confirm(len(child.attributes) == 1)
+    1:         dom.unlink()
+       
+    1:     def testRemoveAttributeNode(self):
+    1:         dom = Document()
+    1:         child = dom.appendChild(dom.createElement("foo"))
+    1:         child.setAttribute("spam", "jam")
+    1:         self.confirm(len(child.attributes) == 1)
+    1:         node = child.getAttributeNode("spam")
+    1:         child.removeAttributeNode(node)
+    1:         self.confirm(len(child.attributes) == 0
+    1:                 and child.getAttributeNode("spam") is None)
+    1:         dom.unlink()
+       
+    1:     def testChangeAttr(self):
+    1:         dom = parseString("<abc/>")
+    1:         el = dom.documentElement
+    1:         el.setAttribute("spam", "jam")
+    1:         self.confirm(len(el.attributes) == 1)
+    1:         el.setAttribute("spam", "bam")
+               # Set this attribute to be an ID and make sure that doesn't change
+               # when changing the value:
+    1:         el.setIdAttribute("spam")
+    1:         self.confirm(len(el.attributes) == 1
+    1:                 and el.attributes["spam"].value == "bam"
+    1:                 and el.attributes["spam"].nodeValue == "bam"
+    1:                 and el.getAttribute("spam") == "bam"
+    1:                 and el.getAttributeNode("spam").isId)
+    1:         el.attributes["spam"] = "ham"
+    1:         self.confirm(len(el.attributes) == 1
+    1:                 and el.attributes["spam"].value == "ham"
+    1:                 and el.attributes["spam"].nodeValue == "ham"
+    1:                 and el.getAttribute("spam") == "ham"
+    1:                 and el.attributes["spam"].isId)
+    1:         el.setAttribute("spam2", "bam")
+    1:         self.confirm(len(el.attributes) == 2
+    1:                 and el.attributes["spam"].value == "ham"
+    1:                 and el.attributes["spam"].nodeValue == "ham"
+    1:                 and el.getAttribute("spam") == "ham"
+    1:                 and el.attributes["spam2"].value == "bam"
+    1:                 and el.attributes["spam2"].nodeValue == "bam"
+    1:                 and el.getAttribute("spam2") == "bam")
+    1:         el.attributes["spam2"] = "bam2"
+    1:         self.confirm(len(el.attributes) == 2
+    1:                 and el.attributes["spam"].value == "ham"
+    1:                 and el.attributes["spam"].nodeValue == "ham"
+    1:                 and el.getAttribute("spam") == "ham"
+    1:                 and el.attributes["spam2"].value == "bam2"
+    1:                 and el.attributes["spam2"].nodeValue == "bam2"
+    1:                 and el.getAttribute("spam2") == "bam2")
+    1:         dom.unlink()
+       
+    1:     def testGetElementsByTagNameNS(self):
+               d="""<foo xmlns:minidom='http://pyxml.sf.net/minidom'>
+               <minidom:myelem/>
+    1:         </foo>"""
+    1:         dom = parseString(d)
+    1:         elems = dom.getElementsByTagNameNS("http://pyxml.sf.net/minidom",
+    1:                                            "myelem")
+    1:         self.confirm(len(elems) == 1
+    1:                 and elems[0].namespaceURI == "http://pyxml.sf.net/minidom"
+    1:                 and elems[0].localName == "myelem"
+    1:                 and elems[0].prefix == "minidom"
+    1:                 and elems[0].tagName == "minidom:myelem"
+    1:                 and elems[0].nodeName == "minidom:myelem")
+    1:         dom.unlink()
+       
+    1:     def get_empty_nodelist_from_elements_by_tagName_ns_helper(self, doc, nsuri,
+                                                                     lname):
+    6:         nodelist = doc.getElementsByTagNameNS(nsuri, lname)
+    6:         self.confirm(len(nodelist) == 0)
+       
+    1:     def testGetEmptyNodeListFromElementsByTagNameNS(self):
+    1:         doc = parseString('<doc/>')
+    1:         self.get_empty_nodelist_from_elements_by_tagName_ns_helper(
+    1:             doc, 'http://xml.python.org/namespaces/a', 'localname')
+    1:         self.get_empty_nodelist_from_elements_by_tagName_ns_helper(
+    1:             doc, '*', 'splat')
+    1:         self.get_empty_nodelist_from_elements_by_tagName_ns_helper(
+    1:             doc, 'http://xml.python.org/namespaces/a', '*')
+       
+    1:         doc = parseString('<doc xmlns="http://xml.python.org/splat"><e/></doc>')
+    1:         self.get_empty_nodelist_from_elements_by_tagName_ns_helper(
+    1:             doc, "http://xml.python.org/splat", "not-there")
+    1:         self.get_empty_nodelist_from_elements_by_tagName_ns_helper(
+    1:             doc, "*", "not-there")
+    1:         self.get_empty_nodelist_from_elements_by_tagName_ns_helper(
+    1:             doc, "http://somewhere.else.net/not-there", "e")
+       
+    1:     def testElementReprAndStr(self):
+    1:         dom = Document()
+    1:         el = dom.appendChild(dom.createElement("abc"))
+    1:         string1 = repr(el)
+    1:         string2 = str(el)
+    1:         self.confirm(string1 == string2)
+    1:         dom.unlink()
+       
+    1:     def testElementReprAndStrUnicode(self):
+    1:         dom = Document()
+    1:         el = dom.appendChild(dom.createElement(u"abc"))
+    1:         string1 = repr(el)
+    1:         string2 = str(el)
+    1:         self.confirm(string1 == string2)
+    1:         dom.unlink()
+       
+    1:     def testElementReprAndStrUnicodeNS(self):
+    1:         dom = Document()
+    1:         el = dom.appendChild(
+    1:             dom.createElementNS(u"http://www.slashdot.org", u"slash:abc"))
+    1:         string1 = repr(el)
+    1:         string2 = str(el)
+    1:         self.confirm(string1 == string2)
+    1:         self.confirm("slash:abc" in string1)
+    1:         dom.unlink()
+       
+    1:     def testAttributeRepr(self):
+    1:         dom = Document()
+    1:         el = dom.appendChild(dom.createElement(u"abc"))
+    1:         node = el.setAttribute("abc", "def")
+    1:         self.confirm(str(node) == repr(node))
+    1:         dom.unlink()
+       
+    1:     def testWriteXML(self):
+    1:         str = '<?xml version="1.0" ?><a b="c"/>'
+    1:         dom = parseString(str)
+    1:         domstr = dom.toxml()
+    1:         dom.unlink()
+    1:         self.confirm(str == domstr)
+       
+    1:     def testAltNewline(self):
+    1:         str = '<?xml version="1.0" ?>\n<a b="c"/>\n'
+    1:         dom = parseString(str)
+    1:         domstr = dom.toprettyxml(newl="\r\n")
+    1:         dom.unlink()
+    1:         self.confirm(domstr == str.replace("\n", "\r\n"))
+       
+    1:     def test_toprettyxml_with_text_nodes(self):
+               # see issue #4147, text nodes are not indented
+    1:         decl = '<?xml version="1.0" ?>\n'
+    1:         self.assertEqual(parseString('<B>A</B>').toprettyxml(),
+    1:                          decl + '<B>A</B>\n')
+    1:         self.assertEqual(parseString('<C>A<B>A</B></C>').toprettyxml(),
+    1:                          decl + '<C>\n\tA\n\t<B>A</B>\n</C>\n')
+    1:         self.assertEqual(parseString('<C><B>A</B>A</C>').toprettyxml(),
+    1:                          decl + '<C>\n\t<B>A</B>\n\tA\n</C>\n')
+    1:         self.assertEqual(parseString('<C><B>A</B><B>A</B></C>').toprettyxml(),
+    1:                          decl + '<C>\n\t<B>A</B>\n\t<B>A</B>\n</C>\n')
+    1:         self.assertEqual(parseString('<C><B>A</B>A<B>A</B></C>').toprettyxml(),
+    1:                          decl + '<C>\n\t<B>A</B>\n\tA\n\t<B>A</B>\n</C>\n')
+       
+    1:     def test_toprettyxml_with_adjacent_text_nodes(self):
+               # see issue #4147, adjacent text nodes are indented normally
+    1:         dom = Document()
+    1:         elem = dom.createElement(u'elem')
+    1:         elem.appendChild(dom.createTextNode(u'TEXT'))
+    1:         elem.appendChild(dom.createTextNode(u'TEXT'))
+    1:         dom.appendChild(elem)
+    1:         decl = '<?xml version="1.0" ?>\n'
+    1:         self.assertEqual(dom.toprettyxml(),
+    1:                          decl + '<elem>\n\tTEXT\n\tTEXT\n</elem>\n')
+       
+    1:     def test_toprettyxml_preserves_content_of_text_node(self):
+               # see issue #4147
+    3:         for str in ('<B>A</B>', '<A><B>C</B></A>'):
+    2:             dom = parseString(str)
+    2:             dom2 = parseString(dom.toprettyxml())
+    2:             self.assertEqual(
+    2:                 dom.getElementsByTagName('B')[0].childNodes[0].toxml(),
+    2:                 dom2.getElementsByTagName('B')[0].childNodes[0].toxml())
+       
+    1:     def testProcessingInstruction(self):
+    1:         dom = parseString('<e><?mypi \t\n data \t\n ?></e>')
+    1:         pi = dom.documentElement.firstChild
+    1:         self.confirm(pi.target == "mypi"
+    1:                 and pi.data == "data \t\n "
+    1:                 and pi.nodeName == "mypi"
+    1:                 and pi.nodeType == Node.PROCESSING_INSTRUCTION_NODE
+    1:                 and pi.attributes is None
+    1:                 and not pi.hasChildNodes()
+    1:                 and len(pi.childNodes) == 0
+    1:                 and pi.firstChild is None
+    1:                 and pi.lastChild is None
+    1:                 and pi.localName is None
+    1:                 and pi.namespaceURI == xml.dom.EMPTY_NAMESPACE)
+       
+    1:     def testTooManyDocumentElements(self):
+    1:         doc = parseString("<doc/>")
+    1:         elem = doc.createElement("extra")
+               # Should raise an exception when adding an extra document element.
+    1:         self.assertRaises(xml.dom.HierarchyRequestErr, doc.appendChild, elem)
+    1:         elem.unlink()
+    1:         doc.unlink()
+       
+    1:     def testRemoveNamedItem(self):
+    1:         doc = parseString("<doc a=''/>")
+    1:         e = doc.documentElement
+    1:         attrs = e.attributes
+    1:         a1 = e.getAttributeNode("a")
+    1:         a2 = attrs.removeNamedItem("a")
+    1:         self.confirm(a1.isSameNode(a2))
+    1:         self.assertRaises(xml.dom.NotFoundErr, attrs.removeNamedItem, "a")
+       
+    1:     def testRemoveNamedItemNS(self):
+    1:         doc = parseString("<doc xmlns:a='http://xml.python.org/' a:b=''/>")
+    1:         e = doc.documentElement
+    1:         attrs = e.attributes
+    1:         a1 = e.getAttributeNodeNS("http://xml.python.org/", "b")
+    1:         a2 = attrs.removeNamedItemNS("http://xml.python.org/", "b")
+    1:         self.confirm(a1.isSameNode(a2))
+    1:         self.assertRaises(xml.dom.NotFoundErr, attrs.removeNamedItemNS,
+    1:                           "http://xml.python.org/", "b")
+       
+    1:     def _testCloneElementCopiesAttributes(self, e1, e2, test):
+    2:         attrs1 = e1.attributes
+    2:         attrs2 = e2.attributes
+    2:         keys1 = attrs1.keys()
+    2:         keys2 = attrs2.keys()
+    2:         keys1.sort()
+    2:         keys2.sort()
+    2:         self.confirm(keys1 == keys2, "clone of element has same attribute keys")
+    4:         for i in range(len(keys1)):
+    2:             a1 = attrs1.item(i)
+    2:             a2 = attrs2.item(i)
+    2:             self.confirm(a1 is not a2
+    2:                     and a1.value == a2.value
+    2:                     and a1.nodeValue == a2.nodeValue
+    2:                     and a1.namespaceURI == a2.namespaceURI
+    2:                     and a1.localName == a2.localName
+    2:                     , "clone of attribute node has proper attribute values")
+    2:             self.confirm(a2.ownerElement is e2,
+    2:                     "clone of attribute node correctly owned")
+       
+    1:     def _setupCloneElement(self, deep):
+    2:         dom = parseString("<doc attr='value'><foo/></doc>")
+    2:         root = dom.documentElement
+    2:         clone = root.cloneNode(deep)
+    2:         self._testCloneElementCopiesAttributes(
+    2:             root, clone, "testCloneElement" + (deep and "Deep" or "Shallow"))
+               # mutilate the original so shared data is detected
+    2:         root.tagName = root.nodeName = "MODIFIED"
+    2:         root.setAttribute("attr", "NEW VALUE")
+    2:         root.setAttribute("added", "VALUE")
+    2:         return dom, clone
+       
+    1:     def testCloneElementShallow(self):
+    1:         dom, clone = self._setupCloneElement(0)
+    1:         self.confirm(len(clone.childNodes) == 0
+    1:                 and clone.childNodes.length == 0
+    1:                 and clone.parentNode is None
+    1:                 and clone.toxml() == '<doc attr="value"/>'
+    1:                 , "testCloneElementShallow")
+    1:         dom.unlink()
+       
+    1:     def testCloneElementDeep(self):
+    1:         dom, clone = self._setupCloneElement(1)
+    1:         self.confirm(len(clone.childNodes) == 1
+    1:                 and clone.childNodes.length == 1
+    1:                 and clone.parentNode is None
+    1:                 and clone.toxml() == '<doc attr="value"><foo/></doc>'
+    1:                 , "testCloneElementDeep")
+    1:         dom.unlink()
+       
+    1:     def testCloneDocumentShallow(self):
+    1:         doc = parseString("<?xml version='1.0'?>\n"
+                           "<!-- comment -->"
+                           "<!DOCTYPE doc [\n"
+                           "<!NOTATION notation SYSTEM 'http://xml.python.org/'>\n"
+                           "]>\n"
+                           "<doc attr='value'/>")
+    1:         doc2 = doc.cloneNode(0)
+    1:         self.confirm(doc2 is None,
+    1:                 "testCloneDocumentShallow:"
+                       " shallow cloning of documents makes no sense!")
+       
+    1:     def testCloneDocumentDeep(self):
+    1:         doc = parseString("<?xml version='1.0'?>\n"
+                           "<!-- comment -->"
+                           "<!DOCTYPE doc [\n"
+                           "<!NOTATION notation SYSTEM 'http://xml.python.org/'>\n"
+                           "]>\n"
+                           "<doc attr='value'/>")
+    1:         doc2 = doc.cloneNode(1)
+    1:         self.confirm(not (doc.isSameNode(doc2) or doc2.isSameNode(doc)),
+    1:                 "testCloneDocumentDeep: document objects not distinct")
+    1:         self.confirm(len(doc.childNodes) == len(doc2.childNodes),
+    1:                 "testCloneDocumentDeep: wrong number of Document children")
+    1:         self.confirm(doc2.documentElement.nodeType == Node.ELEMENT_NODE,
+    1:                 "testCloneDocumentDeep: documentElement not an ELEMENT_NODE")
+    1:         self.confirm(doc2.documentElement.ownerDocument.isSameNode(doc2),
+    1:             "testCloneDocumentDeep: documentElement owner is not new document")
+    1:         self.confirm(not doc.documentElement.isSameNode(doc2.documentElement),
+    1:                 "testCloneDocumentDeep: documentElement should not be shared")
+    1:         if doc.doctype is not None:
+                   # check the doctype iff the original DOM maintained it
+    1:             self.confirm(doc2.doctype.nodeType == Node.DOCUMENT_TYPE_NODE,
+    1:                     "testCloneDocumentDeep: doctype not a DOCUMENT_TYPE_NODE")
+    1:             self.confirm(doc2.doctype.ownerDocument.isSameNode(doc2))
+    1:             self.confirm(not doc.doctype.isSameNode(doc2.doctype))
+       
+    1:     def testCloneDocumentTypeDeepOk(self):
+    1:         doctype = create_nonempty_doctype()
+    1:         clone = doctype.cloneNode(1)
+    1:         self.confirm(clone is not None
+    1:                 and clone.nodeName == doctype.nodeName
+    1:                 and clone.name == doctype.name
+    1:                 and clone.publicId == doctype.publicId
+    1:                 and clone.systemId == doctype.systemId
+    1:                 and len(clone.entities) == len(doctype.entities)
+    1:                 and clone.entities.item(len(clone.entities)) is None
+    1:                 and len(clone.notations) == len(doctype.notations)
+    1:                 and clone.notations.item(len(clone.notations)) is None
+    1:                 and len(clone.childNodes) == 0)
+    2:         for i in range(len(doctype.entities)):
+    1:             se = doctype.entities.item(i)
+    1:             ce = clone.entities.item(i)
+    1:             self.confirm((not se.isSameNode(ce))
+    1:                     and (not ce.isSameNode(se))
+    1:                     and ce.nodeName == se.nodeName
+    1:                     and ce.notationName == se.notationName
+    1:                     and ce.publicId == se.publicId
+    1:                     and ce.systemId == se.systemId
+    1:                     and ce.encoding == se.encoding
+    1:                     and ce.actualEncoding == se.actualEncoding
+    1:                     and ce.version == se.version)
+    2:         for i in range(len(doctype.notations)):
+    1:             sn = doctype.notations.item(i)
+    1:             cn = clone.notations.item(i)
+    1:             self.confirm((not sn.isSameNode(cn))
+    1:                     and (not cn.isSameNode(sn))
+    1:                     and cn.nodeName == sn.nodeName
+    1:                     and cn.publicId == sn.publicId
+    1:                     and cn.systemId == sn.systemId)
+       
+    1:     def testCloneDocumentTypeDeepNotOk(self):
+    1:         doc = create_doc_with_doctype()
+    1:         clone = doc.doctype.cloneNode(1)
+    1:         self.confirm(clone is None, "testCloneDocumentTypeDeepNotOk")
+       
+    1:     def testCloneDocumentTypeShallowOk(self):
+    1:         doctype = create_nonempty_doctype()
+    1:         clone = doctype.cloneNode(0)
+    1:         self.confirm(clone is not None
+    1:                 and clone.nodeName == doctype.nodeName
+    1:                 and clone.name == doctype.name
+    1:                 and clone.publicId == doctype.publicId
+    1:                 and clone.systemId == doctype.systemId
+    1:                 and len(clone.entities) == 0
+    1:                 and clone.entities.item(0) is None
+    1:                 and len(clone.notations) == 0
+    1:                 and clone.notations.item(0) is None
+    1:                 and len(clone.childNodes) == 0)
+       
+    1:     def testCloneDocumentTypeShallowNotOk(self):
+    1:         doc = create_doc_with_doctype()
+    1:         clone = doc.doctype.cloneNode(0)
+    1:         self.confirm(clone is None, "testCloneDocumentTypeShallowNotOk")
+       
+    1:     def check_import_document(self, deep, testName):
+    2:         doc1 = parseString("<doc/>")
+    2:         doc2 = parseString("<doc/>")
+    2:         self.assertRaises(xml.dom.NotSupportedErr, doc1.importNode, doc2, deep)
+       
+    1:     def testImportDocumentShallow(self):
+    1:         self.check_import_document(0, "testImportDocumentShallow")
+       
+    1:     def testImportDocumentDeep(self):
+    1:         self.check_import_document(1, "testImportDocumentDeep")
+       
+    1:     def testImportDocumentTypeShallow(self):
+    1:         src = create_doc_with_doctype()
+    1:         target = create_doc_without_doctype()
+    1:         self.assertRaises(xml.dom.NotSupportedErr, target.importNode,
+    1:                           src.doctype, 0)
+       
+    1:     def testImportDocumentTypeDeep(self):
+    1:         src = create_doc_with_doctype()
+    1:         target = create_doc_without_doctype()
+    1:         self.assertRaises(xml.dom.NotSupportedErr, target.importNode,
+    1:                           src.doctype, 1)
+       
+           # Testing attribute clones uses a helper, and should always be deep,
+           # even if the argument to cloneNode is false.
+    1:     def check_clone_attribute(self, deep, testName):
+    2:         doc = parseString("<doc attr='value'/>")
+    2:         attr = doc.documentElement.getAttributeNode("attr")
+    2:         self.assertNotEqual(attr, None)
+    2:         clone = attr.cloneNode(deep)
+    2:         self.confirm(not clone.isSameNode(attr))
+    2:         self.confirm(not attr.isSameNode(clone))
+    2:         self.confirm(clone.ownerElement is None,
+    2:                 testName + ": ownerElement should be None")
+    2:         self.confirm(clone.ownerDocument.isSameNode(attr.ownerDocument),
+    2:                 testName + ": ownerDocument does not match")
+    2:         self.confirm(clone.specified,
+    2:                 testName + ": cloned attribute must have specified == True")
+       
+    1:     def testCloneAttributeShallow(self):
+    1:         self.check_clone_attribute(0, "testCloneAttributeShallow")
+       
+    1:     def testCloneAttributeDeep(self):
+    1:         self.check_clone_attribute(1, "testCloneAttributeDeep")
+       
+    1:     def check_clone_pi(self, deep, testName):
+    2:         doc = parseString("<?target data?><doc/>")
+    2:         pi = doc.firstChild
+    2:         self.assertEqual(pi.nodeType, Node.PROCESSING_INSTRUCTION_NODE)
+    2:         clone = pi.cloneNode(deep)
+    2:         self.confirm(clone.target == pi.target
+    2:                 and clone.data == pi.data)
+       
+    1:     def testClonePIShallow(self):
+    1:         self.check_clone_pi(0, "testClonePIShallow")
+       
+    1:     def testClonePIDeep(self):
+    1:         self.check_clone_pi(1, "testClonePIDeep")
+       
+    1:     def testNormalize(self):
+    1:         doc = parseString("<doc/>")
+    1:         root = doc.documentElement
+    1:         root.appendChild(doc.createTextNode("first"))
+    1:         root.appendChild(doc.createTextNode("second"))
+    1:         self.confirm(len(root.childNodes) == 2
+    1:                 and root.childNodes.length == 2,
+    1:                 "testNormalize -- preparation")
+    1:         doc.normalize()
+    1:         self.confirm(len(root.childNodes) == 1
+    1:                 and root.childNodes.length == 1
+    1:                 and root.firstChild is root.lastChild
+    1:                 and root.firstChild.data == "firstsecond"
+    1:                 , "testNormalize -- result")
+    1:         doc.unlink()
+       
+    1:         doc = parseString("<doc/>")
+    1:         root = doc.documentElement
+    1:         root.appendChild(doc.createTextNode(""))
+    1:         doc.normalize()
+    1:         self.confirm(len(root.childNodes) == 0
+    1:                 and root.childNodes.length == 0,
+    1:                 "testNormalize -- single empty node removed")
+    1:         doc.unlink()
+       
+    1:     def testNormalizeCombineAndNextSibling(self):
+    1:         doc = parseString("<doc/>")
+    1:         root = doc.documentElement
+    1:         root.appendChild(doc.createTextNode("first"))
+    1:         root.appendChild(doc.createTextNode("second"))
+    1:         root.appendChild(doc.createElement("i"))
+    1:         self.confirm(len(root.childNodes) == 3
+    1:                 and root.childNodes.length == 3,
+    1:                 "testNormalizeCombineAndNextSibling -- preparation")
+    1:         doc.normalize()
+    1:         self.confirm(len(root.childNodes) == 2
+    1:                 and root.childNodes.length == 2
+    1:                 and root.firstChild.data == "firstsecond"
+    1:                 and root.firstChild is not root.lastChild
+    1:                 and root.firstChild.nextSibling is root.lastChild
+    1:                 and root.firstChild.previousSibling is None
+    1:                 and root.lastChild.previousSibling is root.firstChild
+    1:                 and root.lastChild.nextSibling is None
+    1:                 , "testNormalizeCombinedAndNextSibling -- result")
+    1:         doc.unlink()
+       
+    1:     def testNormalizeDeleteWithPrevSibling(self):
+    1:         doc = parseString("<doc/>")
+    1:         root = doc.documentElement
+    1:         root.appendChild(doc.createTextNode("first"))
+    1:         root.appendChild(doc.createTextNode(""))
+    1:         self.confirm(len(root.childNodes) == 2
+    1:                 and root.childNodes.length == 2,
+    1:                 "testNormalizeDeleteWithPrevSibling -- preparation")
+    1:         doc.normalize()
+    1:         self.confirm(len(root.childNodes) == 1
+    1:                 and root.childNodes.length == 1
+    1:                 and root.firstChild.data == "first"
+    1:                 and root.firstChild is root.lastChild
+    1:                 and root.firstChild.nextSibling is None
+    1:                 and root.firstChild.previousSibling is None
+    1:                 , "testNormalizeDeleteWithPrevSibling -- result")
+    1:         doc.unlink()
+       
+    1:     def testNormalizeDeleteWithNextSibling(self):
+    1:         doc = parseString("<doc/>")
+    1:         root = doc.documentElement
+    1:         root.appendChild(doc.createTextNode(""))
+    1:         root.appendChild(doc.createTextNode("second"))
+    1:         self.confirm(len(root.childNodes) == 2
+    1:                 and root.childNodes.length == 2,
+    1:                 "testNormalizeDeleteWithNextSibling -- preparation")
+    1:         doc.normalize()
+    1:         self.confirm(len(root.childNodes) == 1
+    1:                 and root.childNodes.length == 1
+    1:                 and root.firstChild.data == "second"
+    1:                 and root.firstChild is root.lastChild
+    1:                 and root.firstChild.nextSibling is None
+    1:                 and root.firstChild.previousSibling is None
+    1:                 , "testNormalizeDeleteWithNextSibling -- result")
+    1:         doc.unlink()
+       
+    1:     def testNormalizeDeleteWithTwoNonTextSiblings(self):
+    1:         doc = parseString("<doc/>")
+    1:         root = doc.documentElement
+    1:         root.appendChild(doc.createElement("i"))
+    1:         root.appendChild(doc.createTextNode(""))
+    1:         root.appendChild(doc.createElement("i"))
+    1:         self.confirm(len(root.childNodes) == 3
+    1:                 and root.childNodes.length == 3,
+    1:                 "testNormalizeDeleteWithTwoSiblings -- preparation")
+    1:         doc.normalize()
+    1:         self.confirm(len(root.childNodes) == 2
+    1:                 and root.childNodes.length == 2
+    1:                 and root.firstChild is not root.lastChild
+    1:                 and root.firstChild.nextSibling is root.lastChild
+    1:                 and root.firstChild.previousSibling is None
+    1:                 and root.lastChild.previousSibling is root.firstChild
+    1:                 and root.lastChild.nextSibling is None
+    1:                 , "testNormalizeDeleteWithTwoSiblings -- result")
+    1:         doc.unlink()
+       
+    1:     def testNormalizeDeleteAndCombine(self):
+    1:         doc = parseString("<doc/>")
+    1:         root = doc.documentElement
+    1:         root.appendChild(doc.createTextNode(""))
+    1:         root.appendChild(doc.createTextNode("second"))
+    1:         root.appendChild(doc.createTextNode(""))
+    1:         root.appendChild(doc.createTextNode("fourth"))
+    1:         root.appendChild(doc.createTextNode(""))
+    1:         self.confirm(len(root.childNodes) == 5
+    1:                 and root.childNodes.length == 5,
+    1:                 "testNormalizeDeleteAndCombine -- preparation")
+    1:         doc.normalize()
+    1:         self.confirm(len(root.childNodes) == 1
+    1:                 and root.childNodes.length == 1
+    1:                 and root.firstChild is root.lastChild
+    1:                 and root.firstChild.data == "secondfourth"
+    1:                 and root.firstChild.previousSibling is None
+    1:                 and root.firstChild.nextSibling is None
+    1:                 , "testNormalizeDeleteAndCombine -- result")
+    1:         doc.unlink()
+       
+    1:     def testNormalizeRecursion(self):
+    1:         doc = parseString("<doc>"
+                                   "<o>"
+                                     "<i/>"
+                                     "t"
+                                     #
+                                     #x
+                                   "</o>"
+                                   "<o>"
+                                     "<o>"
+                                       "t2"
+                                       #x2
+                                     "</o>"
+                                     "t3"
+                                     #x3
+                                   "</o>"
+                                   #
+                                 "</doc>")
+    1:         root = doc.documentElement
+    1:         root.childNodes[0].appendChild(doc.createTextNode(""))
+    1:         root.childNodes[0].appendChild(doc.createTextNode("x"))
+    1:         root.childNodes[1].childNodes[0].appendChild(doc.createTextNode("x2"))
+    1:         root.childNodes[1].appendChild(doc.createTextNode("x3"))
+    1:         root.appendChild(doc.createTextNode(""))
+    1:         self.confirm(len(root.childNodes) == 3
+    1:                 and root.childNodes.length == 3
+    1:                 and len(root.childNodes[0].childNodes) == 4
+    1:                 and root.childNodes[0].childNodes.length == 4
+    1:                 and len(root.childNodes[1].childNodes) == 3
+    1:                 and root.childNodes[1].childNodes.length == 3
+    1:                 and len(root.childNodes[1].childNodes[0].childNodes) == 2
+    1:                 and root.childNodes[1].childNodes[0].childNodes.length == 2
+    1:                 , "testNormalize2 -- preparation")
+    1:         doc.normalize()
+    1:         self.confirm(len(root.childNodes) == 2
+    1:                 and root.childNodes.length == 2
+    1:                 and len(root.childNodes[0].childNodes) == 2
+    1:                 and root.childNodes[0].childNodes.length == 2
+    1:                 and len(root.childNodes[1].childNodes) == 2
+    1:                 and root.childNodes[1].childNodes.length == 2
+    1:                 and len(root.childNodes[1].childNodes[0].childNodes) == 1
+    1:                 and root.childNodes[1].childNodes[0].childNodes.length == 1
+    1:                 , "testNormalize2 -- childNodes lengths")
+    1:         self.confirm(root.childNodes[0].childNodes[1].data == "tx"
+    1:                 and root.childNodes[1].childNodes[0].childNodes[0].data == "t2x2"
+    1:                 and root.childNodes[1].childNodes[1].data == "t3x3"
+    1:                 , "testNormalize2 -- joined text fields")
+    1:         self.confirm(root.childNodes[0].childNodes[1].nextSibling is None
+    1:                 and root.childNodes[0].childNodes[1].previousSibling
+    1:                         is root.childNodes[0].childNodes[0]
+    1:                 and root.childNodes[0].childNodes[0].previousSibling is None
+    1:                 and root.childNodes[0].childNodes[0].nextSibling
+    1:                         is root.childNodes[0].childNodes[1]
+    1:                 and root.childNodes[1].childNodes[1].nextSibling is None
+    1:                 and root.childNodes[1].childNodes[1].previousSibling
+    1:                         is root.childNodes[1].childNodes[0]
+    1:                 and root.childNodes[1].childNodes[0].previousSibling is None
+    1:                 and root.childNodes[1].childNodes[0].nextSibling
+    1:                         is root.childNodes[1].childNodes[1]
+    1:                 , "testNormalize2 -- sibling pointers")
+    1:         doc.unlink()
+       
+       
+    1:     def testBug0777884(self):
+    1:         doc = parseString("<o>text</o>")
+    1:         text = doc.documentElement.childNodes[0]
+    1:         self.assertEqual(text.nodeType, Node.TEXT_NODE)
+               # Should run quietly, doing nothing.
+    1:         text.normalize()
+    1:         doc.unlink()
+       
+    1:     def testBug1433694(self):
+    1:         doc = parseString("<o><i/>t</o>")
+    1:         node = doc.documentElement
+    1:         node.childNodes[1].nodeValue = ""
+    1:         node.normalize()
+    1:         self.confirm(node.childNodes[-1].nextSibling is None,
+    1:                      "Final child's .nextSibling should be None")
+       
+    1:     def testSiblings(self):
+    1:         doc = parseString("<doc><?pi?>text?<elm/></doc>")
+    1:         root = doc.documentElement
+    1:         (pi, text, elm) = root.childNodes
+       
+    1:         self.confirm(pi.nextSibling is text and
+    1:                 pi.previousSibling is None and
+    1:                 text.nextSibling is elm and
+    1:                 text.previousSibling is pi and
+    1:                 elm.nextSibling is None and
+    1:                 elm.previousSibling is text, "testSiblings")
+       
+    1:         doc.unlink()
+       
+    1:     def testParents(self):
+    1:         doc = parseString(
+    1:             "<doc><elm1><elm2/><elm2><elm3/></elm2></elm1></doc>")
+    1:         root = doc.documentElement
+    1:         elm1 = root.childNodes[0]
+    1:         (elm2a, elm2b) = elm1.childNodes
+    1:         elm3 = elm2b.childNodes[0]
+       
+    1:         self.confirm(root.parentNode is doc and
+    1:                 elm1.parentNode is root and
+    1:                 elm2a.parentNode is elm1 and
+    1:                 elm2b.parentNode is elm1 and
+    1:                 elm3.parentNode is elm2b, "testParents")
+    1:         doc.unlink()
+       
+    1:     def testNodeListItem(self):
+    1:         doc = parseString("<doc><e/><e/></doc>")
+    1:         children = doc.childNodes
+    1:         docelem = children[0]
+    1:         self.confirm(children[0] is children.item(0)
+    1:                 and children.item(1) is None
+    1:                 and docelem.childNodes.item(0) is docelem.childNodes[0]
+    1:                 and docelem.childNodes.item(1) is docelem.childNodes[1]
+    1:                 and docelem.childNodes.item(0).childNodes.item(0) is None,
+    1:                 "test NodeList.item()")
+    1:         doc.unlink()
+       
+    1:     def testSAX2DOM(self):
+    1:         from xml.dom import pulldom
+       
+    1:         sax2dom = pulldom.SAX2DOM()
+    1:         sax2dom.startDocument()
+    1:         sax2dom.startElement("doc", {})
+    1:         sax2dom.characters("text")
+    1:         sax2dom.startElement("subelm", {})
+    1:         sax2dom.characters("text")
+    1:         sax2dom.endElement("subelm")
+    1:         sax2dom.characters("text")
+    1:         sax2dom.endElement("doc")
+    1:         sax2dom.endDocument()
+       
+    1:         doc = sax2dom.document
+    1:         root = doc.documentElement
+    1:         (text1, elm1, text2) = root.childNodes
+    1:         text3 = elm1.childNodes[0]
+       
+    1:         self.confirm(text1.previousSibling is None and
+    1:                 text1.nextSibling is elm1 and
+    1:                 elm1.previousSibling is text1 and
+    1:                 elm1.nextSibling is text2 and
+    1:                 text2.previousSibling is elm1 and
+    1:                 text2.nextSibling is None and
+    1:                 text3.previousSibling is None and
+    1:                 text3.nextSibling is None, "testSAX2DOM - siblings")
+       
+    1:         self.confirm(root.parentNode is doc and
+    1:                 text1.parentNode is root and
+    1:                 elm1.parentNode is root and
+    1:                 text2.parentNode is root and
+    1:                 text3.parentNode is elm1, "testSAX2DOM - parents")
+    1:         doc.unlink()
+       
+    1:     def testEncodings(self):
+    1:         doc = parseString('<foo>&#x20ac;</foo>')
+    1:         self.confirm(doc.toxml() == u'<?xml version="1.0" ?><foo>\u20ac</foo>'
+    1:                 and doc.toxml('utf-8') ==
+    1:                 '<?xml version="1.0" encoding="utf-8"?><foo>\xe2\x82\xac</foo>'
+    1:                 and doc.toxml('iso-8859-15') ==
+    1:                 '<?xml version="1.0" encoding="iso-8859-15"?><foo>\xa4</foo>',
+    1:                 "testEncodings - encoding EURO SIGN")
+       
+               # Verify that character decoding errors raise exceptions instead
+               # of crashing
+    1:         self.assertRaises(UnicodeDecodeError, parseString,
+    1:                 '<fran\xe7ais>Comment \xe7a va ? Tr\xe8s bien ?</fran\xe7ais>')
+       
+    1:         doc.unlink()
+       
+    2:     class UserDataHandler:
+    1:         called = 0
+    1:         def handle(self, operation, key, data, src, dst):
+    1:             dst.setUserData(key, data + 1, self)
+    1:             src.setUserData(key, None, None)
+    1:             self.called = 1
+       
+    1:     def testUserData(self):
+    1:         dom = Document()
+    1:         n = dom.createElement('e')
+    1:         self.confirm(n.getUserData("foo") is None)
+    1:         n.setUserData("foo", None, None)
+    1:         self.confirm(n.getUserData("foo") is None)
+    1:         n.setUserData("foo", 12, 12)
+    1:         n.setUserData("bar", 13, 13)
+    1:         self.confirm(n.getUserData("foo") == 12)
+    1:         self.confirm(n.getUserData("bar") == 13)
+    1:         n.setUserData("foo", None, None)
+    1:         self.confirm(n.getUserData("foo") is None)
+    1:         self.confirm(n.getUserData("bar") == 13)
+       
+    1:         handler = self.UserDataHandler()
+    1:         n.setUserData("bar", 12, handler)
+    1:         c = n.cloneNode(1)
+    1:         self.confirm(handler.called
+    1:                 and n.getUserData("bar") is None
+    1:                 and c.getUserData("bar") == 13)
+    1:         n.unlink()
+    1:         c.unlink()
+    1:         dom.unlink()
+       
+    1:     def checkRenameNodeSharedConstraints(self, doc, node):
+               # Make sure illegal NS usage is detected:
+    2:         self.assertRaises(xml.dom.NamespaceErr, doc.renameNode, node,
+    2:                           "http://xml.python.org/ns", "xmlns:foo")
+    2:         doc2 = parseString("<doc/>")
+    2:         self.assertRaises(xml.dom.WrongDocumentErr, doc2.renameNode, node,
+    2:                           xml.dom.EMPTY_NAMESPACE, "foo")
+       
+    1:     def testRenameAttribute(self):
+    1:         doc = parseString("<doc a='v'/>")
+    1:         elem = doc.documentElement
+    1:         attrmap = elem.attributes
+    1:         attr = elem.attributes['a']
+       
+               # Simple renaming
+    1:         attr = doc.renameNode(attr, xml.dom.EMPTY_NAMESPACE, "b")
+    1:         self.confirm(attr.name == "b"
+    1:                 and attr.nodeName == "b"
+    1:                 and attr.localName is None
+    1:                 and attr.namespaceURI == xml.dom.EMPTY_NAMESPACE
+    1:                 and attr.prefix is None
+    1:                 and attr.value == "v"
+    1:                 and elem.getAttributeNode("a") is None
+    1:                 and elem.getAttributeNode("b").isSameNode(attr)
+    1:                 and attrmap["b"].isSameNode(attr)
+    1:                 and attr.ownerDocument.isSameNode(doc)
+    1:                 and attr.ownerElement.isSameNode(elem))
+       
+               # Rename to have a namespace, no prefix
+    1:         attr = doc.renameNode(attr, "http://xml.python.org/ns", "c")
+    1:         self.confirm(attr.name == "c"
+    1:                 and attr.nodeName == "c"
+    1:                 and attr.localName == "c"
+    1:                 and attr.namespaceURI == "http://xml.python.org/ns"
+    1:                 and attr.prefix is None
+    1:                 and attr.value == "v"
+    1:                 and elem.getAttributeNode("a") is None
+    1:                 and elem.getAttributeNode("b") is None
+    1:                 and elem.getAttributeNode("c").isSameNode(attr)
+    1:                 and elem.getAttributeNodeNS(
+    1:                     "http://xml.python.org/ns", "c").isSameNode(attr)
+    1:                 and attrmap["c"].isSameNode(attr)
+    1:                 and attrmap[("http://xml.python.org/ns", "c")].isSameNode(attr))
+       
+               # Rename to have a namespace, with prefix
+    1:         attr = doc.renameNode(attr, "http://xml.python.org/ns2", "p:d")
+    1:         self.confirm(attr.name == "p:d"
+    1:                 and attr.nodeName == "p:d"
+    1:                 and attr.localName == "d"
+    1:                 and attr.namespaceURI == "http://xml.python.org/ns2"
+    1:                 and attr.prefix == "p"
+    1:                 and attr.value == "v"
+    1:                 and elem.getAttributeNode("a") is None
+    1:                 and elem.getAttributeNode("b") is None
+    1:                 and elem.getAttributeNode("c") is None
+    1:                 and elem.getAttributeNodeNS(
+    1:                     "http://xml.python.org/ns", "c") is None
+    1:                 and elem.getAttributeNode("p:d").isSameNode(attr)
+    1:                 and elem.getAttributeNodeNS(
+    1:                     "http://xml.python.org/ns2", "d").isSameNode(attr)
+    1:                 and attrmap["p:d"].isSameNode(attr)
+    1:                 and attrmap[("http://xml.python.org/ns2", "d")].isSameNode(attr))
+       
+               # Rename back to a simple non-NS node
+    1:         attr = doc.renameNode(attr, xml.dom.EMPTY_NAMESPACE, "e")
+    1:         self.confirm(attr.name == "e"
+    1:                 and attr.nodeName == "e"
+    1:                 and attr.localName is None
+    1:                 and attr.namespaceURI == xml.dom.EMPTY_NAMESPACE
+    1:                 and attr.prefix is None
+    1:                 and attr.value == "v"
+    1:                 and elem.getAttributeNode("a") is None
+    1:                 and elem.getAttributeNode("b") is None
+    1:                 and elem.getAttributeNode("c") is None
+    1:                 and elem.getAttributeNode("p:d") is None
+    1:                 and elem.getAttributeNodeNS(
+    1:                     "http://xml.python.org/ns", "c") is None
+    1:                 and elem.getAttributeNode("e").isSameNode(attr)
+    1:                 and attrmap["e"].isSameNode(attr))
+       
+    1:         self.assertRaises(xml.dom.NamespaceErr, doc.renameNode, attr,
+    1:                           "http://xml.python.org/ns", "xmlns")
+    1:         self.checkRenameNodeSharedConstraints(doc, attr)
+    1:         doc.unlink()
+       
+    1:     def testRenameElement(self):
+    1:         doc = parseString("<doc/>")
+    1:         elem = doc.documentElement
+       
+               # Simple renaming
+    1:         elem = doc.renameNode(elem, xml.dom.EMPTY_NAMESPACE, "a")
+    1:         self.confirm(elem.tagName == "a"
+    1:                 and elem.nodeName == "a"
+    1:                 and elem.localName is None
+    1:                 and elem.namespaceURI == xml.dom.EMPTY_NAMESPACE
+    1:                 and elem.prefix is None
+    1:                 and elem.ownerDocument.isSameNode(doc))
+       
+               # Rename to have a namespace, no prefix
+    1:         elem = doc.renameNode(elem, "http://xml.python.org/ns", "b")
+    1:         self.confirm(elem.tagName == "b"
+    1:                 and elem.nodeName == "b"
+    1:                 and elem.localName == "b"
+    1:                 and elem.namespaceURI == "http://xml.python.org/ns"
+    1:                 and elem.prefix is None
+    1:                 and elem.ownerDocument.isSameNode(doc))
+       
+               # Rename to have a namespace, with prefix
+    1:         elem = doc.renameNode(elem, "http://xml.python.org/ns2", "p:c")
+    1:         self.confirm(elem.tagName == "p:c"
+    1:                 and elem.nodeName == "p:c"
+    1:                 and elem.localName == "c"
+    1:                 and elem.namespaceURI == "http://xml.python.org/ns2"
+    1:                 and elem.prefix == "p"
+    1:                 and elem.ownerDocument.isSameNode(doc))
+       
+               # Rename back to a simple non-NS node
+    1:         elem = doc.renameNode(elem, xml.dom.EMPTY_NAMESPACE, "d")
+    1:         self.confirm(elem.tagName == "d"
+    1:                 and elem.nodeName == "d"
+    1:                 and elem.localName is None
+    1:                 and elem.namespaceURI == xml.dom.EMPTY_NAMESPACE
+    1:                 and elem.prefix is None
+    1:                 and elem.ownerDocument.isSameNode(doc))
+       
+    1:         self.checkRenameNodeSharedConstraints(doc, elem)
+    1:         doc.unlink()
+       
+    1:     def testRenameOther(self):
+               # We have to create a comment node explicitly since not all DOM
+               # builders used with minidom add comments to the DOM.
+    1:         doc = xml.dom.minidom.getDOMImplementation().createDocument(
+    1:             xml.dom.EMPTY_NAMESPACE, "e", None)
+    1:         node = doc.createComment("comment")
+    1:         self.assertRaises(xml.dom.NotSupportedErr, doc.renameNode, node,
+    1:                           xml.dom.EMPTY_NAMESPACE, "foo")
+    1:         doc.unlink()
+       
+    1:     def testWholeText(self):
+    1:         doc = parseString("<doc>a</doc>")
+    1:         elem = doc.documentElement
+    1:         text = elem.childNodes[0]
+    1:         self.assertEqual(text.nodeType, Node.TEXT_NODE)
+       
+    1:         self.checkWholeText(text, "a")
+    1:         elem.appendChild(doc.createTextNode("b"))
+    1:         self.checkWholeText(text, "ab")
+    1:         elem.insertBefore(doc.createCDATASection("c"), text)
+    1:         self.checkWholeText(text, "cab")
+       
+               # make sure we don't cross other nodes
+    1:         splitter = doc.createComment("comment")
+    1:         elem.appendChild(splitter)
+    1:         text2 = doc.createTextNode("d")
+    1:         elem.appendChild(text2)
+    1:         self.checkWholeText(text, "cab")
+    1:         self.checkWholeText(text2, "d")
+       
+    1:         x = doc.createElement("x")
+    1:         elem.replaceChild(x, splitter)
+    1:         splitter = x
+    1:         self.checkWholeText(text, "cab")
+    1:         self.checkWholeText(text2, "d")
+       
+    1:         x = doc.createProcessingInstruction("y", "z")
+    1:         elem.replaceChild(x, splitter)
+    1:         splitter = x
+    1:         self.checkWholeText(text, "cab")
+    1:         self.checkWholeText(text2, "d")
+       
+    1:         elem.removeChild(splitter)
+    1:         self.checkWholeText(text, "cabd")
+    1:         self.checkWholeText(text2, "cabd")
+       
+    1:     def testPatch1094164(self):
+    1:         doc = parseString("<doc><e/></doc>")
+    1:         elem = doc.documentElement
+    1:         e = elem.firstChild
+    1:         self.confirm(e.parentNode is elem, "Before replaceChild()")
+               # Check that replacing a child with itself leaves the tree unchanged
+    1:         elem.replaceChild(e, e)
+    1:         self.confirm(e.parentNode is elem, "After replaceChild()")
+       
+    1:     def testReplaceWholeText(self):
+    1:         def setup():
+    3:             doc = parseString("<doc>a<e/>d</doc>")
+    3:             elem = doc.documentElement
+    3:             text1 = elem.firstChild
+    3:             text2 = elem.lastChild
+    3:             splitter = text1.nextSibling
+    3:             elem.insertBefore(doc.createTextNode("b"), splitter)
+    3:             elem.insertBefore(doc.createCDATASection("c"), text1)
+    3:             return doc, elem, text1, splitter, text2
+       
+    1:         doc, elem, text1, splitter, text2 = setup()
+    1:         text = text1.replaceWholeText("new content")
+    1:         self.checkWholeText(text, "new content")
+    1:         self.checkWholeText(text2, "d")
+    1:         self.confirm(len(elem.childNodes) == 3)
+       
+    1:         doc, elem, text1, splitter, text2 = setup()
+    1:         text = text2.replaceWholeText("new content")
+    1:         self.checkWholeText(text, "new content")
+    1:         self.checkWholeText(text1, "cab")
+    1:         self.confirm(len(elem.childNodes) == 5)
+       
+    1:         doc, elem, text1, splitter, text2 = setup()
+    1:         text = text1.replaceWholeText("")
+    1:         self.checkWholeText(text2, "d")
+    1:         self.confirm(text is None
+    1:                 and len(elem.childNodes) == 2)
+       
+    1:     def testSchemaType(self):
+    1:         doc = parseString(
+    1:             "<!DOCTYPE doc [\n"
+                   "  <!ENTITY e1 SYSTEM 'http://xml.python.org/e1'>\n"
+                   "  <!ENTITY e2 SYSTEM 'http://xml.python.org/e2'>\n"
+                   "  <!ATTLIST doc id   ID       #IMPLIED \n"
+                   "                ref  IDREF    #IMPLIED \n"
+                   "                refs IDREFS   #IMPLIED \n"
+                   "                enum (a|b)    #IMPLIED \n"
+                   "                ent  ENTITY   #IMPLIED \n"
+                   "                ents ENTITIES #IMPLIED \n"
+                   "                nm   NMTOKEN  #IMPLIED \n"
+                   "                nms  NMTOKENS #IMPLIED \n"
+                   "                text CDATA    #IMPLIED \n"
+                   "    >\n"
+                   "]><doc id='name' notid='name' text='splat!' enum='b'"
+                   "       ref='name' refs='name name' ent='e1' ents='e1 e2'"
+                   "       nm='123' nms='123 abc' />")
+    1:         elem = doc.documentElement
+               # We don't want to rely on any specific loader at this point, so
+               # just make sure we can get to all the names, and that the
+               # DTD-based namespace is right.  The names can vary by loader
+               # since each supports a different level of DTD information.
+    1:         t = elem.schemaType
+    1:         self.confirm(t.name is None
+    1:                 and t.namespace == xml.dom.EMPTY_NAMESPACE)
+    1:         names = "id notid text enum ref refs ent ents nm nms".split()
+   11:         for name in names:
+   10:             a = elem.getAttributeNode(name)
+   10:             t = a.schemaType
+   10:             self.confirm(hasattr(t, "name")
+   10:                     and t.namespace == xml.dom.EMPTY_NAMESPACE)
+       
+    1:     def testSetIdAttribute(self):
+    1:         doc = parseString("<doc a1='v' a2='w'/>")
+    1:         e = doc.documentElement
+    1:         a1 = e.getAttributeNode("a1")
+    1:         a2 = e.getAttributeNode("a2")
+    1:         self.confirm(doc.getElementById("v") is None
+    1:                 and not a1.isId
+    1:                 and not a2.isId)
+    1:         e.setIdAttribute("a1")
+    1:         self.confirm(e.isSameNode(doc.getElementById("v"))
+    1:                 and a1.isId
+    1:                 and not a2.isId)
+    1:         e.setIdAttribute("a2")
+    1:         self.confirm(e.isSameNode(doc.getElementById("v"))
+    1:                 and e.isSameNode(doc.getElementById("w"))
+    1:                 and a1.isId
+    1:                 and a2.isId)
+               # replace the a1 node; the new node should *not* be an ID
+    1:         a3 = doc.createAttribute("a1")
+    1:         a3.value = "v"
+    1:         e.setAttributeNode(a3)
+    1:         self.confirm(doc.getElementById("v") is None
+    1:                 and e.isSameNode(doc.getElementById("w"))
+    1:                 and not a1.isId
+    1:                 and a2.isId
+    1:                 and not a3.isId)
+               # renaming an attribute should not affect its ID-ness:
+    1:         doc.renameNode(a2, xml.dom.EMPTY_NAMESPACE, "an")
+    1:         self.confirm(e.isSameNode(doc.getElementById("w"))
+    1:                 and a2.isId)
+       
+    1:     def testSetIdAttributeNS(self):
+    1:         NS1 = "http://xml.python.org/ns1"
+    1:         NS2 = "http://xml.python.org/ns2"
+    1:         doc = parseString("<doc"
+                                 " xmlns:ns1='" + NS1 + "'"
+    1:                           " xmlns:ns2='" + NS2 + "'"
+                                 " ns1:a1='v' ns2:a2='w'/>")
+    1:         e = doc.documentElement
+    1:         a1 = e.getAttributeNodeNS(NS1, "a1")
+    1:         a2 = e.getAttributeNodeNS(NS2, "a2")
+    1:         self.confirm(doc.getElementById("v") is None
+    1:                 and not a1.isId
+    1:                 and not a2.isId)
+    1:         e.setIdAttributeNS(NS1, "a1")
+    1:         self.confirm(e.isSameNode(doc.getElementById("v"))
+    1:                 and a1.isId
+    1:                 and not a2.isId)
+    1:         e.setIdAttributeNS(NS2, "a2")
+    1:         self.confirm(e.isSameNode(doc.getElementById("v"))
+    1:                 and e.isSameNode(doc.getElementById("w"))
+    1:                 and a1.isId
+    1:                 and a2.isId)
+               # replace the a1 node; the new node should *not* be an ID
+    1:         a3 = doc.createAttributeNS(NS1, "a1")
+    1:         a3.value = "v"
+    1:         e.setAttributeNode(a3)
+    1:         self.confirm(e.isSameNode(doc.getElementById("w")))
+    1:         self.confirm(not a1.isId)
+    1:         self.confirm(a2.isId)
+    1:         self.confirm(not a3.isId)
+    1:         self.confirm(doc.getElementById("v") is None)
+               # renaming an attribute should not affect its ID-ness:
+    1:         doc.renameNode(a2, xml.dom.EMPTY_NAMESPACE, "an")
+    1:         self.confirm(e.isSameNode(doc.getElementById("w"))
+    1:                 and a2.isId)
+       
+    1:     def testSetIdAttributeNode(self):
+    1:         NS1 = "http://xml.python.org/ns1"
+    1:         NS2 = "http://xml.python.org/ns2"
+    1:         doc = parseString("<doc"
+                                 " xmlns:ns1='" + NS1 + "'"
+    1:                           " xmlns:ns2='" + NS2 + "'"
+                                 " ns1:a1='v' ns2:a2='w'/>")
+    1:         e = doc.documentElement
+    1:         a1 = e.getAttributeNodeNS(NS1, "a1")
+    1:         a2 = e.getAttributeNodeNS(NS2, "a2")
+    1:         self.confirm(doc.getElementById("v") is None
+    1:                 and not a1.isId
+    1:                 and not a2.isId)
+    1:         e.setIdAttributeNode(a1)
+    1:         self.confirm(e.isSameNode(doc.getElementById("v"))
+    1:                 and a1.isId
+    1:                 and not a2.isId)
+    1:         e.setIdAttributeNode(a2)
+    1:         self.confirm(e.isSameNode(doc.getElementById("v"))
+    1:                 and e.isSameNode(doc.getElementById("w"))
+    1:                 and a1.isId
+    1:                 and a2.isId)
+               # replace the a1 node; the new node should *not* be an ID
+    1:         a3 = doc.createAttributeNS(NS1, "a1")
+    1:         a3.value = "v"
+    1:         e.setAttributeNode(a3)
+    1:         self.confirm(e.isSameNode(doc.getElementById("w")))
+    1:         self.confirm(not a1.isId)
+    1:         self.confirm(a2.isId)
+    1:         self.confirm(not a3.isId)
+    1:         self.confirm(doc.getElementById("v") is None)
+               # renaming an attribute should not affect its ID-ness:
+    1:         doc.renameNode(a2, xml.dom.EMPTY_NAMESPACE, "an")
+    1:         self.confirm(e.isSameNode(doc.getElementById("w"))
+    1:                 and a2.isId)
+       
+    1:     def assert_recursive_equal(self, doc, doc2):
+    4:         stack = [(doc, doc2)]
+   48:         while stack:
+   44:             n1, n2 = stack.pop()
+   44:             self.assertEqual(n1.nodeType, n2.nodeType)
+   44:             self.assertEqual(len(n1.childNodes), len(n2.childNodes))
+   44:             self.assertEqual(n1.nodeName, n2.nodeName)
+   44:             self.assertFalse(n1.isSameNode(n2))
+   44:             self.assertFalse(n2.isSameNode(n1))
+   44:             if n1.nodeType == Node.DOCUMENT_TYPE_NODE:
+    4:                 len(n1.entities)
+    4:                 len(n2.entities)
+    4:                 len(n1.notations)
+    4:                 len(n2.notations)
+    4:                 self.assertEqual(len(n1.entities), len(n2.entities))
+    4:                 self.assertEqual(len(n1.notations), len(n2.notations))
+    4:                 for i in range(len(n1.notations)):
+                           # XXX this loop body doesn't seem to be executed?
+>>>>>>                     no1 = n1.notations.item(i)
+>>>>>>                     no2 = n1.notations.item(i)
+>>>>>>                     self.assertEqual(no1.name, no2.name)
+>>>>>>                     self.assertEqual(no1.publicId, no2.publicId)
+>>>>>>                     self.assertEqual(no1.systemId, no2.systemId)
+>>>>>>                     stack.append((no1, no2))
+    8:                 for i in range(len(n1.entities)):
+    4:                     e1 = n1.entities.item(i)
+    4:                     e2 = n2.entities.item(i)
+    4:                     self.assertEqual(e1.notationName, e2.notationName)
+    4:                     self.assertEqual(e1.publicId, e2.publicId)
+    4:                     self.assertEqual(e1.systemId, e2.systemId)
+    4:                     stack.append((e1, e2))
+   44:             if n1.nodeType != Node.DOCUMENT_NODE:
+   40:                 self.assertTrue(n1.ownerDocument.isSameNode(doc))
+   40:                 self.assertTrue(n2.ownerDocument.isSameNode(doc2))
+   80:             for i in range(len(n1.childNodes)):
+   36:                 stack.append((n1.childNodes[i], n2.childNodes[i]))
+       
+    1:     def testPickledDocument(self):
+    1:         doc = parseString(sample)
+    4:         for proto in range(pickle.HIGHEST_PROTOCOL + 1):
+    3:             s = pickle.dumps(doc, proto)
+    3:             doc2 = pickle.loads(s)
+    3:             self.assert_recursive_equal(doc, doc2)
+       
+    1:     def testDeepcopiedDocument(self):
+    1:         doc = parseString(sample)
+    1:         doc2 = copy.deepcopy(doc)
+    1:         self.assert_recursive_equal(doc, doc2)
+       
+    1:     def testSerializeCommentNodeWithDoubleHyphen(self):
+    1:         doc = create_doc_without_doctype()
+    1:         doc.appendChild(doc.createComment("foo--bar"))
+    1:         self.assertRaises(ValueError, doc.toxml)
+       
+    1:     def testEmptyXMLNSValue(self):
+    1:         doc = parseString("<element xmlns=''>\n"
+                                 "<foo/>\n</element>")
+    1:         doc2 = parseString(doc.toxml())
+    1:         self.confirm(doc2.namespaceURI == xml.dom.EMPTY_NAMESPACE)
+       
+       
+    1: def test_main():
+    1:     run_unittest(MinidomTest)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

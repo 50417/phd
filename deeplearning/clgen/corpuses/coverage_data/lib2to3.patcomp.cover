@@ -1,0 +1,205 @@
+       # Copyright 2006 Google, Inc. All Rights Reserved.
+       # Licensed to PSF under a Contributor Agreement.
+       
+       """Pattern compiler.
+       
+       The grammar is taken from PatternGrammar.txt.
+       
+       The compiler compiles a pattern to a pytree.*Pattern instance.
+    1: """
+       
+    1: __author__ = "Guido van Rossum <guido@python.org>"
+       
+       # Python imports
+    1: import os
+    1: import StringIO
+       
+       # Fairly local imports
+    1: from .pgen2 import driver, literals, token, tokenize, parse, grammar
+       
+       # Really local imports
+    1: from . import pytree
+    1: from . import pygram
+       
+       # The pattern grammar file
+    1: _PATTERN_GRAMMAR_FILE = os.path.join(os.path.dirname(__file__),
+    1:                                      "PatternGrammar.txt")
+       
+       
+    2: class PatternSyntaxError(Exception):
+    1:     pass
+       
+       
+    1: def tokenize_wrapper(input):
+           """Tokenizes a string suppressing significant whitespace."""
+  884:     skip = set((token.NEWLINE, token.INDENT, token.DEDENT))
+  884:     tokens = tokenize.generate_tokens(StringIO.StringIO(input).readline)
+97289:     for quintuple in tokens:
+97289:         type, value, start, end, line_text = quintuple
+97289:         if type not in skip:
+87247:             yield quintuple
+       
+       
+    2: class PatternCompiler(object):
+       
+    1:     def __init__(self, grammar_file=_PATTERN_GRAMMAR_FILE):
+               """Initializer.
+       
+               Takes an optional alternative filename for the pattern grammar.
+               """
+  884:         self.grammar = driver.load_grammar(grammar_file)
+  884:         self.syms = pygram.Symbols(self.grammar)
+  884:         self.pygrammar = pygram.python_grammar
+  884:         self.pysyms = pygram.python_symbols
+  884:         self.driver = driver.Driver(self.grammar, convert=pattern_convert)
+       
+    1:     def compile_pattern(self, input, debug=False, with_tree=False):
+               """Compiles a pattern string to a nested pytree.*Pattern object."""
+  884:         tokens = tokenize_wrapper(input)
+  884:         try:
+  884:             root = self.driver.parse_tokens(tokens, debug=debug)
+>>>>>>         except parse.ParseError as e:
+>>>>>>             raise PatternSyntaxError(str(e))
+  884:         if with_tree:
+  875:             return self.compile_node(root), root
+               else:
+    9:             return self.compile_node(root)
+       
+    1:     def compile_node(self, node):
+               """Compiles a node, recursively.
+       
+               This is one big switch on the node type.
+               """
+               # XXX Optimize certain Wildcard-containing-Wildcard patterns
+               # that can be merged
+65413:         if node.type == self.syms.Matcher:
+  884:             node = node.children[0] # Avoid unneeded recursion
+       
+65413:         if node.type == self.syms.Alternatives:
+                   # Skip the odd children since they are just '|' tokens
+31871:             alts = [self.compile_node(ch) for ch in node.children[::2]]
+ 9329:             if len(alts) == 1:
+ 7446:                 return alts[0]
+16979:             p = pytree.WildcardPattern([[a] for a in alts], min=1, max=1)
+ 1883:             return p.optimize()
+       
+56084:         if node.type == self.syms.Alternative:
+56084:             units = [self.compile_node(ch) for ch in node.children]
+22542:             if len(units) == 1:
+16533:                 return units[0]
+ 6009:             p = pytree.WildcardPattern([units], min=1, max=1)
+ 6009:             return p.optimize()
+       
+33542:         if node.type == self.syms.NegatedUnit:
+  386:             pattern = self.compile_basic(node.children[1:])
+  386:             p = pytree.NegatedPattern(pattern)
+  386:             return p.optimize()
+       
+33156:         assert node.type == self.syms.Unit
+       
+33156:         name = None
+33156:         nodes = node.children
+33156:         if len(nodes) >= 3 and nodes[1].type == token.EQUAL:
+10572:             name = nodes[0].value
+10572:             nodes = nodes[2:]
+33156:         repeat = None
+33156:         if len(nodes) >= 2 and nodes[-1].type == self.syms.Repeater:
+ 1861:             repeat = nodes[-1]
+ 1861:             nodes = nodes[:-1]
+       
+               # Now we've reduced it to: STRING | NAME [Details] | (...) | [...]
+33156:         pattern = self.compile_basic(nodes, repeat)
+       
+33156:         if repeat is not None:
+ 1861:             assert repeat.type == self.syms.Repeater
+ 1861:             children = repeat.children
+ 1861:             child = children[0]
+ 1861:             if child.type == token.STAR:
+ 1318:                 min = 0
+ 1318:                 max = pytree.HUGE
+  543:             elif child.type == token.PLUS:
+  543:                 min = 1
+  543:                 max = pytree.HUGE
+>>>>>>             elif child.type == token.LBRACE:
+>>>>>>                 assert children[-1].type == token.RBRACE
+>>>>>>                 assert  len(children) in (3, 5)
+>>>>>>                 min = max = self.get_int(children[1])
+>>>>>>                 if len(children) == 5:
+>>>>>>                     max = self.get_int(children[3])
+                   else:
+>>>>>>                 assert False
+ 1861:             if min != 1 or max != 1:
+ 1861:                 pattern = pattern.optimize()
+ 1861:                 pattern = pytree.WildcardPattern([[pattern]], min=min, max=max)
+       
+33156:         if name is not None:
+10572:             pattern.name = name
+33156:         return pattern.optimize()
+       
+    1:     def compile_basic(self, nodes, repeat=None):
+               # Compile STRING | NAME [Details] | (...) | [...]
+33542:         assert len(nodes) >= 1
+33542:         node = nodes[0]
+33542:         if node.type == token.STRING:
+20096:             value = unicode(literals.evalString(node.value))
+20096:             return pytree.LeafPattern(_type_of_literal(value), value)
+13446:         elif node.type == token.NAME:
+10684:             value = node.value
+10684:             if value.isupper():
+  290:                 if value not in TOKEN_MAP:
+>>>>>>                     raise PatternSyntaxError("Invalid token: %r" % value)
+  290:                 if nodes[1:]:
+>>>>>>                     raise PatternSyntaxError("Can't have details for token")
+  290:                 return pytree.LeafPattern(TOKEN_MAP[value])
+                   else:
+10394:                 if value == "any":
+ 4430:                     type = None
+ 5964:                 elif not value.startswith("_"):
+ 5964:                     type = getattr(self.pysyms, value, None)
+ 5964:                     if type is None:
+>>>>>>                         raise PatternSyntaxError("Invalid symbol: %r" % value)
+10394:                 if nodes[1:]: # Details present
+ 5683:                     content = [self.compile_node(nodes[1].children[1])]
+                       else:
+ 4711:                     content = None
+10394:                 return pytree.NodePattern(type, content)
+ 2762:         elif node.value == "(":
+ 2061:             return self.compile_node(nodes[1])
+  701:         elif node.value == "[":
+  701:             assert repeat is None
+  701:             subpattern = self.compile_node(nodes[1])
+  701:             return pytree.WildcardPattern([[subpattern]], min=0, max=1)
+>>>>>>         assert False, node
+       
+    1:     def get_int(self, node):
+>>>>>>         assert node.type == token.NUMBER
+>>>>>>         return int(node.value)
+       
+       
+       # Map named tokens to the type value for a LeafPattern
+    1: TOKEN_MAP = {"NAME": token.NAME,
+    1:              "STRING": token.STRING,
+    1:              "NUMBER": token.NUMBER,
+    1:              "TOKEN": None}
+       
+       
+    1: def _type_of_literal(value):
+20096:     if value[0].isalpha():
+15226:         return token.NAME
+ 4870:     elif value in grammar.opmap:
+ 4370:         return grammar.opmap[value]
+           else:
+  500:         return None
+       
+       
+    1: def pattern_convert(grammar, raw_node_info):
+           """Converts raw node information to a Node or Leaf instance."""
+158999:     type, value, context, children = raw_node_info
+158999:     if children or type in grammar.number2symbol:
+73841:         return pytree.Node(type, children, context=context)
+           else:
+85158:         return pytree.Leaf(type, value, context=context)
+       
+       
+    1: def compile_pattern(pattern):
+    9:     return PatternCompiler().compile_pattern(pattern)

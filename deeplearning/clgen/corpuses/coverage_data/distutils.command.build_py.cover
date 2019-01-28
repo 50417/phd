@@ -1,0 +1,394 @@
+       """distutils.command.build_py
+       
+    1: Implements the Distutils 'build_py' command."""
+       
+    1: __revision__ = "$Id$"
+       
+    1: import os
+    1: import sys
+    1: from glob import glob
+       
+    1: from distutils.core import Command
+    1: from distutils.errors import DistutilsOptionError, DistutilsFileError
+    1: from distutils.util import convert_path
+    1: from distutils import log
+       
+    2: class build_py(Command):
+       
+    1:     description = "\"build\" pure Python modules (copy to build directory)"
+       
+           user_options = [
+    1:         ('build-lib=', 'd', "directory to \"build\" (copy) to"),
+    1:         ('compile', 'c', "compile .py to .pyc"),
+    1:         ('no-compile', None, "don't compile .py files [default]"),
+               ('optimize=', 'O',
+    1:          "also compile with optimization: -O1 for \"python -O\", "
+                "-O2 for \"python -OO\", and -O0 to disable [default: -O0]"),
+    1:         ('force', 'f', "forcibly build everything (ignore file timestamps)"),
+               ]
+       
+    1:     boolean_options = ['compile', 'force']
+    1:     negative_opt = {'no-compile' : 'compile'}
+       
+    1:     def initialize_options(self):
+   22:         self.build_lib = None
+   22:         self.py_modules = None
+   22:         self.package = None
+   22:         self.package_data = None
+   22:         self.package_dir = None
+   22:         self.compile = 0
+   22:         self.optimize = 0
+   22:         self.force = None
+       
+    1:     def finalize_options(self):
+   22:         self.set_undefined_options('build',
+   22:                                    ('build_lib', 'build_lib'),
+   22:                                    ('force', 'force'))
+       
+               # Get the distribution options that are aliases for build_py
+               # options -- list of packages and list of modules.
+   22:         self.packages = self.distribution.packages
+   22:         self.py_modules = self.distribution.py_modules
+   22:         self.package_data = self.distribution.package_data
+   22:         self.package_dir = {}
+   22:         if self.distribution.package_dir:
+    8:             for name, path in self.distribution.package_dir.items():
+    4:                 self.package_dir[name] = convert_path(path)
+   22:         self.data_files = self.get_data_files()
+       
+               # Ick, copied straight from install_lib.py (fancy_getopt needs a
+               # type system!  Hell, *everything* needs a type system!!!)
+   22:         if not isinstance(self.optimize, int):
+>>>>>>             try:
+>>>>>>                 self.optimize = int(self.optimize)
+>>>>>>                 assert 0 <= self.optimize <= 2
+>>>>>>             except (ValueError, AssertionError):
+>>>>>>                 raise DistutilsOptionError("optimize must be 0, 1, or 2")
+       
+    1:     def run(self):
+               # XXX copy_file by default preserves atime and mtime.  IMHO this is
+               # the right thing to do, but perhaps it should be an option -- in
+               # particular, a site administrator might want installed files to
+               # reflect the time of installation rather than the last
+               # modification time before the installed release.
+       
+               # XXX copy_file by default preserves mode, which appears to be the
+               # wrong thing to do: if a file is read-only in the working
+               # directory, we want it to be installed read/write so that the next
+               # installation of the same module distribution can overwrite it
+               # without problems.  (This might be a Unix-specific issue.)  Thus
+               # we turn off 'preserve_mode' when copying to the build directory,
+               # since the build directory is supposed to be exactly what the
+               # installation will look like (ie. we preserve mode when
+               # installing).
+       
+               # Two options control which modules will be installed: 'packages'
+               # and 'py_modules'.  The former lets us work with whole packages, not
+               # specifying individual modules at all; the latter is for
+               # specifying modules one-at-a-time.
+       
+    6:         if self.py_modules:
+    3:             self.build_modules()
+    6:         if self.packages:
+    3:             self.build_packages()
+    3:             self.build_package_data()
+       
+    6:         self.byte_compile(self.get_outputs(include_bytecode=0))
+       
+    1:     def get_data_files(self):
+               """Generate list of '(package,src_dir,build_dir,filenames)' tuples"""
+   22:         data = []
+   22:         if not self.packages:
+    4:             return data
+   38:         for package in self.packages:
+                   # Locate package source directory
+   20:             src_dir = self.get_package_dir(package)
+       
+                   # Compute package build directory
+   20:             build_dir = os.path.join(*([self.build_lib] + package.split('.')))
+       
+                   # Length of path to strip from found files
+   20:             plen = 0
+   20:             if src_dir:
+   19:                 plen = len(src_dir)+1
+       
+                   # Strip directory from globbed filenames
+                   filenames = [
+   28:                 file[plen:] for file in self.find_data_files(package, src_dir)
+                       ]
+   20:             data.append((package, src_dir, build_dir, filenames))
+   18:         return data
+       
+    1:     def find_data_files(self, package, src_dir):
+               """Return filenames for package's data files in 'src_dir'"""
+   20:         globs = (self.package_data.get('', [])
+   20:                  + self.package_data.get(package, []))
+   20:         files = []
+   28:         for pattern in globs:
+                   # Each pattern has to be converted to a platform-specific path
+    8:             filelist = glob(os.path.join(src_dir, convert_path(pattern)))
+                   # Files that match more than one pattern are only added once
+   17:             files.extend([fn for fn in filelist if fn not in files
+    9:                 and os.path.isfile(fn)])
+   20:         return files
+       
+    1:     def build_package_data(self):
+               """Copy data files into build directory"""
+    6:         for package, src_dir, build_dir, filenames in self.data_files:
+    6:             for filename in filenames:
+    3:                 target = os.path.join(build_dir, filename)
+    3:                 self.mkpath(os.path.dirname(target))
+    3:                 self.copy_file(os.path.join(src_dir, filename), target,
+    3:                                preserve_mode=False)
+       
+    1:     def get_package_dir(self, package):
+               """Return the directory, relative to the top of the source
+                  distribution, where package 'package' should be found
+                  (at least according to the 'package_dir' option, if any)."""
+       
+   57:         path = package.split('.')
+       
+   57:         if not self.package_dir:
+   43:             if path:
+   43:                 return os.path.join(*path)
+                   else:
+>>>>>>                 return ''
+               else:
+   14:             tail = []
+   22:             while path:
+   16:                 try:
+   16:                     pdir = self.package_dir['.'.join(path)]
+    8:                 except KeyError:
+    8:                     tail.insert(0, path[-1])
+    8:                     del path[-1]
+                       else:
+    8:                     tail.insert(0, pdir)
+    8:                     return os.path.join(*tail)
+                   else:
+                       # Oops, got all the way through 'path' without finding a
+                       # match in package_dir.  If package_dir defines a directory
+                       # for the root (nameless) package, then fallback on it;
+                       # otherwise, we might as well have not consulted
+                       # package_dir at all, as we just use the directory implied
+                       # by 'tail' (which should be the same as the original value
+                       # of 'path' at this point).
+    6:                 pdir = self.package_dir.get('')
+    6:                 if pdir is not None:
+    6:                     tail.insert(0, pdir)
+       
+    6:                 if tail:
+    6:                     return os.path.join(*tail)
+                       else:
+>>>>>>                     return ''
+       
+    1:     def check_package(self, package, package_dir):
+               # Empty dir name means current directory, which we can probably
+               # assume exists.  Also, os.path.exists and isdir don't know about
+               # my "empty string means current dir" convention, so we have to
+               # circumvent them.
+   31:         if package_dir != "":
+   19:             if not os.path.exists(package_dir):
+>>>>>>                 raise DistutilsFileError(
+>>>>>>                       "package directory '%s' does not exist" % package_dir)
+   19:             if not os.path.isdir(package_dir):
+>>>>>>                 raise DistutilsFileError(
+>>>>>>                        "supposed package directory '%s' exists, "
+>>>>>>                        "but is not a directory" % package_dir)
+       
+               # Require __init__.py for all but the "root package"
+   31:         if package:
+   21:             init_py = os.path.join(package_dir, "__init__.py")
+   21:             if os.path.isfile(init_py):
+   19:                 return init_py
+                   else:
+    2:                 log.warn(("package init file '%s' not found " +
+    2:                           "(or not a regular file)"), init_py)
+       
+               # Either not in a package at all (__init__.py not expected), or
+               # __init__.py doesn't exist -- so don't return the filename.
+   12:         return None
+       
+    1:     def check_module(self, module, module_file):
+   10:         if not os.path.isfile(module_file):
+    2:             log.warn("file %s (for module %s) not found", module_file, module)
+    2:             return False
+               else:
+    8:             return True
+       
+    1:     def find_package_modules(self, package, package_dir):
+   21:         self.check_package(package, package_dir)
+   21:         module_files = glob(os.path.join(package_dir, "*.py"))
+   21:         modules = []
+   21:         setup_script = os.path.abspath(self.distribution.script_name)
+       
+   42:         for f in module_files:
+   21:             abs_f = os.path.abspath(f)
+   21:             if abs_f != setup_script:
+   21:                 module = os.path.splitext(os.path.basename(f))[0]
+   21:                 modules.append((package, module, f))
+                   else:
+>>>>>>                 self.debug_print("excluding %s" % setup_script)
+   21:         return modules
+       
+    1:     def find_modules(self):
+               """Finds individually-specified Python modules, ie. those listed by
+               module name in 'self.py_modules'.  Returns a list of tuples (package,
+               module_base, filename): 'package' is a tuple of the path through
+               package-space to the module; 'module_base' is the bare (no
+               packages, no dots) module name, and 'filename' is the path to the
+               ".py" file (relative to the distribution root) that implements the
+               module.
+               """
+               # Map package names to tuples of useful info about the package:
+               #    (package_dir, checked)
+               # package_dir - the directory where we'll find source files for
+               #   this package
+               # checked - true if we have checked that the package directory
+               #   is valid (exists, contains __init__.py, ... ?)
+   10:         packages = {}
+       
+               # List of (package, module, filename) tuples to return
+   10:         modules = []
+       
+               # We treat modules-in-packages almost the same as toplevel modules,
+               # just the "package" for a toplevel is empty (either an empty
+               # string or empty list, depending on context).  Differences:
+               #   - don't check for __init__.py in directory for empty package
+   20:         for module in self.py_modules:
+   10:             path = module.split('.')
+   10:             package = '.'.join(path[0:-1])
+   10:             module_base = path[-1]
+       
+   10:             try:
+   10:                 (package_dir, checked) = packages[package]
+   10:             except KeyError:
+   10:                 package_dir = self.get_package_dir(package)
+   10:                 checked = 0
+       
+   10:             if not checked:
+   10:                 init_py = self.check_package(package, package_dir)
+   10:                 packages[package] = (package_dir, 1)
+   10:                 if init_py:
+>>>>>>                     modules.append((package, "__init__", init_py))
+       
+                   # XXX perhaps we should also check for just .pyc files
+                   # (so greedy closed-source bastards can distribute Python
+                   # modules too)
+   10:             module_file = os.path.join(package_dir, module_base + ".py")
+   10:             if not self.check_module(module, module_file):
+    2:                 continue
+       
+    8:             modules.append((package, module_base, module_file))
+       
+   10:         return modules
+       
+    1:     def find_all_modules(self):
+               """Compute the list of all modules that will be built, whether
+               they are specified one-module-at-a-time ('self.py_modules') or
+               by whole packages ('self.packages').  Return a list of tuples
+               (package, module, module_file), just like 'find_modules()' and
+               'find_package_modules()' do."""
+   23:         modules = []
+   23:         if self.py_modules:
+    7:             modules.extend(self.find_modules())
+   23:         if self.packages:
+   36:             for package in self.packages:
+   18:                 package_dir = self.get_package_dir(package)
+   18:                 m = self.find_package_modules(package, package_dir)
+   18:                 modules.extend(m)
+   23:         return modules
+       
+    1:     def get_source_files(self):
+   24:         return [module[-1] for module in self.find_all_modules()]
+       
+    1:     def get_module_outfile(self, build_dir, package, module):
+   17:         outfile_path = [build_dir] + list(package) + [module + ".py"]
+   17:         return os.path.join(*outfile_path)
+       
+    1:     def get_outputs(self, include_bytecode=1):
+   11:         modules = self.find_all_modules()
+   11:         outputs = []
+   22:         for (package, module, module_file) in modules:
+   11:             package = package.split('.')
+   11:             filename = self.get_module_outfile(self.build_lib, package, module)
+   11:             outputs.append(filename)
+   11:             if include_bytecode:
+    5:                 if self.compile:
+    1:                     outputs.append(filename + "c")
+    5:                 if self.optimize > 0:
+>>>>>>                     outputs.append(filename + "o")
+       
+   11:         outputs += [
+   11:             os.path.join(build_dir, filename)
+   17:             for package, src_dir, build_dir, filenames in self.data_files
+   10:             for filename in filenames
+                   ]
+       
+   11:         return outputs
+       
+    1:     def build_module(self, module, module_file, package):
+    6:         if isinstance(package, str):
+    6:             package = package.split('.')
+>>>>>>         elif not isinstance(package, (list, tuple)):
+>>>>>>             raise TypeError(
+>>>>>>                   "'package' must be a string (dot-separated), list, or tuple")
+       
+               # Now put the module source file into the "build" area -- this is
+               # easy, we just copy it somewhere under self.build_lib (the build
+               # directory for Python source).
+    6:         outfile = self.get_module_outfile(self.build_lib, package, module)
+    6:         dir = os.path.dirname(outfile)
+    6:         self.mkpath(dir)
+    6:         return self.copy_file(module_file, outfile, preserve_mode=0)
+       
+    1:     def build_modules(self):
+    3:         modules = self.find_modules()
+    6:         for (package, module, module_file) in modules:
+       
+                   # Now "build" the module -- ie. copy the source file to
+                   # self.build_lib (the build directory for Python source).
+                   # (Actually, it gets copied to the directory for this package
+                   # under self.build_lib.)
+    3:             self.build_module(module, module_file, package)
+       
+    1:     def build_packages(self):
+    6:         for package in self.packages:
+       
+                   # Get list of (package, module, module_file) tuples based on
+                   # scanning the package directory.  'package' is only included
+                   # in the tuple so that 'find_modules()' and
+                   # 'find_package_tuples()' have a consistent interface; it's
+                   # ignored here (apart from a sanity check).  Also, 'module' is
+                   # the *unqualified* module name (ie. no dots, no package -- we
+                   # already know its package!), and 'module_file' is the path to
+                   # the .py file, relative to the current directory
+                   # (ie. including 'package_dir').
+    3:             package_dir = self.get_package_dir(package)
+    3:             modules = self.find_package_modules(package, package_dir)
+       
+                   # Now loop over the modules we found, "building" each one (just
+                   # copy it to self.build_lib).
+    6:             for (package_, module, module_file) in modules:
+    3:                 assert package == package_
+    3:                 self.build_module(module, module_file, package)
+       
+    1:     def byte_compile(self, files):
+    7:         if sys.dont_write_bytecode:
+    1:             self.warn('byte-compiling is disabled, skipping.')
+    1:             return
+       
+    6:         from distutils.util import byte_compile
+    6:         prefix = self.build_lib
+    6:         if prefix[-1] != os.sep:
+    6:             prefix = prefix + os.sep
+       
+               # XXX this code is essentially the same as the 'byte_compile()
+               # method of the "install_lib" command, except for the determination
+               # of the 'prefix' string.  Hmmm.
+       
+    6:         if self.compile:
+    1:             byte_compile(files, optimize=0,
+    1:                          force=self.force, prefix=prefix, dry_run=self.dry_run)
+    6:         if self.optimize > 0:
+>>>>>>             byte_compile(files, optimize=self.optimize,
+>>>>>>                          force=self.force, prefix=prefix, dry_run=self.dry_run)

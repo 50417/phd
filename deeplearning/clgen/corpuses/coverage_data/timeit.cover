@@ -1,0 +1,343 @@
+       #! /usr/bin/env python
+       
+       """Tool for measuring execution time of small code snippets.
+       
+       This module avoids a number of common traps for measuring execution
+       times.  See also Tim Peters' introduction to the Algorithms chapter in
+       the Python Cookbook, published by O'Reilly.
+       
+       Library usage: see the Timer class.
+       
+       Command line usage:
+           python timeit.py [-n N] [-r N] [-s S] [-t] [-c] [-h] [--] [statement]
+       
+       Options:
+         -n/--number N: how many times to execute 'statement' (default: see below)
+         -r/--repeat N: how many times to repeat the timer (default 3)
+         -s/--setup S: statement to be executed once initially (default 'pass')
+         -t/--time: use time.time() (default on Unix)
+         -c/--clock: use time.clock() (default on Windows)
+         -v/--verbose: print raw timing results; repeat for more digits precision
+         -h/--help: print this usage message and exit
+         --: separate options from statement, use when statement starts with -
+         statement: statement to be timed (default 'pass')
+       
+       A multi-line statement may be given by specifying each line as a
+       separate argument; indented lines are possible by enclosing an
+       argument in quotes and using leading spaces.  Multiple -s options are
+       treated similarly.
+       
+       If -n is not given, a suitable number of loops is calculated by trying
+       successive powers of 10 until the total time is at least 0.2 seconds.
+       
+       The difference in default timer function is because on Windows,
+       clock() has microsecond granularity but time()'s granularity is 1/60th
+       of a second; on Unix, clock() has 1/100th of a second granularity and
+       time() is much more precise.  On either platform, the default timer
+       functions measure wall clock time, not the CPU time.  This means that
+       other processes running on the same computer may interfere with the
+       timing.  The best thing to do when accurate timing is necessary is to
+       repeat the timing a few times and use the best time.  The -r option is
+       good for this; the default of 3 repetitions is probably enough in most
+       cases.  On Unix, you can use clock() to measure CPU time.
+       
+       Note: there is a certain baseline overhead associated with executing a
+       pass statement.  The code here doesn't try to hide it, but you should
+       be aware of it.  The baseline overhead can be measured by invoking the
+       program without arguments.
+       
+       The baseline overhead differs between Python versions!  Also, to
+       fairly compare older Python versions to Python 2.3, you may want to
+       use python -O for the older versions to avoid timing SET_LINENO
+       instructions.
+    1: """
+       
+    1: import gc
+    1: import sys
+    1: import time
+    1: try:
+    1:     import itertools
+>>>>>> except ImportError:
+           # Must be an older Python version (see timeit() below)
+>>>>>>     itertools = None
+       
+    1: __all__ = ["Timer"]
+       
+    1: dummy_src_name = "<timeit-src>"
+    1: default_number = 1000000
+    1: default_repeat = 3
+       
+    1: if sys.platform == "win32":
+           # On Windows, the best timer is time.clock()
+>>>>>>     default_timer = time.clock
+       else:
+           # On most other platforms the best timer is time.time()
+    1:     default_timer = time.time
+       
+       # Don't change the indentation of the template; the reindent() calls
+       # in Timer.__init__() depend on setup being indented 4 spaces and stmt
+       # being indented 8 spaces.
+       template = """
+       def inner(_it, _timer%(init)s):
+           %(setup)s
+           _t0 = _timer()
+           for _i in _it:
+               %(stmt)s
+           _t1 = _timer()
+           return _t1 - _t0
+    1: """
+       
+    1: def reindent(src, indent):
+           """Helper to reindent a multi-line statement."""
+   55:     return src.replace("\n", "\n" + " "*indent)
+       
+    1: def _template_func(setup, func):
+           """Create a timer function. Used if the "statement" is a callable."""
+    4:     def inner(_it, _timer, _func=func):
+    8:         setup()
+    8:         _t0 = _timer()
+   44:         for _i in _it:
+   36:             _func()
+    8:         _t1 = _timer()
+    8:         return _t1 - _t0
+    4:     return inner
+       
+    2: class Timer:
+           """Class for timing execution speed of small code snippets.
+       
+           The constructor takes a statement to be timed, an additional
+           statement used for setup, and a timer function.  Both statements
+           default to 'pass'; the timer function is platform-dependent (see
+           module doc string).
+       
+           To measure the execution time of the first statement, use the
+           timeit() method.  The repeat() method is a convenience to call
+           timeit() multiple times and return a list of results.
+       
+           The statements may contain newlines, as long as they don't contain
+           multi-line string literals.
+    1:     """
+       
+    1:     def __init__(self, stmt="pass", setup="pass", timer=default_timer):
+               """Constructor.  See class doc string."""
+   38:         self.timer = timer
+   38:         ns = {}
+   38:         if isinstance(stmt, basestring):
+                   # Check that the code can be compiled outside a function
+   33:             if isinstance(setup, basestring):
+   30:                 compile(setup, dummy_src_name, "exec")
+   26:                 compile(setup + '\n' + stmt, dummy_src_name, "exec")
+                   else:
+    3:                 compile(stmt, dummy_src_name, "exec")
+   25:             stmt = reindent(stmt, 8)
+   25:             if isinstance(setup, basestring):
+   22:                 setup = reindent(setup, 4)
+   22:                 src = template % {'stmt': stmt, 'setup': setup, 'init': ''}
+    3:             elif hasattr(setup, '__call__'):
+    2:                 src = template % {'stmt': stmt, 'setup': '_setup()',
+    2:                                   'init': ', _setup=_setup'}
+    2:                 ns['_setup'] = setup
+                   else:
+    1:                 raise ValueError("setup is neither a string nor callable")
+   24:             self.src = src # Save for traceback display
+   24:             code = compile(src, dummy_src_name, "exec")
+   24:             exec code in globals(), ns
+   24:             self.inner = ns["inner"]
+    5:         elif hasattr(stmt, '__call__'):
+    4:             self.src = None
+    4:             if isinstance(setup, basestring):
+    2:                 _setup = setup
+    2:                 def setup():
+    4:                     exec _setup in globals(), ns
+    2:             elif not hasattr(setup, '__call__'):
+>>>>>>                 raise ValueError("setup is neither a string nor callable")
+    4:             self.inner = _template_func(setup, stmt)
+               else:
+    1:             raise ValueError("stmt is neither a string nor callable")
+       
+    1:     def print_exc(self, file=None):
+               """Helper to print a traceback from the timed code.
+       
+               Typical use:
+       
+                   t = Timer(...)       # outside the try/except
+                   try:
+                       t.timeit(...)    # or t.repeat(...)
+                   except:
+                       t.print_exc()
+       
+               The advantage over the standard traceback is that source lines
+               in the compiled template will be displayed.
+       
+               The optional file argument directs where the traceback is
+               sent; it defaults to sys.stderr.
+               """
+    3:         import linecache, traceback
+    3:         if self.src is not None:
+    3:             linecache.cache[dummy_src_name] = (len(self.src),
+    3:                                                None,
+    3:                                                self.src.split("\n"),
+    3:                                                dummy_src_name)
+               # else the source is already stored somewhere else
+       
+    3:         traceback.print_exc(file=file)
+       
+    1:     def timeit(self, number=default_number):
+               """Time 'number' executions of the main statement.
+       
+               To be precise, this executes the setup statement once, and
+               then returns the time it takes to execute the main statement
+               a number of times, as a float measured in seconds.  The
+               argument is the number of times through the loop, defaulting
+               to one million.  The main statement, the setup statement and
+               the timer function to be used are passed to the constructor.
+               """
+   76:         if itertools:
+   76:             it = itertools.repeat(None, number)
+               else:
+>>>>>>             it = [None] * number
+   76:         gcold = gc.isenabled()
+   76:         gc.disable()
+   76:         try:
+   76:             timing = self.inner(it, self.timer)
+               finally:
+   76:             if gcold:
+   76:                 gc.enable()
+   73:         return timing
+       
+    1:     def repeat(self, repeat=default_repeat, number=default_number):
+               """Call timeit() a few times.
+       
+               This is a convenience function that calls the timeit()
+               repeatedly, returning a list of results.  The first argument
+               specifies how many times to call timeit(), defaulting to 3;
+               the second argument specifies the timer argument, defaulting
+               to one million.
+       
+               Note: it's tempting to calculate mean and standard deviation
+               from the result vector and report these.  However, this is not
+               very useful.  In a typical case, the lowest value gives a
+               lower bound for how fast your machine can run the given code
+               snippet; higher values in the result vector are typically not
+               caused by variability in Python's speed, but by other
+               processes interfering with your timing accuracy.  So the min()
+               of the result is probably the only number you should be
+               interested in.  After that, you should look at the entire
+               vector and apply common sense rather than statistics.
+               """
+   20:         r = []
+   75:         for i in range(repeat):
+   56:             t = self.timeit(number)
+   55:             r.append(t)
+   19:         return r
+       
+    1: def timeit(stmt="pass", setup="pass", timer=default_timer,
+    1:            number=default_number):
+           """Convenience function to create Timer object and call timeit method."""
+    1:     return Timer(stmt, setup, timer).timeit(number)
+       
+    1: def repeat(stmt="pass", setup="pass", timer=default_timer,
+    1:            repeat=default_repeat, number=default_number):
+           """Convenience function to create Timer object and call repeat method."""
+    2:     return Timer(stmt, setup, timer).repeat(repeat, number)
+       
+    1: def main(args=None, _wrap_timer=None):
+           """Main program, used when run as a script.
+       
+           The optional 'args' argument specifies the command line to be parsed,
+           defaulting to sys.argv[1:].
+       
+           The return value is an exit code to be passed to sys.exit(); it
+           may be None to indicate success.
+       
+           When an exception happens during timing, a traceback is printed to
+           stderr and the return value is 1.  Exceptions at other times
+           (including the template compilation) are not caught.
+       
+           '_wrap_timer' is an internal interface used for unit testing.  If it
+           is not None, it must be a callable that accepts a timer function
+           and returns another timer function (used for unit testing).
+           """
+   15:     if args is None:
+>>>>>>         args = sys.argv[1:]
+   15:     import getopt
+   15:     try:
+   15:         opts, args = getopt.getopt(args, "n:s:r:tcvh",
+   15:                                    ["number=", "setup=", "repeat=",
+   15:                                     "time", "clock", "verbose", "help"])
+    1:     except getopt.error, err:
+    1:         print err
+    1:         print "use -h/--help for command line help"
+    1:         return 2
+   14:     timer = default_timer
+   14:     stmt = "\n".join(args) or "pass"
+   14:     number = 0 # auto-determine
+   14:     setup = []
+   14:     repeat = default_repeat
+   14:     verbose = 0
+   14:     precision = 3
+   26:     for o, a in opts:
+   13:         if o in ("-n", "--number"):
+    4:             number = int(a)
+   13:         if o in ("-s", "--setup"):
+    1:             setup.append(a)
+   13:         if o in ("-r", "--repeat"):
+    2:             repeat = int(a)
+    2:             if repeat <= 0:
+    1:                 repeat = 1
+   13:         if o in ("-t", "--time"):
+    1:             timer = time.time
+   13:         if o in ("-c", "--clock"):
+    1:             timer = time.clock
+   13:         if o in ("-v", "--verbose"):
+    3:             if verbose:
+    1:                 precision += 1
+    3:             verbose += 1
+   13:         if o in ("-h", "--help"):
+    1:             print __doc__,
+    1:             return 0
+   13:     setup = "\n".join(setup) or "pass"
+           # Include the current directory, so that local imports work (sys.path
+           # contains the directory of this script, rather than the current
+           # directory)
+   13:     import os
+   13:     sys.path.insert(0, os.curdir)
+   13:     if _wrap_timer is not None:
+   13:         timer = _wrap_timer(timer)
+   13:     t = Timer(stmt, setup, timer)
+   13:     if number == 0:
+               # determine number so that 0.2 <= total time < 2.0
+   13:         for i in range(1, 10):
+   13:             number = 10**i
+   13:             try:
+   13:                 x = t.timeit(number)
+    1:             except:
+    1:                 t.print_exc()
+    1:                 return 1
+   12:             if verbose:
+    5:                 print "%d loops -> %.*g secs" % (number, precision, x)
+   12:             if x >= 0.2:
+    8:                 break
+   12:     try:
+   12:         r = t.repeat(repeat, number)
+    1:     except:
+    1:         t.print_exc()
+    1:         return 1
+   11:     best = min(r)
+   11:     if verbose:
+    8:         print "raw times:", " ".join(["%.*g" % (precision, x) for x in r])
+   11:     print "%d loops," % number,
+   11:     usec = best * 1e6 / number
+   11:     if usec < 1000:
+    2:         print "best of %d: %.*g usec per loop" % (repeat, precision, usec)
+           else:
+    9:         msec = usec / 1000
+    9:         if msec < 1000:
+    1:             print "best of %d: %.*g msec per loop" % (repeat, precision, msec)
+               else:
+    8:             sec = msec / 1000
+    8:             print "best of %d: %.*g sec per loop" % (repeat, precision, sec)
+   11:     return None
+       
+    1: if __name__ == "__main__":
+>>>>>>     sys.exit(main())

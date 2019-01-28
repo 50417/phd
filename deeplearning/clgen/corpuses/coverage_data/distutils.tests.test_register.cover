@@ -1,0 +1,290 @@
+       # -*- encoding: utf8 -*-
+    1: """Tests for distutils.command.register."""
+    1: import os
+    1: import unittest
+    1: import getpass
+    1: import urllib2
+    1: import warnings
+       
+    1: from test.test_support import check_warnings, run_unittest
+       
+    1: from distutils.command import register as register_module
+    1: from distutils.command.register import register
+    1: from distutils.errors import DistutilsSetupError
+       
+    1: from distutils.tests.test_config import PyPIRCCommandTestCase
+       
+    1: try:
+    1:     import docutils
+    1: except ImportError:
+    1:     docutils = None
+       
+       PYPIRC_NOPASSWORD = """\
+       [distutils]
+       
+       index-servers =
+           server1
+       
+       [server1]
+       username:me
+    1: """
+       
+       WANTED_PYPIRC = """\
+       [distutils]
+       index-servers =
+           pypi
+       
+       [pypi]
+       username:tarek
+       password:password
+    1: """
+       
+    2: class RawInputs(object):
+    1:     """Fakes user inputs."""
+    1:     def __init__(self, *answers):
+    3:         self.answers = answers
+    3:         self.index = 0
+       
+    1:     def __call__(self, prompt=''):
+    8:         try:
+    8:             return self.answers[self.index]
+               finally:
+    8:             self.index += 1
+       
+    2: class FakeOpener(object):
+    1:     """Fakes a PyPI server"""
+    1:     def __init__(self):
+    7:         self.reqs = []
+       
+    1:     def __call__(self, *args):
+    5:         return self
+       
+    1:     def open(self, req):
+    5:         self.reqs.append(req)
+    5:         return self
+       
+    1:     def read(self):
+    1:         return 'xxx'
+       
+    2: class RegisterTestCase(PyPIRCCommandTestCase):
+       
+    1:     def setUp(self):
+    7:         super(RegisterTestCase, self).setUp()
+               # patching the password prompt
+    7:         self._old_getpass = getpass.getpass
+    7:         def _getpass(prompt):
+    4:             return 'password'
+    7:         getpass.getpass = _getpass
+    7:         self.old_opener = urllib2.build_opener
+    7:         self.conn = urllib2.build_opener = FakeOpener()
+       
+    1:     def tearDown(self):
+    7:         getpass.getpass = self._old_getpass
+    7:         urllib2.build_opener = self.old_opener
+    7:         super(RegisterTestCase, self).tearDown()
+       
+    1:     def _get_cmd(self, metadata=None):
+    5:         if metadata is None:
+    5:             metadata = {'url': 'xxx', 'author': 'xxx',
+    5:                         'author_email': 'xxx',
+    5:                         'name': 'xxx', 'version': 'xxx'}
+    5:         pkg_info, dist = self.create_dist(**metadata)
+    5:         return register(dist)
+       
+    1:     def test_create_pypirc(self):
+               # this test makes sure a .pypirc file
+               # is created when requested.
+       
+               # let's create a register instance
+    1:         cmd = self._get_cmd()
+       
+               # we shouldn't have a .pypirc file yet
+    1:         self.assertFalse(os.path.exists(self.rc))
+       
+               # patching raw_input and getpass.getpass
+               # so register gets happy
+               #
+               # Here's what we are faking :
+               # use your existing login (choice 1.)
+               # Username : 'tarek'
+               # Password : 'password'
+               # Save your login (y/N)? : 'y'
+    1:         inputs = RawInputs('1', 'tarek', 'y')
+    1:         register_module.raw_input = inputs.__call__
+               # let's run the command
+    1:         try:
+    1:             cmd.run()
+               finally:
+    1:             del register_module.raw_input
+       
+               # we should have a brand new .pypirc file
+    1:         self.assertTrue(os.path.exists(self.rc))
+       
+               # with the content similar to WANTED_PYPIRC
+    1:         f = open(self.rc)
+    1:         try:
+    1:             content = f.read()
+    1:             self.assertEqual(content, WANTED_PYPIRC)
+               finally:
+    1:             f.close()
+       
+               # now let's make sure the .pypirc file generated
+               # really works : we shouldn't be asked anything
+               # if we run the command again
+    1:         def _no_way(prompt=''):
+>>>>>>             raise AssertionError(prompt)
+    1:         register_module.raw_input = _no_way
+       
+    1:         cmd.show_response = 1
+    1:         cmd.run()
+       
+               # let's see what the server received : we should
+               # have 2 similar requests
+    1:         self.assertEqual(len(self.conn.reqs), 2)
+    1:         req1 = dict(self.conn.reqs[0].headers)
+    1:         req2 = dict(self.conn.reqs[1].headers)
+    1:         self.assertEqual(req2['Content-length'], req1['Content-length'])
+    1:         self.assertIn('xxx', self.conn.reqs[1].data)
+       
+    1:     def test_password_not_in_file(self):
+       
+    1:         self.write_file(self.rc, PYPIRC_NOPASSWORD)
+    1:         cmd = self._get_cmd()
+    1:         cmd._set_config()
+    1:         cmd.finalize_options()
+    1:         cmd.send_metadata()
+       
+               # dist.password should be set
+               # therefore used afterwards by other commands
+    1:         self.assertEqual(cmd.distribution.password, 'password')
+       
+    1:     def test_registering(self):
+               # this test runs choice 2
+    1:         cmd = self._get_cmd()
+    1:         inputs = RawInputs('2', 'tarek', 'tarek@ziade.org')
+    1:         register_module.raw_input = inputs.__call__
+    1:         try:
+                   # let's run the command
+    1:             cmd.run()
+               finally:
+    1:             del register_module.raw_input
+       
+               # we should have send a request
+    1:         self.assertEqual(len(self.conn.reqs), 1)
+    1:         req = self.conn.reqs[0]
+    1:         headers = dict(req.headers)
+    1:         self.assertEqual(headers['Content-length'], '608')
+    1:         self.assertIn('tarek', req.data)
+       
+    1:     def test_password_reset(self):
+               # this test runs choice 3
+    1:         cmd = self._get_cmd()
+    1:         inputs = RawInputs('3', 'tarek@ziade.org')
+    1:         register_module.raw_input = inputs.__call__
+    1:         try:
+                   # let's run the command
+    1:             cmd.run()
+               finally:
+    1:             del register_module.raw_input
+       
+               # we should have send a request
+    1:         self.assertEqual(len(self.conn.reqs), 1)
+    1:         req = self.conn.reqs[0]
+    1:         headers = dict(req.headers)
+    1:         self.assertEqual(headers['Content-length'], '290')
+    1:         self.assertIn('tarek', req.data)
+       
+    1:     @unittest.skipUnless(docutils is not None, 'needs docutils')
+           def test_strict(self):
+               # testing the script option
+               # when on, the register command stops if
+               # the metadata is incomplete or if
+               # long_description is not reSt compliant
+       
+               # empty metadata
+>>>>>>         cmd = self._get_cmd({})
+>>>>>>         cmd.ensure_finalized()
+>>>>>>         cmd.strict = 1
+>>>>>>         self.assertRaises(DistutilsSetupError, cmd.run)
+       
+               # metadata are OK but long_description is broken
+>>>>>>         metadata = {'url': 'xxx', 'author': 'xxx',
+>>>>>>                     'author_email': u'éxéxé',
+>>>>>>                     'name': 'xxx', 'version': 'xxx',
+>>>>>>                     'long_description': 'title\n==\n\ntext'}
+       
+>>>>>>         cmd = self._get_cmd(metadata)
+>>>>>>         cmd.ensure_finalized()
+>>>>>>         cmd.strict = 1
+>>>>>>         self.assertRaises(DistutilsSetupError, cmd.run)
+       
+               # now something that works
+>>>>>>         metadata['long_description'] = 'title\n=====\n\ntext'
+>>>>>>         cmd = self._get_cmd(metadata)
+>>>>>>         cmd.ensure_finalized()
+>>>>>>         cmd.strict = 1
+>>>>>>         inputs = RawInputs('1', 'tarek', 'y')
+>>>>>>         register_module.raw_input = inputs.__call__
+               # let's run the command
+>>>>>>         try:
+>>>>>>             cmd.run()
+               finally:
+>>>>>>             del register_module.raw_input
+       
+               # strict is not by default
+>>>>>>         cmd = self._get_cmd()
+>>>>>>         cmd.ensure_finalized()
+>>>>>>         inputs = RawInputs('1', 'tarek', 'y')
+>>>>>>         register_module.raw_input = inputs.__call__
+               # let's run the command
+>>>>>>         try:
+>>>>>>             cmd.run()
+               finally:
+>>>>>>             del register_module.raw_input
+       
+               # and finally a Unicode test (bug #12114)
+>>>>>>         metadata = {'url': u'xxx', 'author': u'\u00c9ric',
+>>>>>>                     'author_email': u'xxx', u'name': 'xxx',
+>>>>>>                     'version': u'xxx',
+>>>>>>                     'description': u'Something about esszet \u00df',
+>>>>>>                     'long_description': u'More things about esszet \u00df'}
+       
+>>>>>>         cmd = self._get_cmd(metadata)
+>>>>>>         cmd.ensure_finalized()
+>>>>>>         cmd.strict = 1
+>>>>>>         inputs = RawInputs('1', 'tarek', 'y')
+>>>>>>         register_module.raw_input = inputs.__call__
+               # let's run the command
+>>>>>>         try:
+>>>>>>             cmd.run()
+               finally:
+>>>>>>             del register_module.raw_input
+       
+    1:     @unittest.skipUnless(docutils is not None, 'needs docutils')
+           def test_register_invalid_long_description(self):
+>>>>>>         description = ':funkie:`str`'  # mimic Sphinx-specific markup
+>>>>>>         metadata = {'url': 'xxx', 'author': 'xxx',
+>>>>>>                     'author_email': 'xxx',
+>>>>>>                     'name': 'xxx', 'version': 'xxx',
+>>>>>>                     'long_description': description}
+>>>>>>         cmd = self._get_cmd(metadata)
+>>>>>>         cmd.ensure_finalized()
+>>>>>>         cmd.strict = True
+>>>>>>         inputs = RawInputs('2', 'tarek', 'tarek@ziade.org')
+>>>>>>         register_module.raw_input = inputs
+>>>>>>         self.addCleanup(delattr, register_module, 'raw_input')
+>>>>>>         self.assertRaises(DistutilsSetupError, cmd.run)
+       
+    1:     def test_check_metadata_deprecated(self):
+               # makes sure make_metadata is deprecated
+    1:         cmd = self._get_cmd()
+    1:         with check_warnings() as w:
+    1:             warnings.simplefilter("always")
+    1:             cmd.check_metadata()
+    1:             self.assertEqual(len(w.warnings), 1)
+       
+    1: def test_suite():
+    1:     return unittest.makeSuite(RegisterTestCase)
+       
+    1: if __name__ == "__main__":
+>>>>>>     run_unittest(test_suite())

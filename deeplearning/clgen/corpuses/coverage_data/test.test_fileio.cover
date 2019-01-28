@@ -1,0 +1,511 @@
+       # Adapted from test_file.py by Daniel Stutzbach
+       
+    1: from __future__ import unicode_literals
+       
+    1: import sys
+    1: import os
+    1: import errno
+    1: import unittest
+    1: from array import array
+    1: from weakref import proxy
+    1: from functools import wraps
+    1: from UserList import UserList
+       
+    1: from test.test_support import TESTFN, check_warnings, run_unittest, make_bad_fd
+    1: from test.test_support import py3k_bytes as bytes, cpython_only
+    1: from test.script_helper import run_python
+       
+    1: from _io import FileIO as _FileIO
+       
+    2: class AutoFileTests(unittest.TestCase):
+           # file tests for which a test file is automatically set up
+       
+    1:     def setUp(self):
+   26:         self.f = _FileIO(TESTFN, 'w')
+       
+    1:     def tearDown(self):
+   26:         if self.f:
+   25:             self.f.close()
+   26:         os.remove(TESTFN)
+       
+    1:     def testWeakRefs(self):
+               # verify weak references
+    1:         p = proxy(self.f)
+    1:         p.write(bytes(range(10)))
+    1:         self.assertEqual(self.f.tell(), p.tell())
+    1:         self.f.close()
+    1:         self.f = None
+    1:         self.assertRaises(ReferenceError, getattr, p, 'tell')
+       
+    1:     def testSeekTell(self):
+    1:         self.f.write(bytes(range(20)))
+    1:         self.assertEqual(self.f.tell(), 20)
+    1:         self.f.seek(0)
+    1:         self.assertEqual(self.f.tell(), 0)
+    1:         self.f.seek(10)
+    1:         self.assertEqual(self.f.tell(), 10)
+    1:         self.f.seek(5, 1)
+    1:         self.assertEqual(self.f.tell(), 15)
+    1:         self.f.seek(-5, 1)
+    1:         self.assertEqual(self.f.tell(), 10)
+    1:         self.f.seek(-5, 2)
+    1:         self.assertEqual(self.f.tell(), 15)
+       
+    1:     def testAttributes(self):
+               # verify expected attributes exist
+    1:         f = self.f
+       
+    1:         self.assertEqual(f.mode, "wb")
+    1:         self.assertEqual(f.closed, False)
+       
+               # verify the attributes are readonly
+    3:         for attr in 'mode', 'closed':
+    2:             self.assertRaises((AttributeError, TypeError),
+    2:                               setattr, f, attr, 'oops')
+       
+    1:     def testReadinto(self):
+               # verify readinto
+    1:         self.f.write(b"\x01\x02")
+    1:         self.f.close()
+    1:         a = array(b'b', b'x'*10)
+    1:         self.f = _FileIO(TESTFN, 'r')
+    1:         n = self.f.readinto(a)
+    1:         self.assertEqual(array(b'b', [1, 2]), a[:n])
+       
+    1:     def testWritelinesList(self):
+    1:         l = [b'123', b'456']
+    1:         self.f.writelines(l)
+    1:         self.f.close()
+    1:         self.f = _FileIO(TESTFN, 'rb')
+    1:         buf = self.f.read()
+    1:         self.assertEqual(buf, b'123456')
+       
+    1:     def testWritelinesUserList(self):
+    1:         l = UserList([b'123', b'456'])
+    1:         self.f.writelines(l)
+    1:         self.f.close()
+    1:         self.f = _FileIO(TESTFN, 'rb')
+    1:         buf = self.f.read()
+    1:         self.assertEqual(buf, b'123456')
+       
+    1:     def testWritelinesError(self):
+    1:         self.assertRaises(TypeError, self.f.writelines, [1, 2, 3])
+    1:         self.assertRaises(TypeError, self.f.writelines, None)
+       
+    1:     def test_none_args(self):
+    1:         self.f.write(b"hi\nbye\nabc")
+    1:         self.f.close()
+    1:         self.f = _FileIO(TESTFN, 'r')
+    1:         self.assertEqual(self.f.read(None), b"hi\nbye\nabc")
+    1:         self.f.seek(0)
+    1:         self.assertEqual(self.f.readline(None), b"hi\n")
+    1:         self.assertEqual(self.f.readlines(None), [b"bye\n", b"abc"])
+       
+    1:     def testRepr(self):
+    1:         self.assertEqual(repr(self.f), "<_io.FileIO name=%r mode='%s'>"
+    1:                                        % (self.f.name, self.f.mode))
+    1:         del self.f.name
+    1:         self.assertEqual(repr(self.f), "<_io.FileIO fd=%r mode='%s'>"
+    1:                                        % (self.f.fileno(), self.f.mode))
+    1:         self.f.close()
+    1:         self.assertEqual(repr(self.f), "<_io.FileIO [closed]>")
+       
+    1:     def testErrors(self):
+    1:         f = self.f
+    1:         self.assertFalse(f.isatty())
+    1:         self.assertFalse(f.closed)
+               #self.assertEqual(f.name, TESTFN)
+    1:         self.assertRaises(ValueError, f.read, 10) # Open for reading
+    1:         f.close()
+    1:         self.assertTrue(f.closed)
+    1:         f = _FileIO(TESTFN, 'r')
+    1:         self.assertRaises(TypeError, f.readinto, "")
+    1:         self.assertFalse(f.closed)
+    1:         f.close()
+    1:         self.assertTrue(f.closed)
+       
+    1:     def testMethods(self):
+    1:         methods = ['fileno', 'isatty', 'seekable', 'readable', 'writable',
+    1:                    'read', 'readall', 'readline', 'readlines',
+    1:                    'tell', 'truncate', 'flush']
+    1:         if sys.platform.startswith('atheos'):
+>>>>>>             methods.remove('truncate')
+       
+    1:         self.f.close()
+    1:         self.assertTrue(self.f.closed)
+       
+   13:         for methodname in methods:
+   12:             method = getattr(self.f, methodname)
+                   # should raise on closed file
+   12:             self.assertRaises(ValueError, method)
+       
+    1:         self.assertRaises(ValueError, self.f.readinto) # XXX should be TypeError?
+    1:         self.assertRaises(ValueError, self.f.readinto, bytearray(1))
+    1:         self.assertRaises(ValueError, self.f.seek)
+    1:         self.assertRaises(ValueError, self.f.seek, 0)
+    1:         self.assertRaises(ValueError, self.f.write)
+    1:         self.assertRaises(ValueError, self.f.write, b'')
+    1:         self.assertRaises(TypeError, self.f.writelines)
+    1:         self.assertRaises(ValueError, self.f.writelines, b'')
+       
+    1:     def testOpendir(self):
+               # Issue 3703: opening a directory should fill the errno
+               # Windows always returns "[Errno 13]: Permission denied
+               # Unix calls dircheck() and returns "[Errno 21]: Is a directory"
+    1:         try:
+    1:             _FileIO('.', 'r')
+    1:         except IOError as e:
+    1:             self.assertNotEqual(e.errno, 0)
+    1:             self.assertEqual(e.filename, ".")
+               else:
+>>>>>>             self.fail("Should have raised IOError")
+       
+    1:     @unittest.skipIf(os.name == 'nt', "test only works on a POSIX-like system")
+           def testOpenDirFD(self):
+    1:         fd = os.open('.', os.O_RDONLY)
+    1:         with self.assertRaises(IOError) as cm:
+    1:             _FileIO(fd, 'r')
+    1:         os.close(fd)
+    1:         self.assertEqual(cm.exception.errno, errno.EISDIR)
+       
+           #A set of functions testing that we get expected behaviour if someone has
+           #manually closed the internal file descriptor.  First, a decorator:
+    1:     def ClosedFD(func):
+    5:         @wraps(func)
+               def wrapper(self):
+                   #forcibly close the fd before invoking the problem function
+    5:             f = self.f
+    5:             os.close(f.fileno())
+    5:             try:
+    5:                 func(self, f)
+                   finally:
+    5:                 try:
+    5:                     self.f.close()
+    5:                 except IOError:
+    5:                     pass
+    5:         return wrapper
+       
+    1:     def ClosedFDRaises(func):
+    8:         @wraps(func)
+               def wrapper(self):
+                   #forcibly close the fd before invoking the problem function
+    8:             f = self.f
+    8:             os.close(f.fileno())
+    8:             try:
+    8:                 func(self, f)
+    8:             except IOError as e:
+    8:                 self.assertEqual(e.errno, errno.EBADF)
+                   else:
+>>>>>>                 self.fail("Should have raised IOError")
+                   finally:
+    8:                 try:
+    8:                     self.f.close()
+    7:                 except IOError:
+    7:                     pass
+    8:         return wrapper
+       
+    1:     @ClosedFDRaises
+           def testErrnoOnClose(self, f):
+    1:         f.close()
+       
+    1:     @ClosedFDRaises
+           def testErrnoOnClosedWrite(self, f):
+    1:         f.write('a')
+       
+    1:     @ClosedFDRaises
+           def testErrnoOnClosedSeek(self, f):
+    1:         f.seek(0)
+       
+    1:     @ClosedFDRaises
+           def testErrnoOnClosedTell(self, f):
+    1:         f.tell()
+       
+    1:     @ClosedFDRaises
+           def testErrnoOnClosedTruncate(self, f):
+    1:         f.truncate(0)
+       
+    1:     @ClosedFD
+           def testErrnoOnClosedSeekable(self, f):
+    1:         f.seekable()
+       
+    1:     @ClosedFD
+           def testErrnoOnClosedReadable(self, f):
+    1:         f.readable()
+       
+    1:     @ClosedFD
+           def testErrnoOnClosedWritable(self, f):
+    1:         f.writable()
+       
+    1:     @ClosedFD
+           def testErrnoOnClosedFileno(self, f):
+    1:         f.fileno()
+       
+    1:     @ClosedFD
+           def testErrnoOnClosedIsatty(self, f):
+    1:         self.assertEqual(f.isatty(), False)
+       
+    1:     def ReopenForRead(self):
+    3:         try:
+    3:             self.f.close()
+    3:         except IOError:
+    3:             pass
+    3:         self.f = _FileIO(TESTFN, 'r')
+    3:         os.close(self.f.fileno())
+    3:         return self.f
+       
+    1:     @ClosedFDRaises
+           def testErrnoOnClosedRead(self, f):
+    1:         f = self.ReopenForRead()
+    1:         f.read(1)
+       
+    1:     @ClosedFDRaises
+           def testErrnoOnClosedReadall(self, f):
+    1:         f = self.ReopenForRead()
+    1:         f.readall()
+       
+    1:     @ClosedFDRaises
+           def testErrnoOnClosedReadinto(self, f):
+    1:         f = self.ReopenForRead()
+    1:         a = array(b'b', b'x'*10)
+    1:         f.readinto(a)
+       
+    2: class OtherFileTests(unittest.TestCase):
+       
+    1:     def testAbles(self):
+    1:         try:
+    1:             f = _FileIO(TESTFN, "w")
+    1:             self.assertEqual(f.readable(), False)
+    1:             self.assertEqual(f.writable(), True)
+    1:             self.assertEqual(f.seekable(), True)
+    1:             f.close()
+       
+    1:             f = _FileIO(TESTFN, "r")
+    1:             self.assertEqual(f.readable(), True)
+    1:             self.assertEqual(f.writable(), False)
+    1:             self.assertEqual(f.seekable(), True)
+    1:             f.close()
+       
+    1:             f = _FileIO(TESTFN, "a+")
+    1:             self.assertEqual(f.readable(), True)
+    1:             self.assertEqual(f.writable(), True)
+    1:             self.assertEqual(f.seekable(), True)
+    1:             self.assertEqual(f.isatty(), False)
+    1:             f.close()
+               finally:
+    1:             os.unlink(TESTFN)
+       
+    1:     @unittest.skipIf(sys.platform == 'win32', 'no ttys on Windows')
+           def testAblesOnTTY(self):
+    1:         try:
+    1:             f = _FileIO("/dev/tty", "a")
+>>>>>>         except EnvironmentError:
+                   # When run in a cron job there just aren't any
+                   # ttys, so skip the test.  This also handles other
+                   # OS'es that don't support /dev/tty.
+>>>>>>             self.skipTest('need /dev/tty')
+               else:
+    1:             self.assertEqual(f.readable(), False)
+    1:             self.assertEqual(f.writable(), True)
+    1:             if sys.platform != "darwin" and \
+>>>>>>                'bsd' not in sys.platform and \
+>>>>>>                not sys.platform.startswith(('sunos', 'aix')):
+                       # Somehow /dev/tty appears seekable on some BSDs
+>>>>>>                 self.assertEqual(f.seekable(), False)
+    1:             self.assertEqual(f.isatty(), True)
+    1:             f.close()
+       
+    1:     def testInvalidModeStrings(self):
+               # check invalid mode strings
+    6:         for mode in ("", "aU", "wU+", "rw", "rt"):
+    5:             try:
+    5:                 f = _FileIO(TESTFN, mode)
+    5:             except ValueError:
+    5:                 pass
+                   else:
+>>>>>>                 f.close()
+>>>>>>                 self.fail('%r is an invalid file mode' % mode)
+       
+    1:     def testModeStrings(self):
+               # test that the mode attribute is correct for various mode strings
+               # given as init args
+    1:         try:
+    1:             for modes in [('w', 'wb'), ('wb', 'wb'), ('wb+', 'rb+'),
+    1:                           ('w+b', 'rb+'), ('a', 'ab'), ('ab', 'ab'),
+    1:                           ('ab+', 'ab+'), ('a+b', 'ab+'), ('r', 'rb'),
+   13:                           ('rb', 'rb'), ('rb+', 'rb+'), ('r+b', 'rb+')]:
+                       # read modes are last so that TESTFN will exist first
+   12:                 with _FileIO(TESTFN, modes[0]) as f:
+   12:                     self.assertEqual(f.mode, modes[1])
+               finally:
+    1:             if os.path.exists(TESTFN):
+    1:                 os.unlink(TESTFN)
+       
+    1:     def testUnicodeOpen(self):
+               # verify repr works for unicode too
+    1:         f = _FileIO(str(TESTFN), "w")
+    1:         f.close()
+    1:         os.unlink(TESTFN)
+       
+    1:     def testBytesOpen(self):
+               # Opening a bytes filename
+    1:         try:
+    1:             fn = TESTFN.encode("ascii")
+>>>>>>         except UnicodeEncodeError:
+>>>>>>             self.skipTest('could not encode %r to ascii' % TESTFN)
+    1:         f = _FileIO(fn, "w")
+    1:         try:
+    1:             f.write(b"abc")
+    1:             f.close()
+    1:             with open(TESTFN, "rb") as f:
+    1:                 self.assertEqual(f.read(), b"abc")
+               finally:
+    1:             os.unlink(TESTFN)
+       
+    1:     def testConstructorHandlesNULChars(self):
+    1:         fn_with_NUL = 'foo\0bar'
+    1:         self.assertRaises(TypeError, _FileIO, fn_with_NUL, 'w')
+    1:         self.assertRaises(TypeError, _FileIO, fn_with_NUL.encode('ascii'), 'w')
+       
+    1:     def testInvalidFd(self):
+    1:         self.assertRaises(ValueError, _FileIO, -10)
+    1:         self.assertRaises(OSError, _FileIO, make_bad_fd())
+    1:         if sys.platform == 'win32':
+>>>>>>             import msvcrt
+>>>>>>             self.assertRaises(IOError, msvcrt.get_osfhandle, make_bad_fd())
+       
+    1:     @cpython_only
+           def testInvalidFd_overflow(self):
+               # Issue 15989
+    1:         import _testcapi
+    1:         self.assertRaises(TypeError, _FileIO, _testcapi.INT_MAX + 1)
+    1:         self.assertRaises(TypeError, _FileIO, _testcapi.INT_MIN - 1)
+       
+    1:     def testBadModeArgument(self):
+               # verify that we get a sensible error message for bad mode argument
+    1:         bad_mode = "qwerty"
+    1:         try:
+    1:             f = _FileIO(TESTFN, bad_mode)
+    1:         except ValueError as msg:
+    1:             if msg.args[0] != 0:
+    1:                 s = str(msg)
+    1:                 if TESTFN in s or bad_mode not in s:
+>>>>>>                     self.fail("bad error message for invalid mode: %s" % s)
+                   # if msg.args[0] == 0, we're probably on Windows where there may be
+                   # no obvious way to discover why open() failed.
+               else:
+>>>>>>             f.close()
+>>>>>>             self.fail("no error for invalid mode: %s" % bad_mode)
+       
+    1:     def testTruncate(self):
+    1:         f = _FileIO(TESTFN, 'w')
+    1:         f.write(bytes(bytearray(range(10))))
+    1:         self.assertEqual(f.tell(), 10)
+    1:         f.truncate(5)
+    1:         self.assertEqual(f.tell(), 10)
+    1:         self.assertEqual(f.seek(0, os.SEEK_END), 5)
+    1:         f.truncate(15)
+    1:         self.assertEqual(f.tell(), 5)
+    1:         self.assertEqual(f.seek(0, os.SEEK_END), 15)
+    1:         f.close()
+       
+    1:     def testTruncateOnWindows(self):
+    1:         def bug801631():
+                   # SF bug <http://www.python.org/sf/801631>
+                   # "file.truncate fault on windows"
+    1:             f = _FileIO(TESTFN, 'w')
+    1:             f.write(bytes(range(11)))
+    1:             f.close()
+       
+    1:             f = _FileIO(TESTFN,'r+')
+    1:             data = f.read(5)
+    1:             if data != bytes(range(5)):
+>>>>>>                 self.fail("Read on file opened for update failed %r" % data)
+    1:             if f.tell() != 5:
+>>>>>>                 self.fail("File pos after read wrong %d" % f.tell())
+       
+    1:             f.truncate()
+    1:             if f.tell() != 5:
+>>>>>>                 self.fail("File pos after ftruncate wrong %d" % f.tell())
+       
+    1:             f.close()
+    1:             size = os.path.getsize(TESTFN)
+    1:             if size != 5:
+>>>>>>                 self.fail("File size after ftruncate wrong %d" % size)
+       
+    1:         try:
+    1:             bug801631()
+               finally:
+    1:             os.unlink(TESTFN)
+       
+    1:     def testAppend(self):
+    1:         try:
+    1:             f = open(TESTFN, 'wb')
+    1:             f.write(b'spam')
+    1:             f.close()
+    1:             f = open(TESTFN, 'ab')
+    1:             f.write(b'eggs')
+    1:             f.close()
+    1:             f = open(TESTFN, 'rb')
+    1:             d = f.read()
+    1:             f.close()
+    1:             self.assertEqual(d, b'spameggs')
+               finally:
+    1:             try:
+    1:                 os.unlink(TESTFN)
+>>>>>>             except:
+>>>>>>                 pass
+       
+    1:     def testInvalidInit(self):
+    1:         self.assertRaises(TypeError, _FileIO, "1", 0, 0)
+       
+    1:     def testWarnings(self):
+    1:         with check_warnings(quiet=True) as w:
+    1:             self.assertEqual(w.warnings, [])
+    1:             self.assertRaises(TypeError, _FileIO, [])
+    1:             self.assertEqual(w.warnings, [])
+    1:             self.assertRaises(ValueError, _FileIO, "/some/invalid/name", "rt")
+    1:             self.assertEqual(w.warnings, [])
+       
+    1:     def test_surrogates(self):
+               # Issue #8438: try to open a filename containing surrogates.
+               # It should either fail because the file doesn't exist or the filename
+               # can't be represented using the filesystem encoding, but not because
+               # of a LookupError for the error handler "surrogateescape".
+    1:         filename = u'\udc80.txt'
+    1:         try:
+    1:             with _FileIO(filename):
+>>>>>>                 pass
+    1:         except (UnicodeEncodeError, IOError):
+    1:             pass
+               # Spawn a separate Python process with a different "file system
+               # default encoding", to exercise this further.
+    1:         env = dict(os.environ)
+    1:         env[b'LC_CTYPE'] = b'C'
+    1:         _, out = run_python('-c', 'import _io; _io.FileIO(%r)' % filename, env=env)
+    1:         if ('UnicodeEncodeError' not in out and not
+    1:                 ( ('IOError: [Errno 2] No such file or directory' in out) or
+>>>>>>                   ('IOError: [Errno 22] Invalid argument' in out) ) ):
+>>>>>>             self.fail('Bad output: %r' % out)
+       
+    1:     def testUnclosedFDOnException(self):
+    2:         class MyException(Exception): pass
+    2:         class MyFileIO(_FileIO):
+    1:             def __setattr__(self, name, value):
+    1:                 if name == "name":
+    1:                     raise MyException("blocked setting name")
+>>>>>>                 return super(MyFileIO, self).__setattr__(name, value)
+    1:         fd = os.open(__file__, os.O_RDONLY)
+    1:         self.assertRaises(MyException, MyFileIO, fd)
+    1:         os.close(fd)  # should not raise OSError(EBADF)
+       
+    1: def test_main():
+           # Historically, these tests have been sloppy about removing TESTFN.
+           # So get rid of it no matter what.
+    1:     try:
+    1:         run_unittest(AutoFileTests, OtherFileTests)
+           finally:
+    1:         if os.path.exists(TESTFN):
+>>>>>>             os.unlink(TESTFN)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

@@ -1,0 +1,255 @@
+    3: import sys
+    3: import imp
+    3: import os
+    3: import unittest
+    3: from test import test_support
+       
+       
+       test_src = """\
+       def get_name():
+           return __name__
+       def get_file():
+           return __file__
+    3: """
+       
+    3: absimp = "import sub\n"
+    3: relimp = "from . import sub\n"
+    3: deeprelimp = "from .... import sub\n"
+    3: futimp = "from __future__ import absolute_import\n"
+       
+    3: reload_src = test_src+"""\
+       reloaded = True
+    3: """
+       
+    3: test_co = compile(test_src, "<???>", "exec")
+    3: reload_co = compile(reload_src, "<???>", "exec")
+       
+    3: test2_oldabs_co = compile(absimp + test_src, "<???>", "exec")
+    3: test2_newabs_co = compile(futimp + absimp + test_src, "<???>", "exec")
+    3: test2_newrel_co = compile(relimp + test_src, "<???>", "exec")
+    3: test2_deeprel_co = compile(deeprelimp + test_src, "<???>", "exec")
+    3: test2_futrel_co = compile(futimp + relimp + test_src, "<???>", "exec")
+       
+    3: test_path = "!!!_test_!!!"
+       
+       
+    6: class TestImporter:
+       
+    3:     modules = {
+    3:         "hooktestmodule": (False, test_co),
+    3:         "hooktestpackage": (True, test_co),
+    3:         "hooktestpackage.sub": (True, test_co),
+    3:         "hooktestpackage.sub.subber": (True, test_co),
+    3:         "hooktestpackage.oldabs": (False, test2_oldabs_co),
+    3:         "hooktestpackage.newabs": (False, test2_newabs_co),
+    3:         "hooktestpackage.newrel": (False, test2_newrel_co),
+    3:         "hooktestpackage.sub.subber.subest": (True, test2_deeprel_co),
+    3:         "hooktestpackage.futrel": (False, test2_futrel_co),
+    3:         "sub": (False, test_co),
+    3:         "reloadmodule": (False, test_co),
+           }
+       
+    3:     def __init__(self, path=test_path):
+   12:         if path != test_path:
+                   # if out class is on sys.path_hooks, we must raise
+                   # ImportError for any path item that we can't handle.
+   10:             raise ImportError
+    2:         self.path = path
+       
+    3:     def _get__path__(self):
+>>>>>>         raise NotImplementedError
+       
+    3:     def find_module(self, fullname, path=None):
+   28:         if fullname in self.modules:
+   24:             return self
+               else:
+    4:             return None
+       
+    3:     def load_module(self, fullname):
+   24:         ispkg, code = self.modules[fullname]
+   24:         mod = sys.modules.setdefault(fullname,imp.new_module(fullname))
+   24:         mod.__file__ = "<%s>" % self.__class__.__name__
+   24:         mod.__loader__ = self
+   24:         if ispkg:
+    8:             mod.__path__ = self._get__path__()
+   24:         exec code in mod.__dict__
+   24:         return mod
+       
+       
+    6: class MetaImporter(TestImporter):
+    3:     def _get__path__(self):
+    4:         return []
+       
+    6: class PathImporter(TestImporter):
+    3:     def _get__path__(self):
+    4:         return [self.path]
+       
+       
+    6: class ImportBlocker:
+           """Place an ImportBlocker instance on sys.meta_path and you
+           can be sure the modules you specified can't be imported, even
+    3:     if it's a builtin."""
+    3:     def __init__(self, *namestoblock):
+    1:         self.namestoblock = dict.fromkeys(namestoblock)
+    3:     def find_module(self, fullname, path=None):
+    1:         if fullname in self.namestoblock:
+    1:             return self
+>>>>>>         return None
+    3:     def load_module(self, fullname):
+    1:         raise ImportError, "I dare you"
+       
+       
+    6: class ImpWrapper:
+       
+    3:     def __init__(self, path=None):
+    4:         if path is not None and not os.path.isdir(path):
+>>>>>>             raise ImportError
+    4:         self.path = path
+       
+    3:     def find_module(self, fullname, path=None):
+  118:         subname = fullname.split(".")[-1]
+  118:         if subname != fullname and self.path is None:
+   57:             return None
+   61:         if self.path is None:
+    4:             path = None
+               else:
+   57:             path = [self.path]
+   61:         try:
+   61:             file, filename, stuff = imp.find_module(subname, path)
+   31:         except ImportError:
+   31:             return None
+   30:         return ImpLoader(file, filename, stuff)
+       
+       
+    6: class ImpLoader:
+       
+    3:     def __init__(self, file, filename, stuff):
+   30:         self.file = file
+   30:         self.filename = filename
+   30:         self.stuff = stuff
+       
+    3:     def load_module(self, fullname):
+   30:         mod = imp.load_module(fullname, self.file, self.filename, self.stuff)
+   30:         if self.file:
+   28:             self.file.close()
+   30:         mod.__loader__ = self  # for introspection
+   30:         return mod
+       
+       
+    6: class ImportHooksBaseTestCase(unittest.TestCase):
+       
+    3:     def setUp(self):
+   45:         self.path = sys.path[:]
+   45:         self.meta_path = sys.meta_path[:]
+   45:         self.path_hooks = sys.path_hooks[:]
+   45:         sys.path_importer_cache.clear()
+   45:         self.modules_before = sys.modules.copy()
+       
+    3:     def tearDown(self):
+   44:         sys.path[:] = self.path
+   44:         sys.meta_path[:] = self.meta_path
+   44:         sys.path_hooks[:] = self.path_hooks
+   44:         sys.path_importer_cache.clear()
+   44:         sys.modules.clear()
+   44:         sys.modules.update(self.modules_before)
+       
+       
+    6: class ImportHooksTestCase(ImportHooksBaseTestCase):
+       
+    3:     def doTestImports(self, importer=None):
+    2:         import hooktestmodule
+    2:         import hooktestpackage
+    2:         import hooktestpackage.sub
+    2:         import hooktestpackage.sub.subber
+    2:         self.assertEqual(hooktestmodule.get_name(),
+    2:                          "hooktestmodule")
+    2:         self.assertEqual(hooktestpackage.get_name(),
+    2:                          "hooktestpackage")
+    2:         self.assertEqual(hooktestpackage.sub.get_name(),
+    2:                          "hooktestpackage.sub")
+    2:         self.assertEqual(hooktestpackage.sub.subber.get_name(),
+    2:                          "hooktestpackage.sub.subber")
+    2:         if importer:
+    1:             self.assertEqual(hooktestmodule.__loader__, importer)
+    1:             self.assertEqual(hooktestpackage.__loader__, importer)
+    1:             self.assertEqual(hooktestpackage.sub.__loader__, importer)
+    1:             self.assertEqual(hooktestpackage.sub.subber.__loader__, importer)
+       
+    2:         TestImporter.modules['reloadmodule'] = (False, test_co)
+    2:         import reloadmodule
+    2:         self.assertFalse(hasattr(reloadmodule,'reloaded'))
+       
+    2:         TestImporter.modules['reloadmodule'] = (False, reload_co)
+    2:         imp.reload(reloadmodule)
+    2:         self.assertTrue(hasattr(reloadmodule,'reloaded'))
+       
+    2:         import hooktestpackage.oldabs
+    2:         self.assertEqual(hooktestpackage.oldabs.get_name(),
+    2:                          "hooktestpackage.oldabs")
+    2:         self.assertEqual(hooktestpackage.oldabs.sub,
+    2:                          hooktestpackage.sub)
+       
+    2:         import hooktestpackage.newrel
+    2:         self.assertEqual(hooktestpackage.newrel.get_name(),
+    2:                          "hooktestpackage.newrel")
+    2:         self.assertEqual(hooktestpackage.newrel.sub,
+    2:                          hooktestpackage.sub)
+       
+    2:         import hooktestpackage.sub.subber.subest as subest
+    2:         self.assertEqual(subest.get_name(),
+    2:                          "hooktestpackage.sub.subber.subest")
+    2:         self.assertEqual(subest.sub,
+    2:                          hooktestpackage.sub)
+       
+    2:         import hooktestpackage.futrel
+    2:         self.assertEqual(hooktestpackage.futrel.get_name(),
+    2:                          "hooktestpackage.futrel")
+    2:         self.assertEqual(hooktestpackage.futrel.sub,
+    2:                          hooktestpackage.sub)
+       
+    2:         import sub
+    2:         self.assertEqual(sub.get_name(), "sub")
+       
+    2:         import hooktestpackage.newabs
+    2:         self.assertEqual(hooktestpackage.newabs.get_name(),
+    2:                          "hooktestpackage.newabs")
+    2:         self.assertEqual(hooktestpackage.newabs.sub, sub)
+       
+    3:     def testMetaPath(self):
+    1:         i = MetaImporter()
+    1:         sys.meta_path.append(i)
+    1:         self.doTestImports(i)
+       
+    3:     def testPathHook(self):
+    1:         sys.path_hooks.append(PathImporter)
+    1:         sys.path.append(test_path)
+    1:         self.doTestImports()
+       
+    3:     def testBlocker(self):
+    1:         mname = "exceptions"  # an arbitrary harmless builtin module
+    1:         test_support.unload(mname)
+    1:         sys.meta_path.append(ImportBlocker(mname))
+    1:         self.assertRaises(ImportError, __import__, mname)
+       
+    3:     def testImpWrapper(self):
+    1:         i = ImpWrapper()
+    1:         sys.meta_path.append(i)
+    1:         sys.path_hooks.append(ImpWrapper)
+    1:         mnames = ("colorsys", "urlparse", "distutils.core", "compiler.misc")
+    5:         for mname in mnames:
+    4:             parent = mname.split(".")[0]
+ 4632:             for n in sys.modules.keys():
+ 4628:                 if n.startswith(parent):
+  181:                     del sys.modules[n]
+    1:         with test_support.check_warnings(("The compiler package is deprecated "
+    1:                                           "and removed", DeprecationWarning)):
+    5:             for mname in mnames:
+    4:                 m = __import__(mname, globals(), locals(), ["__dummy__"])
+    4:                 m.__loader__  # to make sure we actually handled the import
+       
+       
+    3: def test_main():
+    1:     test_support.run_unittest(ImportHooksTestCase)
+       
+    3: if __name__ == "__main__":
+>>>>>>     test_main()

@@ -1,0 +1,238 @@
+       # -*- coding: iso-8859-1 -*-
+       """ Codec for the Punicode encoding, as specified in RFC 3492
+       
+       Written by Martin v. Löwis.
+    1: """
+       
+    1: import codecs
+       
+       ##################### Encoding #####################################
+       
+    1: def segregate(str):
+           """3.1 Basic code point segregation"""
+   38:     base = []
+   38:     extended = {}
+  511:     for c in str:
+  473:         if ord(c) < 128:
+  240:             base.append(c)
+               else:
+  233:             extended[c] = 1
+   38:     extended = extended.keys()
+   38:     extended.sort()
+   38:     return "".join(base).encode("ascii"),extended
+       
+    1: def selective_len(str, max):
+           """Return the length of str, considering only characters below max."""
+  191:     res = 0
+ 3735:     for c in str:
+ 3544:         if ord(c) < max:
+ 1974:             res += 1
+  191:     return res
+       
+    1: def selective_find(str, char, index, pos):
+           """Return a pair (index, pos), indicating the next occurrence of
+           char in str. index is the position of the character considering
+           only ordinals up to and including char, and pos is the position in
+           the full string. index/pos is the starting position in the full
+           string."""
+       
+  424:     l = len(str)
+  424:     while 1:
+ 3735:         pos += 1
+ 3735:         if pos == l:
+  191:             return (-1, -1)
+ 3544:         c = str[pos]
+ 3544:         if c == char:
+  233:             return index+1, pos
+ 3311:         elif c < char:
+ 1974:             index += 1
+       
+    1: def insertion_unsort(str, extended):
+           """3.2 Insertion unsort coding"""
+   38:     oldchar = 0x80
+   38:     result = []
+   38:     oldindex = -1
+  229:     for c in extended:
+  191:         index = pos = -1
+  191:         char = ord(c)
+  191:         curlen = selective_len(str, char)
+  191:         delta = (curlen+1) * (char - oldchar)
+  191:         while 1:
+  424:             index,pos = selective_find(str,c,index,pos)
+  424:             if index == -1:
+  191:                 break
+  233:             delta += index - oldindex
+  233:             result.append(delta-1)
+  233:             oldindex = index
+  233:             delta = 0
+  191:         oldchar = char
+       
+   38:     return result
+       
+    1: def T(j, bias):
+           # Punycode parameters: tmin = 1, tmax = 26, base = 36
+  964:     res = 36 * (j + 1) - bias
+  964:     if res < 1: return 1
+  760:     if res > 26: return 26
+  196:     return res
+       
+    1: digits = "abcdefghijklmnopqrstuvwxyz0123456789"
+    1: def generate_generalized_integer(N, bias):
+           """3.3 Generalized variable-length integers"""
+  233:     result = []
+  233:     j = 0
+  233:     while 1:
+  500:         t = T(j, bias)
+  500:         if N < t:
+  233:             result.append(digits[N])
+  233:             return result
+  267:         result.append(digits[t + ((N - t) % (36 - t))])
+  267:         N = (N - t) // (36 - t)
+  267:         j += 1
+       
+    1: def adapt(delta, first, numchars):
+  454:     if first:
+   60:         delta //= 700
+           else:
+  394:         delta //= 2
+  454:     delta += delta // numchars
+           # ((base - tmin) * tmax) // 2 == 455
+  454:     divisions = 0
+  564:     while delta > 455:
+  110:         delta = delta // 35 # base - tmin
+  110:         divisions += 36
+  454:     bias = divisions + (36 * delta // (delta + 38))
+  454:     return bias
+       
+       
+    1: def generate_integers(baselen, deltas):
+           """3.4 Bias adaptation"""
+           # Punycode parameters: initial bias = 72, damp = 700, skew = 38
+   38:     result = []
+   38:     bias = 72
+  271:     for points, delta in enumerate(deltas):
+  233:         s = generate_generalized_integer(delta, bias)
+  233:         result.extend(s)
+  233:         bias = adapt(delta, points==0, baselen+points+1)
+   38:     return "".join(result)
+       
+    1: def punycode_encode(text):
+   38:     base, extended = segregate(text)
+   38:     base = base.encode("ascii")
+   38:     deltas = insertion_unsort(text, extended)
+   38:     extended = generate_integers(len(base), deltas)
+   38:     if base:
+   29:         return base + "-" + extended
+    9:     return extended
+       
+       ##################### Decoding #####################################
+       
+    1: def decode_generalized_number(extended, extpos, bias, errors):
+           """3.3 Generalized variable-length integers"""
+  221:     result = 0
+  221:     w = 1
+  221:     j = 0
+  221:     while 1:
+  464:         try:
+  464:             char = ord(extended[extpos])
+>>>>>>         except IndexError:
+>>>>>>             if errors == "strict":
+>>>>>>                 raise UnicodeError, "incomplete punicode string"
+>>>>>>             return extpos + 1, None
+  464:         extpos += 1
+  464:         if 0x41 <= char <= 0x5A: # A-Z
+  324:             digit = char - 0x41
+  140:         elif 0x30 <= char <= 0x39:
+  140:             digit = char - 22 # 0x30-26
+>>>>>>         elif errors == "strict":
+>>>>>>             raise UnicodeError("Invalid extended code point '%s'"
+>>>>>>                                % extended[extpos])
+               else:
+>>>>>>             return extpos, None
+  464:         t = T(j, bias)
+  464:         result += digit * w
+  464:         if digit < t:
+  221:             return extpos, result
+  243:         w = w * (36 - t)
+  243:         j += 1
+       
+       
+    1: def insertion_sort(base, extended, errors):
+           """3.2 Insertion unsort coding"""
+   26:     char = 0x80
+   26:     pos = -1
+   26:     bias = 72
+   26:     extpos = 0
+  247:     while extpos < len(extended):
+  221:         newpos, delta = decode_generalized_number(extended, extpos,
+  221:                                                   bias, errors)
+  221:         if delta is None:
+                   # There was an error in decoding. We can't continue because
+                   # synchronization is lost.
+>>>>>>             return base
+  221:         pos += delta+1
+  221:         char += pos // (len(base) + 1)
+  221:         if char > 0x10FFFF:
+>>>>>>             if errors == "strict":
+>>>>>>                 raise UnicodeError, ("Invalid character U+%x" % char)
+>>>>>>             char = ord('?')
+  221:         pos = pos % (len(base) + 1)
+  221:         base = base[:pos] + unichr(char) + base[pos:]
+  221:         bias = adapt(delta, (extpos == 0), len(base))
+  221:         extpos = newpos
+   26:     return base
+       
+    1: def punycode_decode(text, errors):
+   26:     pos = text.rfind("-")
+   26:     if pos == -1:
+    9:         base = ""
+    9:         extended = text
+           else:
+   17:         base = text[:pos]
+   17:         extended = text[pos+1:]
+   26:     base = unicode(base, "ascii", errors)
+   26:     extended = extended.upper()
+   26:     return insertion_sort(base, extended, errors)
+       
+       ### Codec APIs
+       
+    2: class Codec(codecs.Codec):
+       
+    1:     def encode(self,input,errors='strict'):
+   38:         res = punycode_encode(input)
+   38:         return res, len(input)
+       
+    1:     def decode(self,input,errors='strict'):
+   26:         if errors not in ('strict', 'replace', 'ignore'):
+>>>>>>             raise UnicodeError, "Unsupported error handling "+errors
+   26:         res = punycode_decode(input, errors)
+   26:         return res, len(input)
+       
+    2: class IncrementalEncoder(codecs.IncrementalEncoder):
+    1:     def encode(self, input, final=False):
+>>>>>>         return punycode_encode(input)
+       
+    2: class IncrementalDecoder(codecs.IncrementalDecoder):
+    1:     def decode(self, input, final=False):
+>>>>>>         if self.errors not in ('strict', 'replace', 'ignore'):
+>>>>>>             raise UnicodeError, "Unsupported error handling "+self.errors
+>>>>>>         return punycode_decode(input, self.errors)
+       
+    2: class StreamWriter(Codec,codecs.StreamWriter):
+    1:     pass
+       
+    2: class StreamReader(Codec,codecs.StreamReader):
+    1:     pass
+       
+       ### encodings module API
+       
+    1: def getregentry():
+    1:     return codecs.CodecInfo(
+    1:         name='punycode',
+    1:         encode=Codec().encode,
+    1:         decode=Codec().decode,
+    1:         incrementalencoder=IncrementalEncoder,
+    1:         incrementaldecoder=IncrementalDecoder,
+    1:         streamwriter=StreamWriter,
+    1:         streamreader=StreamReader,
+           )

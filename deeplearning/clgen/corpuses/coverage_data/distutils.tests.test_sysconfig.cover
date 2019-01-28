@@ -1,0 +1,132 @@
+    1: """Tests for distutils.sysconfig."""
+    1: import os
+    1: import test
+    1: import unittest
+    1: import shutil
+    1: import subprocess
+    1: import sys
+    1: import textwrap
+       
+    1: from distutils import sysconfig
+    1: from distutils.tests import support
+    1: from test.test_support import TESTFN
+       
+    2: class SysconfigTestCase(support.EnvironGuard,
+    1:                         unittest.TestCase):
+    1:     def setUp(self):
+    7:         super(SysconfigTestCase, self).setUp()
+    7:         self.makefile = None
+       
+    1:     def tearDown(self):
+    7:         if self.makefile is not None:
+    2:             os.unlink(self.makefile)
+    7:         self.cleanup_testfn()
+    7:         super(SysconfigTestCase, self).tearDown()
+       
+    1:     def cleanup_testfn(self):
+    7:         path = test.test_support.TESTFN
+    7:         if os.path.isfile(path):
+    1:             os.remove(path)
+    6:         elif os.path.isdir(path):
+>>>>>>             shutil.rmtree(path)
+       
+    1:     def test_get_python_lib(self):
+    1:         lib_dir = sysconfig.get_python_lib()
+               # XXX doesn't work on Linux when Python was never installed before
+               #self.assertTrue(os.path.isdir(lib_dir), lib_dir)
+               # test for pythonxx.lib?
+    1:         self.assertNotEqual(sysconfig.get_python_lib(),
+    1:                             sysconfig.get_python_lib(prefix=TESTFN))
+    1:         _sysconfig = __import__('sysconfig')
+    1:         res = sysconfig.get_python_lib(True, True)
+    1:         self.assertEqual(_sysconfig.get_path('platstdlib'), res)
+       
+    1:     def test_get_python_inc(self):
+    1:         inc_dir = sysconfig.get_python_inc()
+               # This is not much of a test.  We make sure Python.h exists
+               # in the directory returned by get_python_inc() but we don't know
+               # it is the correct file.
+    1:         self.assertTrue(os.path.isdir(inc_dir), inc_dir)
+    1:         python_h = os.path.join(inc_dir, "Python.h")
+    1:         self.assertTrue(os.path.isfile(python_h), python_h)
+       
+    1:     def test_parse_makefile_base(self):
+    1:         self.makefile = test.test_support.TESTFN
+    1:         fd = open(self.makefile, 'w')
+    1:         try:
+    1:             fd.write(r"CONFIG_ARGS=  '--arg1=optarg1' 'ENV=LIB'" '\n')
+    1:             fd.write('VAR=$OTHER\nOTHER=foo')
+               finally:
+    1:             fd.close()
+    1:         d = sysconfig.parse_makefile(self.makefile)
+    1:         self.assertEqual(d, {'CONFIG_ARGS': "'--arg1=optarg1' 'ENV=LIB'",
+    1:                              'OTHER': 'foo'})
+       
+    1:     def test_parse_makefile_literal_dollar(self):
+    1:         self.makefile = test.test_support.TESTFN
+    1:         fd = open(self.makefile, 'w')
+    1:         try:
+    1:             fd.write(r"CONFIG_ARGS=  '--arg1=optarg1' 'ENV=\$$LIB'" '\n')
+    1:             fd.write('VAR=$OTHER\nOTHER=foo')
+               finally:
+    1:             fd.close()
+    1:         d = sysconfig.parse_makefile(self.makefile)
+    1:         self.assertEqual(d, {'CONFIG_ARGS': r"'--arg1=optarg1' 'ENV=\$LIB'",
+    1:                              'OTHER': 'foo'})
+       
+       
+    1:     def test_sysconfig_module(self):
+    1:         import sysconfig as global_sysconfig
+    1:         self.assertEqual(global_sysconfig.get_config_var('CFLAGS'), sysconfig.get_config_var('CFLAGS'))
+    1:         self.assertEqual(global_sysconfig.get_config_var('LDFLAGS'), sysconfig.get_config_var('LDFLAGS'))
+       
+    1:     @unittest.skipIf(sysconfig.get_config_var('CUSTOMIZED_OSX_COMPILER'),'compiler flags customized')
+           def test_sysconfig_compiler_vars(self):
+               # On OS X, binary installers support extension module building on
+               # various levels of the operating system with differing Xcode
+               # configurations.  This requires customization of some of the
+               # compiler configuration directives to suit the environment on
+               # the installed machine.  Some of these customizations may require
+               # running external programs and, so, are deferred until needed by
+               # the first extension module build.  With Python 3.3, only
+               # the Distutils version of sysconfig is used for extension module
+               # builds, which happens earlier in the Distutils tests.  This may
+               # cause the following tests to fail since no tests have caused
+               # the global version of sysconfig to call the customization yet.
+               # The solution for now is to simply skip this test in this case.
+               # The longer-term solution is to only have one version of sysconfig.
+       
+    1:         import sysconfig as global_sysconfig
+    1:         if sysconfig.get_config_var('CUSTOMIZED_OSX_COMPILER'):
+>>>>>>             self.skipTest('compiler flags customized')
+    1:         self.assertEqual(global_sysconfig.get_config_var('LDSHARED'), sysconfig.get_config_var('LDSHARED'))
+    1:         self.assertEqual(global_sysconfig.get_config_var('CC'), sysconfig.get_config_var('CC'))
+       
+    1:     def test_customize_compiler_before_get_config_vars(self):
+               # Issue #21923: test that a Distribution compiler
+               # instance can be called without an explicit call to
+               # get_config_vars().
+    1:         with open(TESTFN, 'w') as f:
+    1:             f.writelines(textwrap.dedent('''\
+                       from distutils.core import Distribution
+                       config = Distribution().get_command_obj('config')
+                       # try_compile may pass or it may fail if no compiler
+                       # is found but it should not raise an exception.
+                       rc = config.try_compile('int x;')
+    1:                 '''))
+    1:         p = subprocess.Popen([str(sys.executable), TESTFN],
+    1:                 stdout=subprocess.PIPE,
+    1:                 stderr=subprocess.STDOUT,
+    1:                 universal_newlines=True)
+    1:         outs, errs = p.communicate()
+    1:         self.assertEqual(0, p.returncode, "Subprocess failed: " + outs)
+       
+       
+    1: def test_suite():
+    1:     suite = unittest.TestSuite()
+    1:     suite.addTest(unittest.makeSuite(SysconfigTestCase))
+    1:     return suite
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     test.test_support.run_unittest(test_suite())

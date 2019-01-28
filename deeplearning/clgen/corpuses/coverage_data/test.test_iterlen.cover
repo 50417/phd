@@ -1,0 +1,257 @@
+       """ Test Iterator Length Transparency
+       
+       Some functions or methods which accept general iterable arguments have
+       optional, more efficient code paths if they know how many items to expect.
+       For instance, map(func, iterable), will pre-allocate the exact amount of
+       space required whenever the iterable can report its length.
+       
+       The desired invariant is:  len(it)==len(list(it)).
+       
+       A complication is that an iterable and iterator can be the same object. To
+       maintain the invariant, an iterator needs to dynamically update its length.
+       For instance, an iterable such as xrange(10) always reports its length as ten,
+       but it=iter(xrange(10)) starts at ten, and then goes to nine after it.next().
+       Having this capability means that map() can ignore the distinction between
+       map(func, iterable) and map(func, iter(iterable)).
+       
+       When the iterable is immutable, the implementation can straight-forwardly
+       report the original length minus the cumulative number of calls to next().
+       This is the case for tuples, xrange objects, and itertools.repeat().
+       
+       Some containers become temporarily immutable during iteration.  This includes
+       dicts, sets, and collections.deque.  Their implementation is equally simple
+       though they need to permanently set their length to zero whenever there is
+       an attempt to iterate after a length mutation.
+       
+       The situation slightly more involved whenever an object allows length mutation
+       during iteration.  Lists and sequence iterators are dynamically updatable.
+       So, if a list is extended during iteration, the iterator will continue through
+       the new items.  If it shrinks to a point before the most recent iteration,
+       then no further items are available and the length is reported at zero.
+       
+       Reversed objects can also be wrapped around mutable objects; however, any
+       appends after the current position are ignored.  Any other approach leads
+       to confusion and possibly returning the same item more than once.
+       
+       The iterators not listed above, such as enumerate and the other itertools,
+       are not length transparent because they have no way to distinguish between
+       iterables that report static length and iterators whose length changes with
+       each call (i.e. the difference between enumerate('abc') and
+       enumerate(iter('abc')).
+       
+    3: """
+       
+    3: import unittest
+    3: from test import test_support
+    3: from itertools import repeat
+    3: from collections import deque
+    3: from __builtin__ import len as _len
+       
+    3: n = 10
+       
+    3: def len(obj):
+  186:     try:
+  186:         return _len(obj)
+  182:     except TypeError:
+  182:         try:
+                   # note: this is an internal undocumented API,
+                   # don't rely on it in your own programs
+  182:             return obj.__length_hint__()
+    3:         except AttributeError:
+>>>>>>             raise TypeError
+       
+    6: class TestInvariantWithoutMutations(unittest.TestCase):
+       
+    3:     def test_invariant(self):
+   12:         it = self.it
+  132:         for i in reversed(xrange(1, n+1)):
+  120:             self.assertEqual(len(it), i)
+  120:             it.next()
+   12:         self.assertEqual(len(it), 0)
+   12:         self.assertRaises(StopIteration, it.next)
+   12:         self.assertEqual(len(it), 0)
+       
+    6: class TestTemporarilyImmutable(TestInvariantWithoutMutations):
+       
+    3:     def test_immutable_during_iteration(self):
+               # objects such as deques, sets, and dictionaries enforce
+               # length immutability  during iteration
+       
+    6:         it = self.it
+    6:         self.assertEqual(len(it), n)
+    6:         it.next()
+    6:         self.assertEqual(len(it), n-1)
+    6:         self.mutate()
+    6:         self.assertRaises(RuntimeError, it.next)
+    6:         self.assertEqual(len(it), 0)
+       
+       ## ------- Concrete Type Tests -------
+       
+    6: class TestRepeat(TestInvariantWithoutMutations):
+       
+    3:     def setUp(self):
+    2:         self.it = repeat(None, n)
+       
+    3:     def test_no_len_for_infinite_repeat(self):
+               # The repeat() object can also be infinite
+    1:         self.assertRaises(TypeError, len, repeat(None))
+       
+    6: class TestXrange(TestInvariantWithoutMutations):
+       
+    3:     def setUp(self):
+    1:         self.it = iter(xrange(n))
+       
+    6: class TestXrangeCustomReversed(TestInvariantWithoutMutations):
+       
+    3:     def setUp(self):
+    1:         self.it = reversed(xrange(n))
+       
+    6: class TestTuple(TestInvariantWithoutMutations):
+       
+    3:     def setUp(self):
+    1:         self.it = iter(tuple(xrange(n)))
+       
+       ## ------- Types that should not be mutated during iteration -------
+       
+    6: class TestDeque(TestTemporarilyImmutable):
+       
+    3:     def setUp(self):
+    2:         d = deque(xrange(n))
+    2:         self.it = iter(d)
+    2:         self.mutate = d.pop
+       
+    6: class TestDequeReversed(TestTemporarilyImmutable):
+       
+    3:     def setUp(self):
+    2:         d = deque(xrange(n))
+    2:         self.it = reversed(d)
+    2:         self.mutate = d.pop
+       
+    6: class TestDictKeys(TestTemporarilyImmutable):
+       
+    3:     def setUp(self):
+    2:         d = dict.fromkeys(xrange(n))
+    2:         self.it = iter(d)
+    2:         self.mutate = d.popitem
+       
+    6: class TestDictItems(TestTemporarilyImmutable):
+       
+    3:     def setUp(self):
+    2:         d = dict.fromkeys(xrange(n))
+    2:         self.it = d.iteritems()
+    2:         self.mutate = d.popitem
+       
+    6: class TestDictValues(TestTemporarilyImmutable):
+       
+    3:     def setUp(self):
+    2:         d = dict.fromkeys(xrange(n))
+    2:         self.it = d.itervalues()
+    2:         self.mutate = d.popitem
+       
+    6: class TestSet(TestTemporarilyImmutable):
+       
+    3:     def setUp(self):
+    2:         d = set(xrange(n))
+    2:         self.it = iter(d)
+    2:         self.mutate = d.pop
+       
+       ## ------- Types that can mutate during iteration -------
+       
+    6: class TestList(TestInvariantWithoutMutations):
+       
+    3:     def setUp(self):
+    2:         self.it = iter(range(n))
+       
+    3:     def test_mutation(self):
+    1:         d = range(n)
+    1:         it = iter(d)
+    1:         it.next()
+    1:         it.next()
+    1:         self.assertEqual(len(it), n-2)
+    1:         d.append(n)
+    1:         self.assertEqual(len(it), n-1)  # grow with append
+    1:         d[1:] = []
+    1:         self.assertEqual(len(it), 0)
+    1:         self.assertEqual(list(it), [])
+    1:         d.extend(xrange(20))
+    1:         self.assertEqual(len(it), 0)
+       
+    6: class TestListReversed(TestInvariantWithoutMutations):
+       
+    3:     def setUp(self):
+    2:         self.it = reversed(range(n))
+       
+    3:     def test_mutation(self):
+    1:         d = range(n)
+    1:         it = reversed(d)
+    1:         it.next()
+    1:         it.next()
+    1:         self.assertEqual(len(it), n-2)
+    1:         d.append(n)
+    1:         self.assertEqual(len(it), n-2)  # ignore append
+    1:         d[1:] = []
+    1:         self.assertEqual(len(it), 0)
+    1:         self.assertEqual(list(it), [])  # confirm invariant
+    1:         d.extend(xrange(20))
+    1:         self.assertEqual(len(it), 0)
+       
+       ## -- Check to make sure exceptions are not suppressed by __length_hint__()
+       
+       
+    6: class BadLen(object):
+    8:     def __iter__(self): return iter(range(10))
+    3:     def __len__(self):
+    6:         raise RuntimeError('hello')
+       
+    6: class BadLengthHint(object):
+    8:     def __iter__(self): return iter(range(10))
+    3:     def __length_hint__(self):
+    6:         raise RuntimeError('hello')
+       
+    6: class NoneLengthHint(object):
+    4:     def __iter__(self): return iter(range(10))
+    3:     def __length_hint__(self):
+    1:         return None
+       
+    6: class TestLengthHintExceptions(unittest.TestCase):
+       
+    3:     def test_issue1242657(self):
+    1:         self.assertRaises(RuntimeError, list, BadLen())
+    1:         self.assertRaises(RuntimeError, list, BadLengthHint())
+    1:         self.assertRaises(RuntimeError, [].extend, BadLen())
+    1:         self.assertRaises(RuntimeError, [].extend, BadLengthHint())
+    1:         self.assertRaises(RuntimeError, zip, BadLen())
+    1:         self.assertRaises(RuntimeError, zip, BadLengthHint())
+    1:         self.assertRaises(RuntimeError, filter, None, BadLen())
+    1:         self.assertRaises(RuntimeError, filter, None, BadLengthHint())
+    1:         self.assertRaises(RuntimeError, map, chr, BadLen())
+    1:         self.assertRaises(RuntimeError, map, chr, BadLengthHint())
+    1:         b = bytearray(range(10))
+    1:         self.assertRaises(RuntimeError, b.extend, BadLen())
+    1:         self.assertRaises(RuntimeError, b.extend, BadLengthHint())
+       
+    3:     def test_invalid_hint(self):
+               # Make sure an invalid result doesn't muck-up the works
+    1:         self.assertEqual(list(NoneLengthHint()), list(range(10)))
+       
+       
+    3: def test_main():
+           unittests = [
+    1:         TestRepeat,
+    1:         TestXrange,
+    1:         TestXrangeCustomReversed,
+    1:         TestTuple,
+    1:         TestDeque,
+    1:         TestDequeReversed,
+    1:         TestDictKeys,
+    1:         TestDictItems,
+    1:         TestDictValues,
+    1:         TestSet,
+    1:         TestList,
+    1:         TestListReversed,
+    1:         TestLengthHintExceptions,
+           ]
+    1:     test_support.run_unittest(*unittests)
+       
+    3: if __name__ == "__main__":
+>>>>>>     test_main()

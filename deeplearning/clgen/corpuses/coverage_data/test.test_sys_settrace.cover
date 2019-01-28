@@ -1,0 +1,820 @@
+       # Testing the line trace facility.
+       
+    1: from test import test_support
+    1: import unittest
+    1: import sys
+    1: import difflib
+    1: import gc
+       
+       # A very basic example.  If this fails, we're in deep trouble.
+    1: def basic():
+>>>>>>     return 1
+       
+    1: basic.events = [(0, 'call'),
+    1:                 (1, 'line'),
+    1:                 (1, 'return')]
+       
+       # Many of the tests below are tricky because they involve pass statements.
+       # If there is implicit control flow around a pass statement (in an except
+       # clause or else caluse) under what conditions do you set a line number
+       # following that clause?
+       
+       
+       # The entire "while 0:" statement is optimized away.  No code
+       # exists for it, so the line numbers skip directly from "del x"
+       # to "x = 1".
+    1: def arigo_example():
+>>>>>>     x = 1
+>>>>>>     del x
+           while 0:
+               pass
+>>>>>>     x = 1
+       
+    1: arigo_example.events = [(0, 'call'),
+    1:                         (1, 'line'),
+    1:                         (2, 'line'),
+    1:                         (5, 'line'),
+    1:                         (5, 'return')]
+       
+       # check that lines consisting of just one instruction get traced:
+    1: def one_instr_line():
+>>>>>>     x = 1
+>>>>>>     del x
+>>>>>>     x = 1
+       
+    1: one_instr_line.events = [(0, 'call'),
+    1:                          (1, 'line'),
+    1:                          (2, 'line'),
+    1:                          (3, 'line'),
+    1:                          (3, 'return')]
+       
+    1: def no_pop_tops():      # 0
+>>>>>>     x = 1               # 1
+>>>>>>     for a in range(2):  # 2
+>>>>>>         if a:           # 3
+>>>>>>             x = 1       # 4
+               else:           # 5
+>>>>>>             x = 1       # 6
+       
+    1: no_pop_tops.events = [(0, 'call'),
+    1:                       (1, 'line'),
+    1:                       (2, 'line'),
+    1:                       (3, 'line'),
+    1:                       (6, 'line'),
+    1:                       (2, 'line'),
+    1:                       (3, 'line'),
+    1:                       (4, 'line'),
+    1:                       (2, 'line'),
+    1:                       (2, 'return')]
+       
+    1: def no_pop_blocks():
+>>>>>>     y = 1
+>>>>>>     while not y:
+>>>>>>         bla
+>>>>>>     x = 1
+       
+    1: no_pop_blocks.events = [(0, 'call'),
+    1:                         (1, 'line'),
+    1:                         (2, 'line'),
+    1:                         (4, 'line'),
+    1:                         (4, 'return')]
+       
+    1: def called(): # line -3
+>>>>>>     x = 1
+       
+    1: def call():   # line 0
+>>>>>>     called()
+       
+    1: call.events = [(0, 'call'),
+    1:                (1, 'line'),
+    1:                (-3, 'call'),
+    1:                (-2, 'line'),
+    1:                (-2, 'return'),
+    1:                (1, 'return')]
+       
+    1: def raises():
+>>>>>>     raise Exception
+       
+    1: def test_raise():
+>>>>>>     try:
+>>>>>>         raises()
+>>>>>>     except Exception, exc:
+>>>>>>         x = 1
+       
+    1: test_raise.events = [(0, 'call'),
+    1:                      (1, 'line'),
+    1:                      (2, 'line'),
+    1:                      (-3, 'call'),
+    1:                      (-2, 'line'),
+    1:                      (-2, 'exception'),
+    1:                      (-2, 'return'),
+    1:                      (2, 'exception'),
+    1:                      (3, 'line'),
+    1:                      (4, 'line'),
+    1:                      (4, 'return')]
+       
+    1: def _settrace_and_return(tracefunc):
+>>>>>>     sys.settrace(tracefunc)
+>>>>>>     sys._getframe().f_back.f_trace = tracefunc
+    1: def settrace_and_return(tracefunc):
+>>>>>>     _settrace_and_return(tracefunc)
+       
+    1: settrace_and_return.events = [(1, 'return')]
+       
+    1: def _settrace_and_raise(tracefunc):
+>>>>>>     sys.settrace(tracefunc)
+>>>>>>     sys._getframe().f_back.f_trace = tracefunc
+>>>>>>     raise RuntimeError
+    1: def settrace_and_raise(tracefunc):
+>>>>>>     try:
+>>>>>>         _settrace_and_raise(tracefunc)
+>>>>>>     except RuntimeError, exc:
+>>>>>>         pass
+       
+    1: settrace_and_raise.events = [(2, 'exception'),
+    1:                              (3, 'line'),
+    1:                              (4, 'line'),
+    1:                              (4, 'return')]
+       
+       # implicit return example
+       # This test is interesting because of the else: pass
+       # part of the code.  The code generate for the true
+       # part of the if contains a jump past the else branch.
+       # The compiler then generates an implicit "return None"
+       # Internally, the compiler visits the pass statement
+       # and stores its line number for use on the next instruction.
+       # The next instruction is the implicit return None.
+    1: def ireturn_example():
+>>>>>>     a = 5
+>>>>>>     b = 5
+>>>>>>     if a == b:
+>>>>>>         b = a+1
+           else:
+>>>>>>         pass
+       
+    1: ireturn_example.events = [(0, 'call'),
+    1:                           (1, 'line'),
+    1:                           (2, 'line'),
+    1:                           (3, 'line'),
+    1:                           (4, 'line'),
+    1:                           (6, 'line'),
+    1:                           (6, 'return')]
+       
+       # Tight loop with while(1) example (SF #765624)
+    1: def tightloop_example():
+>>>>>>     items = range(0, 3)
+>>>>>>     try:
+>>>>>>         i = 0
+>>>>>>         while 1:
+>>>>>>             b = items[i]; i+=1
+>>>>>>     except IndexError:
+>>>>>>         pass
+       
+    1: tightloop_example.events = [(0, 'call'),
+    1:                             (1, 'line'),
+    1:                             (2, 'line'),
+    1:                             (3, 'line'),
+    1:                             (4, 'line'),
+    1:                             (5, 'line'),
+    1:                             (5, 'line'),
+    1:                             (5, 'line'),
+    1:                             (5, 'line'),
+    1:                             (5, 'exception'),
+    1:                             (6, 'line'),
+    1:                             (7, 'line'),
+    1:                             (7, 'return')]
+       
+    1: def tighterloop_example():
+>>>>>>     items = range(1, 4)
+>>>>>>     try:
+>>>>>>         i = 0
+>>>>>>         while 1: i = items[i]
+>>>>>>     except IndexError:
+>>>>>>         pass
+       
+    1: tighterloop_example.events = [(0, 'call'),
+    1:                             (1, 'line'),
+    1:                             (2, 'line'),
+    1:                             (3, 'line'),
+    1:                             (4, 'line'),
+    1:                             (4, 'line'),
+    1:                             (4, 'line'),
+    1:                             (4, 'line'),
+    1:                             (4, 'exception'),
+    1:                             (5, 'line'),
+    1:                             (6, 'line'),
+    1:                             (6, 'return')]
+       
+    1: def generator_function():
+>>>>>>     try:
+>>>>>>         yield True
+>>>>>>         "continued"
+           finally:
+               "finally"
+    1: def generator_example():
+           # any() will leave the generator before its end
+>>>>>>     x = any(generator_function())
+       
+           # the following lines were not traced
+>>>>>>     for x in range(10):
+>>>>>>         y = x
+       
+       generator_example.events = ([(0, 'call'),
+                                    (2, 'line'),
+                                    (-6, 'call'),
+                                    (-5, 'line'),
+                                    (-4, 'line'),
+                                    (-4, 'return'),
+                                    (-4, 'call'),
+                                    (-4, 'exception'),
+                                    (-1, 'line'),
+                                    (-1, 'return')] +
+    1:                             [(5, 'line'), (6, 'line')] * 10 +
+    1:                             [(5, 'line'), (5, 'return')])
+       
+       
+    2: class Tracer:
+    1:     def __init__(self):
+    1:         self.events = []
+    1:     def trace(self, frame, event, arg):
+>>>>>>         self.events.append((frame.f_lineno, event))
+>>>>>>         return self.trace
+    1:     def traceWithGenexp(self, frame, event, arg):
+>>>>>>         (o for o in [1])
+>>>>>>         self.events.append((frame.f_lineno, event))
+>>>>>>         return self.trace
+       
+    2: class TraceTestCase(unittest.TestCase):
+       
+           # Disable gc collection when tracing, otherwise the
+           # deallocators may be traced as well.
+    1:     def setUp(self):
+    1:         self.using_gc = gc.isenabled()
+    1:         gc.disable()
+       
+    1:     def tearDown(self):
+>>>>>>         if self.using_gc:
+>>>>>>             gc.enable()
+       
+    1:     def compare_events(self, line_offset, events, expected_events):
+>>>>>>         events = [(l - line_offset, e) for (l, e) in events]
+>>>>>>         if events != expected_events:
+>>>>>>             self.fail(
+>>>>>>                 "events did not match expectation:\n" +
+>>>>>>                 "\n".join(difflib.ndiff([str(x) for x in expected_events],
+>>>>>>                                         [str(x) for x in events])))
+       
+    1:     def run_and_compare(self, func, events):
+    1:         tracer = Tracer()
+    1:         sys.settrace(tracer.trace)
+    1:         func()
+    1:         sys.settrace(None)
+>>>>>>         self.compare_events(func.func_code.co_firstlineno,
+>>>>>>                             tracer.events, events)
+       
+    1:     def run_test(self, func):
+    1:         self.run_and_compare(func, func.events)
+       
+    1:     def run_test2(self, func):
+>>>>>>         tracer = Tracer()
+>>>>>>         func(tracer.trace)
+>>>>>>         sys.settrace(None)
+>>>>>>         self.compare_events(func.func_code.co_firstlineno,
+>>>>>>                             tracer.events, func.events)
+       
+    1:     def test_set_and_retrieve_none(self):
+>>>>>>         sys.settrace(None)
+>>>>>>         assert sys.gettrace() is None
+       
+    1:     def test_set_and_retrieve_func(self):
+>>>>>>         def fn(*args):
+>>>>>>             pass
+       
+>>>>>>         sys.settrace(fn)
+>>>>>>         try:
+>>>>>>             assert sys.gettrace() is fn
+               finally:
+>>>>>>             sys.settrace(None)
+       
+    1:     def test_01_basic(self):
+    1:         self.run_test(basic)
+    1:     def test_02_arigo(self):
+>>>>>>         self.run_test(arigo_example)
+    1:     def test_03_one_instr(self):
+>>>>>>         self.run_test(one_instr_line)
+    1:     def test_04_no_pop_blocks(self):
+>>>>>>         self.run_test(no_pop_blocks)
+    1:     def test_05_no_pop_tops(self):
+>>>>>>         self.run_test(no_pop_tops)
+    1:     def test_06_call(self):
+>>>>>>         self.run_test(call)
+    1:     def test_07_raise(self):
+>>>>>>         self.run_test(test_raise)
+       
+    1:     def test_08_settrace_and_return(self):
+>>>>>>         self.run_test2(settrace_and_return)
+    1:     def test_09_settrace_and_raise(self):
+>>>>>>         self.run_test2(settrace_and_raise)
+    1:     def test_10_ireturn(self):
+>>>>>>         self.run_test(ireturn_example)
+    1:     def test_11_tightloop(self):
+>>>>>>         self.run_test(tightloop_example)
+    1:     def test_12_tighterloop(self):
+>>>>>>         self.run_test(tighterloop_example)
+       
+    1:     def test_13_genexp(self):
+>>>>>>         self.run_test(generator_example)
+               # issue1265: if the trace function contains a generator,
+               # and if the traced function contains another generator
+               # that is not completely exhausted, the trace stopped.
+               # Worse: the 'finally' clause was not invoked.
+>>>>>>         tracer = Tracer()
+>>>>>>         sys.settrace(tracer.traceWithGenexp)
+>>>>>>         generator_example()
+>>>>>>         sys.settrace(None)
+>>>>>>         self.compare_events(generator_example.__code__.co_firstlineno,
+>>>>>>                             tracer.events, generator_example.events)
+       
+    1:     def test_14_onliner_if(self):
+>>>>>>         def onliners():
+>>>>>>             if True: False
+>>>>>>             else: True
+>>>>>>             return 0
+>>>>>>         self.run_and_compare(
+>>>>>>             onliners,
+>>>>>>             [(0, 'call'),
+>>>>>>              (1, 'line'),
+>>>>>>              (3, 'line'),
+>>>>>>              (3, 'return')])
+       
+    1:     def test_15_loops(self):
+               # issue1750076: "while" expression is skipped by debugger
+>>>>>>         def for_example():
+>>>>>>             for x in range(2):
+>>>>>>                 pass
+>>>>>>         self.run_and_compare(
+>>>>>>             for_example,
+>>>>>>             [(0, 'call'),
+>>>>>>              (1, 'line'),
+>>>>>>              (2, 'line'),
+>>>>>>              (1, 'line'),
+>>>>>>              (2, 'line'),
+>>>>>>              (1, 'line'),
+>>>>>>              (1, 'return')])
+       
+>>>>>>         def while_example():
+                   # While expression should be traced on every loop
+>>>>>>             x = 2
+>>>>>>             while x > 0:
+>>>>>>                 x -= 1
+>>>>>>         self.run_and_compare(
+>>>>>>             while_example,
+>>>>>>             [(0, 'call'),
+>>>>>>              (2, 'line'),
+>>>>>>              (3, 'line'),
+>>>>>>              (4, 'line'),
+>>>>>>              (3, 'line'),
+>>>>>>              (4, 'line'),
+>>>>>>              (3, 'line'),
+>>>>>>              (3, 'return')])
+       
+    1:     def test_16_blank_lines(self):
+>>>>>>         exec("def f():\n" + "\n" * 256 + "    pass")
+>>>>>>         self.run_and_compare(
+>>>>>>             f,
+>>>>>>             [(0, 'call'),
+>>>>>>              (257, 'line'),
+>>>>>>              (257, 'return')])
+       
+    1:     def test_17_none_f_trace(self):
+               # Issue 20041: fix TypeError when f_trace is set to None.
+>>>>>>         def func():
+>>>>>>             sys._getframe().f_trace = None
+>>>>>>             lineno = 2
+>>>>>>         self.run_and_compare(func,
+>>>>>>             [(0, 'call'),
+>>>>>>              (1, 'line')])
+       
+       
+    2: class RaisingTraceFuncTestCase(unittest.TestCase):
+    1:     def trace(self, frame, event, arg):
+               """A trace function that raises an exception in response to a
+               specific trace event."""
+>>>>>>         if event == self.raiseOnEvent:
+>>>>>>             raise ValueError # just something that isn't RuntimeError
+               else:
+>>>>>>             return self.trace
+       
+    1:     def f(self):
+               """The function to trace; raises an exception if that's the case
+               we're testing, so that the 'exception' trace event fires."""
+>>>>>>         if self.raiseOnEvent == 'exception':
+>>>>>>             x = 0
+>>>>>>             y = 1 // x
+               else:
+>>>>>>             return 1
+       
+    1:     def run_test_for_event(self, event):
+               """Tests that an exception raised in response to the given event is
+               handled OK."""
+>>>>>>         self.raiseOnEvent = event
+>>>>>>         try:
+>>>>>>             for i in xrange(sys.getrecursionlimit() + 1):
+>>>>>>                 sys.settrace(self.trace)
+>>>>>>                 try:
+>>>>>>                     self.f()
+>>>>>>                 except ValueError:
+>>>>>>                     pass
+                       else:
+>>>>>>                     self.fail("exception not raised!")
+>>>>>>         except RuntimeError:
+>>>>>>             self.fail("recursion counter not reset")
+       
+           # Test the handling of exceptions raised by each kind of trace event.
+    1:     def test_call(self):
+>>>>>>         self.run_test_for_event('call')
+    1:     def test_line(self):
+>>>>>>         self.run_test_for_event('line')
+    1:     def test_return(self):
+>>>>>>         self.run_test_for_event('return')
+    1:     def test_exception(self):
+>>>>>>         self.run_test_for_event('exception')
+       
+    1:     def test_trash_stack(self):
+>>>>>>         def f():
+>>>>>>             for i in range(5):
+>>>>>>                 print i  # line tracing will raise an exception at this line
+       
+>>>>>>         def g(frame, why, extra):
+>>>>>>             if (why == 'line' and
+>>>>>>                 frame.f_lineno == f.func_code.co_firstlineno + 2):
+>>>>>>                 raise RuntimeError, "i am crashing"
+>>>>>>             return g
+       
+>>>>>>         sys.settrace(g)
+>>>>>>         try:
+>>>>>>             f()
+>>>>>>         except RuntimeError:
+                   # the test is really that this doesn't segfault:
+>>>>>>             import gc
+>>>>>>             gc.collect()
+               else:
+>>>>>>             self.fail("exception not propagated")
+       
+       
+       # 'Jump' tests: assigning to frame.f_lineno within a trace function
+       # moves the execution position - it's how debuggers implement a Jump
+       # command (aka. "Set next statement").
+       
+    2: class JumpTracer:
+           """Defines a trace function that jumps from one place to another,
+           with the source and destination lines of the jump being defined by
+    1:     the 'jump' property of the function under test."""
+       
+    1:     def __init__(self, function):
+>>>>>>         self.function = function
+>>>>>>         self.jumpFrom = function.jump[0]
+>>>>>>         self.jumpTo = function.jump[1]
+>>>>>>         self.done = False
+       
+    1:     def trace(self, frame, event, arg):
+>>>>>>         if not self.done and frame.f_code == self.function.func_code:
+>>>>>>             firstLine = frame.f_code.co_firstlineno
+>>>>>>             if event == 'line' and frame.f_lineno == firstLine + self.jumpFrom:
+                       # Cope with non-integer self.jumpTo (because of
+                       # no_jump_to_non_integers below).
+>>>>>>                 try:
+>>>>>>                     frame.f_lineno = firstLine + self.jumpTo
+>>>>>>                 except TypeError:
+>>>>>>                     frame.f_lineno = self.jumpTo
+>>>>>>                 self.done = True
+>>>>>>         return self.trace
+       
+       # The first set of 'jump' tests are for things that are allowed:
+       
+    1: def jump_simple_forwards(output):
+>>>>>>     output.append(1)
+>>>>>>     output.append(2)
+>>>>>>     output.append(3)
+       
+    1: jump_simple_forwards.jump = (1, 3)
+    1: jump_simple_forwards.output = [3]
+       
+    1: def jump_simple_backwards(output):
+>>>>>>     output.append(1)
+>>>>>>     output.append(2)
+       
+    1: jump_simple_backwards.jump = (2, 1)
+    1: jump_simple_backwards.output = [1, 1, 2]
+       
+    1: def jump_out_of_block_forwards(output):
+>>>>>>     for i in 1, 2:
+>>>>>>         output.append(2)
+>>>>>>         for j in [3]:  # Also tests jumping over a block
+>>>>>>             output.append(4)
+>>>>>>     output.append(5)
+       
+    1: jump_out_of_block_forwards.jump = (3, 5)
+    1: jump_out_of_block_forwards.output = [2, 5]
+       
+    1: def jump_out_of_block_backwards(output):
+>>>>>>     output.append(1)
+>>>>>>     for i in [1]:
+>>>>>>         output.append(3)
+>>>>>>         for j in [2]:  # Also tests jumping over a block
+>>>>>>             output.append(5)
+>>>>>>         output.append(6)
+>>>>>>     output.append(7)
+       
+    1: jump_out_of_block_backwards.jump = (6, 1)
+    1: jump_out_of_block_backwards.output = [1, 3, 5, 1, 3, 5, 6, 7]
+       
+    1: def jump_to_codeless_line(output):
+>>>>>>     output.append(1)
+           # Jumping to this line should skip to the next one.
+>>>>>>     output.append(3)
+       
+    1: jump_to_codeless_line.jump = (1, 2)
+    1: jump_to_codeless_line.output = [3]
+       
+    1: def jump_to_same_line(output):
+>>>>>>     output.append(1)
+>>>>>>     output.append(2)
+>>>>>>     output.append(3)
+       
+    1: jump_to_same_line.jump = (2, 2)
+    1: jump_to_same_line.output = [1, 2, 3]
+       
+       # Tests jumping within a finally block, and over one.
+    1: def jump_in_nested_finally(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+           finally:
+>>>>>>         output.append(4)
+>>>>>>         try:
+>>>>>>             output.append(6)
+               finally:
+>>>>>>             output.append(8)
+>>>>>>         output.append(9)
+       
+    1: jump_in_nested_finally.jump = (4, 9)
+    1: jump_in_nested_finally.output = [2, 9]
+       
+    1: def jump_infinite_while_loop(output):
+>>>>>>     output.append(1)
+>>>>>>     while 1:
+>>>>>>         output.append(2)
+>>>>>>     output.append(3)
+       
+    1: jump_infinite_while_loop.jump = (3, 4)
+    1: jump_infinite_while_loop.output = [1, 3]
+       
+       # The second set of 'jump' tests are for things that are not allowed:
+       
+    1: def no_jump_too_far_forwards(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+>>>>>>         output.append(3)
+>>>>>>     except ValueError, e:
+>>>>>>         output.append('after' in str(e))
+       
+    1: no_jump_too_far_forwards.jump = (3, 6)
+    1: no_jump_too_far_forwards.output = [2, True]
+       
+    1: def no_jump_too_far_backwards(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+>>>>>>         output.append(3)
+>>>>>>     except ValueError, e:
+>>>>>>         output.append('before' in str(e))
+       
+    1: no_jump_too_far_backwards.jump = (3, -1)
+    1: no_jump_too_far_backwards.output = [2, True]
+       
+       # Test each kind of 'except' line.
+    1: def no_jump_to_except_1(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+>>>>>>     except:
+>>>>>>         e = sys.exc_info()[1]
+>>>>>>         output.append('except' in str(e))
+       
+    1: no_jump_to_except_1.jump = (2, 3)
+    1: no_jump_to_except_1.output = [True]
+       
+    1: def no_jump_to_except_2(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+>>>>>>     except ValueError:
+>>>>>>         e = sys.exc_info()[1]
+>>>>>>         output.append('except' in str(e))
+       
+    1: no_jump_to_except_2.jump = (2, 3)
+    1: no_jump_to_except_2.output = [True]
+       
+    1: def no_jump_to_except_3(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+>>>>>>     except ValueError, e:
+>>>>>>         output.append('except' in str(e))
+       
+    1: no_jump_to_except_3.jump = (2, 3)
+    1: no_jump_to_except_3.output = [True]
+       
+    1: def no_jump_to_except_4(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+>>>>>>     except (ValueError, RuntimeError), e:
+>>>>>>         output.append('except' in str(e))
+       
+    1: no_jump_to_except_4.jump = (2, 3)
+    1: no_jump_to_except_4.output = [True]
+       
+    1: def no_jump_forwards_into_block(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+>>>>>>         for i in 1, 2:
+>>>>>>             output.append(4)
+>>>>>>     except ValueError, e:
+>>>>>>         output.append('into' in str(e))
+       
+    1: no_jump_forwards_into_block.jump = (2, 4)
+    1: no_jump_forwards_into_block.output = [True]
+       
+    1: def no_jump_backwards_into_block(output):
+>>>>>>     try:
+>>>>>>         for i in 1, 2:
+>>>>>>             output.append(3)
+>>>>>>         output.append(4)
+>>>>>>     except ValueError, e:
+>>>>>>         output.append('into' in str(e))
+       
+    1: no_jump_backwards_into_block.jump = (4, 3)
+    1: no_jump_backwards_into_block.output = [3, 3, True]
+       
+    1: def no_jump_into_finally_block(output):
+>>>>>>     try:
+>>>>>>         try:
+>>>>>>             output.append(3)
+>>>>>>             x = 1
+               finally:
+>>>>>>             output.append(6)
+>>>>>>     except ValueError, e:
+>>>>>>         output.append('finally' in str(e))
+       
+    1: no_jump_into_finally_block.jump = (4, 6)
+    1: no_jump_into_finally_block.output = [3, 6, True]  # The 'finally' still runs
+       
+    1: def no_jump_out_of_finally_block(output):
+>>>>>>     try:
+>>>>>>         try:
+>>>>>>             output.append(3)
+               finally:
+>>>>>>             output.append(5)
+>>>>>>             output.append(6)
+>>>>>>     except ValueError, e:
+>>>>>>         output.append('finally' in str(e))
+       
+    1: no_jump_out_of_finally_block.jump = (5, 1)
+    1: no_jump_out_of_finally_block.output = [3, True]
+       
+       # This verifies the line-numbers-must-be-integers rule.
+    1: def no_jump_to_non_integers(output):
+>>>>>>     try:
+>>>>>>         output.append(2)
+>>>>>>     except ValueError, e:
+>>>>>>         output.append('integer' in str(e))
+       
+    1: no_jump_to_non_integers.jump = (2, "Spam")
+    1: no_jump_to_non_integers.output = [True]
+       
+    1: def jump_across_with(output):
+>>>>>>     with open(test_support.TESTFN, "wb") as fp:
+>>>>>>         pass
+>>>>>>     with open(test_support.TESTFN, "wb") as fp:
+>>>>>>         pass
+    1: jump_across_with.jump = (1, 3)
+    1: jump_across_with.output = []
+       
+       # This verifies that you can't set f_lineno via _getframe or similar
+       # trickery.
+    1: def no_jump_without_trace_function():
+>>>>>>     try:
+>>>>>>         previous_frame = sys._getframe().f_back
+>>>>>>         previous_frame.f_lineno = previous_frame.f_lineno
+>>>>>>     except ValueError, e:
+               # This is the exception we wanted; make sure the error message
+               # talks about trace functions.
+>>>>>>         if 'trace' not in str(e):
+>>>>>>             raise
+           else:
+               # Something's wrong - the expected exception wasn't raised.
+>>>>>>         raise RuntimeError, "Trace-function-less jump failed to fail"
+       
+       
+    2: class JumpTestCase(unittest.TestCase):
+    1:     def compare_jump_output(self, expected, received):
+>>>>>>         if received != expected:
+>>>>>>             self.fail( "Outputs don't match:\n" +
+                              "Expected: " + repr(expected) + "\n" +
+>>>>>>                        "Received: " + repr(received))
+       
+    1:     def run_test(self, func):
+>>>>>>         tracer = JumpTracer(func)
+>>>>>>         sys.settrace(tracer.trace)
+>>>>>>         output = []
+>>>>>>         func(output)
+>>>>>>         sys.settrace(None)
+>>>>>>         self.compare_jump_output(func.output, output)
+       
+    1:     def test_01_jump_simple_forwards(self):
+>>>>>>         self.run_test(jump_simple_forwards)
+    1:     def test_02_jump_simple_backwards(self):
+>>>>>>         self.run_test(jump_simple_backwards)
+    1:     def test_03_jump_out_of_block_forwards(self):
+>>>>>>         self.run_test(jump_out_of_block_forwards)
+    1:     def test_04_jump_out_of_block_backwards(self):
+>>>>>>         self.run_test(jump_out_of_block_backwards)
+    1:     def test_05_jump_to_codeless_line(self):
+>>>>>>         self.run_test(jump_to_codeless_line)
+    1:     def test_06_jump_to_same_line(self):
+>>>>>>         self.run_test(jump_to_same_line)
+    1:     def test_07_jump_in_nested_finally(self):
+>>>>>>         self.run_test(jump_in_nested_finally)
+    1:     def test_jump_infinite_while_loop(self):
+>>>>>>         self.run_test(jump_infinite_while_loop)
+    1:     def test_08_no_jump_too_far_forwards(self):
+>>>>>>         self.run_test(no_jump_too_far_forwards)
+    1:     def test_09_no_jump_too_far_backwards(self):
+>>>>>>         self.run_test(no_jump_too_far_backwards)
+    1:     def test_10_no_jump_to_except_1(self):
+>>>>>>         self.run_test(no_jump_to_except_1)
+    1:     def test_11_no_jump_to_except_2(self):
+>>>>>>         self.run_test(no_jump_to_except_2)
+    1:     def test_12_no_jump_to_except_3(self):
+>>>>>>         self.run_test(no_jump_to_except_3)
+    1:     def test_13_no_jump_to_except_4(self):
+>>>>>>         self.run_test(no_jump_to_except_4)
+    1:     def test_14_no_jump_forwards_into_block(self):
+>>>>>>         self.run_test(no_jump_forwards_into_block)
+    1:     def test_15_no_jump_backwards_into_block(self):
+>>>>>>         self.run_test(no_jump_backwards_into_block)
+    1:     def test_16_no_jump_into_finally_block(self):
+>>>>>>         self.run_test(no_jump_into_finally_block)
+    1:     def test_17_no_jump_out_of_finally_block(self):
+>>>>>>         self.run_test(no_jump_out_of_finally_block)
+    1:     def test_18_no_jump_to_non_integers(self):
+>>>>>>         self.run_test(no_jump_to_non_integers)
+    1:     def test_19_no_jump_without_trace_function(self):
+>>>>>>         no_jump_without_trace_function()
+    1:     def test_jump_across_with(self):
+>>>>>>         self.addCleanup(test_support.unlink, test_support.TESTFN)
+>>>>>>         self.run_test(jump_across_with)
+       
+    1:     def test_20_large_function(self):
+>>>>>>         d = {}
+               exec("""def f(output):        # line 0
+                   x = 0                     # line 1
+                   y = 1                     # line 2
+                   '''                       # line 3
+                   %s                        # lines 4-1004
+                   '''                       # line 1005
+                   x += 1                    # line 1006
+                   output.append(x)          # line 1007
+>>>>>>             return""" % ('\n' * 1000,), d)
+>>>>>>         f = d['f']
+       
+>>>>>>         f.jump = (2, 1007)
+>>>>>>         f.output = [0]
+>>>>>>         self.run_test(f)
+       
+    1:     def test_jump_to_firstlineno(self):
+               # This tests that PDB can jump back to the first line in a
+               # file.  See issue #1689458.  It can only be triggered in a
+               # function call if the function is defined on a single line.
+>>>>>>         code = compile("""
+       # Comments don't count.
+       output.append(2)  # firstlineno is here.
+       output.append(3)
+       output.append(4)
+>>>>>> """, "<fake module>", "exec")
+>>>>>>         class fake_function:
+>>>>>>             func_code = code
+>>>>>>             jump = (2, 0)
+>>>>>>         tracer = JumpTracer(fake_function)
+>>>>>>         sys.settrace(tracer.trace)
+>>>>>>         namespace = {"output": []}
+>>>>>>         exec code in namespace
+>>>>>>         sys.settrace(None)
+>>>>>>         self.compare_jump_output([2, 3, 2, 3, 4], namespace["output"])
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(
+    1:         TraceTestCase,
+    1:         RaisingTraceFuncTestCase,
+    1:         JumpTestCase
+           )
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

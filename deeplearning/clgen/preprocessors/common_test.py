@@ -1,12 +1,14 @@
 """Unit tests for ///common_test.py."""
+import os
 import sys
+
 
 import pytest
 from absl import app
 from absl import flags
 
-from deeplearning.clgen import errors
-from deeplearning.clgen.preprocessors import common
+import errors
+import common
 
 
 FLAGS = flags.FLAGS

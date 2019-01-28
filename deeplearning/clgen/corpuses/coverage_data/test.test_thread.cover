@@ -1,0 +1,272 @@
+    1: import os
+    1: import unittest
+    1: import random
+    1: from test import test_support
+    1: thread = test_support.import_module('thread')
+    1: import time
+    1: import sys
+    1: import weakref
+       
+    1: from test import lock_tests
+       
+    1: NUMTASKS = 10
+    1: NUMTRIPS = 3
+       
+       
+    1: _print_mutex = thread.allocate_lock()
+       
+    1: def verbose_print(arg):
+           """Helper function for printing out debugging output."""
+   44:     if test_support.verbose:
+>>>>>>         with _print_mutex:
+>>>>>>             print arg
+       
+       
+       
+    2: class BasicThreadTest(unittest.TestCase):
+       
+    1:     def setUp(self):
+    6:         self.done_mutex = thread.allocate_lock()
+    6:         self.done_mutex.acquire()
+    6:         self.running_mutex = thread.allocate_lock()
+    6:         self.random_mutex = thread.allocate_lock()
+    6:         self.created = 0
+    6:         self.running = 0
+    6:         self.next_ident = 0
+       
+    6:         key = test_support.threading_setup()
+    6:         self.addCleanup(test_support.threading_cleanup, *key)
+       
+       
+    2: class ThreadRunningTests(BasicThreadTest):
+       
+    1:     def newtask(self):
+   30:         with self.running_mutex:
+   30:             self.next_ident += 1
+   30:             verbose_print("creating task %s" % self.next_ident)
+   30:             thread.start_new_thread(self.task, (self.next_ident,))
+   30:             self.created += 1
+   30:             self.running += 1
+       
+    1:     def task(self, ident):
+>>>>>>         with self.random_mutex:
+>>>>>>             delay = random.random() / 10000.0
+>>>>>>         verbose_print("task %s will run for %sus" % (ident, round(delay*1e6)))
+>>>>>>         time.sleep(delay)
+>>>>>>         verbose_print("task %s done" % ident)
+>>>>>>         with self.running_mutex:
+>>>>>>             self.running -= 1
+>>>>>>             if self.created == NUMTASKS and self.running == 0:
+>>>>>>                 self.done_mutex.release()
+       
+    1:     def test_starting_threads(self):
+               # Basic test for thread creation.
+   11:         for i in range(NUMTASKS):
+   10:             self.newtask()
+    1:         verbose_print("waiting for tasks to complete...")
+    1:         self.done_mutex.acquire()
+    1:         verbose_print("all tasks done")
+       
+    1:     def test_stack_size(self):
+               # Various stack size tests.
+    1:         self.assertEqual(thread.stack_size(), 0, "initial stack size is not 0")
+       
+    1:         thread.stack_size(0)
+    1:         self.assertEqual(thread.stack_size(), 0, "stack_size not reset to default")
+       
+    1:     @unittest.skipIf(os.name not in ("nt", "os2", "posix"), 'test meant for nt, os2, and posix')
+           def test_nt_and_posix_stack_size(self):
+    1:         try:
+    1:             thread.stack_size(4096)
+    1:         except ValueError:
+    1:             verbose_print("caught expected ValueError setting "
+                                   "stack_size(4096)")
+>>>>>>         except thread.error:
+>>>>>>             self.skipTest("platform does not support changing thread stack "
+                                 "size")
+       
+    1:         fail_msg = "stack_size(%d) failed - should succeed"
+    4:         for tss in (262144, 0x100000, 0):
+    3:             thread.stack_size(tss)
+    3:             self.assertEqual(thread.stack_size(), tss, fail_msg % tss)
+    3:             verbose_print("successfully set stack_size(%d)" % tss)
+       
+    3:         for tss in (262144, 0x100000):
+    2:             verbose_print("trying stack_size = (%d)" % tss)
+    2:             self.next_ident = 0
+    2:             self.created = 0
+   22:             for i in range(NUMTASKS):
+   20:                 self.newtask()
+       
+    2:             verbose_print("waiting for all tasks to complete")
+    2:             self.done_mutex.acquire()
+    2:             verbose_print("all tasks done")
+       
+    1:         thread.stack_size(0)
+       
+    1:     def test__count(self):
+               # Test the _count() function.
+    1:         orig = thread._count()
+    1:         mut = thread.allocate_lock()
+    1:         mut.acquire()
+    1:         started = []
+    1:         def task():
+>>>>>>             started.append(None)
+>>>>>>             mut.acquire()
+>>>>>>             mut.release()
+    1:         thread.start_new_thread(task, ())
+    2:         while not started:
+    1:             time.sleep(0.01)
+    1:         self.assertEqual(thread._count(), orig + 1)
+               # Allow the task to finish.
+    1:         mut.release()
+               # The only reliable way to be sure that the thread ended from the
+               # interpreter's point of view is to wait for the function object to be
+               # destroyed.
+    1:         done = []
+    1:         wr = weakref.ref(task, lambda _: done.append(None))
+    1:         del task
+    2:         while not done:
+    1:             time.sleep(0.01)
+    1:         self.assertEqual(thread._count(), orig)
+       
+    1:     def test_save_exception_state_on_error(self):
+               # See issue #14474
+    1:         def task():
+>>>>>>             started.release()
+>>>>>>             raise SyntaxError
+    1:         def mywrite(self, *args):
+>>>>>>             try:
+>>>>>>                 raise ValueError
+>>>>>>             except ValueError:
+>>>>>>                 pass
+>>>>>>             real_write(self, *args)
+    1:         c = thread._count()
+    1:         started = thread.allocate_lock()
+    1:         with test_support.captured_output("stderr") as stderr:
+    1:             real_write = stderr.write
+    1:             stderr.write = mywrite
+    1:             started.acquire()
+    1:             thread.start_new_thread(task, ())
+    1:             started.acquire()
+    1:             while thread._count() > c:
+>>>>>>                 time.sleep(0.01)
+    1:         self.assertIn("Traceback", stderr.getvalue())
+       
+       
+    2: class Barrier:
+    1:     def __init__(self, num_threads):
+    1:         self.num_threads = num_threads
+    1:         self.waiting = 0
+    1:         self.checkin_mutex  = thread.allocate_lock()
+    1:         self.checkout_mutex = thread.allocate_lock()
+    1:         self.checkout_mutex.acquire()
+       
+    1:     def enter(self):
+>>>>>>         self.checkin_mutex.acquire()
+>>>>>>         self.waiting = self.waiting + 1
+>>>>>>         if self.waiting == self.num_threads:
+>>>>>>             self.waiting = self.num_threads - 1
+>>>>>>             self.checkout_mutex.release()
+>>>>>>             return
+>>>>>>         self.checkin_mutex.release()
+       
+>>>>>>         self.checkout_mutex.acquire()
+>>>>>>         self.waiting = self.waiting - 1
+>>>>>>         if self.waiting == 0:
+>>>>>>             self.checkin_mutex.release()
+>>>>>>             return
+>>>>>>         self.checkout_mutex.release()
+       
+       
+    2: class BarrierTest(BasicThreadTest):
+       
+    1:     def test_barrier(self):
+    1:         self.bar = Barrier(NUMTASKS)
+    1:         self.running = NUMTASKS
+   11:         for i in range(NUMTASKS):
+   10:             thread.start_new_thread(self.task2, (i,))
+    1:         verbose_print("waiting for tasks to end")
+    1:         self.done_mutex.acquire()
+    1:         verbose_print("tasks done")
+       
+    1:     def task2(self, ident):
+>>>>>>         for i in range(NUMTRIPS):
+>>>>>>             if ident == 0:
+                       # give it a good chance to enter the next
+                       # barrier before the others are all out
+                       # of the current one
+>>>>>>                 delay = 0
+                   else:
+>>>>>>                 with self.random_mutex:
+>>>>>>                     delay = random.random() / 10000.0
+>>>>>>             verbose_print("task %s will run for %sus" %
+>>>>>>                           (ident, round(delay * 1e6)))
+>>>>>>             time.sleep(delay)
+>>>>>>             verbose_print("task %s entering %s" % (ident, i))
+>>>>>>             self.bar.enter()
+>>>>>>             verbose_print("task %s leaving barrier" % ident)
+>>>>>>         with self.running_mutex:
+>>>>>>             self.running -= 1
+                   # Must release mutex before releasing done, else the main thread can
+                   # exit and set mutex to None as part of global teardown; then
+                   # mutex.release() raises AttributeError.
+>>>>>>             finished = self.running == 0
+>>>>>>         if finished:
+>>>>>>             self.done_mutex.release()
+       
+       
+    2: class LockTests(lock_tests.LockTests):
+    1:     locktype = thread.allocate_lock
+       
+       
+    2: class TestForkInThread(unittest.TestCase):
+    1:     def setUp(self):
+    1:         self.read_fd, self.write_fd = os.pipe()
+       
+    1:     @unittest.skipIf(sys.platform.startswith('win'),
+    1:                      "This test is only appropriate for POSIX-like systems.")
+    1:     @test_support.reap_threads
+           def test_forkinthread(self):
+    1:         def thread1():
+>>>>>>             try:
+>>>>>>                 pid = os.fork() # fork in a thread
+>>>>>>             except RuntimeError:
+>>>>>>                 sys.exit(0) # exit the child
+       
+>>>>>>             if pid == 0: # child
+>>>>>>                 os.close(self.read_fd)
+>>>>>>                 os.write(self.write_fd, "OK")
+                       # Exiting the thread normally in the child process can leave
+                       # any additional threads (such as the one started by
+                       # importing _tkinter) still running, and this can prevent
+                       # the half-zombie child process from being cleaned up. See
+                       # Issue #26456.
+>>>>>>                 os._exit(0)
+                   else: # parent
+>>>>>>                 os.close(self.write_fd)
+>>>>>>                 pid, status = os.waitpid(pid, 0)
+>>>>>>                 self.assertEqual(status, 0)
+       
+    1:         thread.start_new_thread(thread1, ())
+    1:         self.assertEqual(os.read(self.read_fd, 2), "OK",
+    1:                          "Unable to fork() in thread")
+       
+    1:     def tearDown(self):
+    1:         try:
+    1:             os.close(self.read_fd)
+>>>>>>         except OSError:
+>>>>>>             pass
+       
+    1:         try:
+    1:             os.close(self.write_fd)
+    1:         except OSError:
+    1:             pass
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(ThreadRunningTests, BarrierTest, LockTests,
+    1:                               TestForkInThread)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

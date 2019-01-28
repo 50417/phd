@@ -1,0 +1,205 @@
+       #-*- coding: ISO-8859-1 -*-
+       # pysqlite2/test/transactions.py: tests transactions
+       #
+       # Copyright (C) 2005-2007 Gerhard Häring <gh@ghaering.de>
+       #
+       # This file is part of pysqlite.
+       #
+       # This software is provided 'as-is', without any express or implied
+       # warranty.  In no event will the authors be held liable for any damages
+       # arising from the use of this software.
+       #
+       # Permission is granted to anyone to use this software for any purpose,
+       # including commercial applications, and to alter it and redistribute it
+       # freely, subject to the following restrictions:
+       #
+       # 1. The origin of this software must not be misrepresented; you must not
+       #    claim that you wrote the original software. If you use this software
+       #    in a product, an acknowledgment in the product documentation would be
+       #    appreciated but is not required.
+       # 2. Altered source versions must be plainly marked as such, and must not be
+       #    misrepresented as being the original software.
+       # 3. This notice may not be removed or altered from any source distribution.
+       
+    1: import sys
+    1: import os, unittest
+    1: import sqlite3 as sqlite
+       
+    1: def get_db_path():
+   36:     return "sqlite_testdb"
+       
+    2: class TransactionTests(unittest.TestCase):
+    1:     def setUp(self):
+    9:         try:
+    9:             os.remove(get_db_path())
+    9:         except OSError:
+    9:             pass
+       
+    9:         self.con1 = sqlite.connect(get_db_path(), timeout=0.1)
+    9:         self.cur1 = self.con1.cursor()
+       
+    9:         self.con2 = sqlite.connect(get_db_path(), timeout=0.1)
+    9:         self.cur2 = self.con2.cursor()
+       
+    1:     def tearDown(self):
+    9:         self.cur1.close()
+    9:         self.con1.close()
+       
+    9:         self.cur2.close()
+    9:         self.con2.close()
+       
+    9:         try:
+    9:             os.unlink(get_db_path())
+>>>>>>         except OSError:
+>>>>>>             pass
+       
+    1:     def CheckDMLdoesAutoCommitBefore(self):
+    1:         self.cur1.execute("create table test(i)")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         self.cur1.execute("create table test2(j)")
+    1:         self.cur2.execute("select i from test")
+    1:         res = self.cur2.fetchall()
+    1:         self.assertEqual(len(res), 1)
+       
+    1:     def CheckInsertStartsTransaction(self):
+    1:         self.cur1.execute("create table test(i)")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         self.cur2.execute("select i from test")
+    1:         res = self.cur2.fetchall()
+    1:         self.assertEqual(len(res), 0)
+       
+    1:     def CheckUpdateStartsTransaction(self):
+    1:         self.cur1.execute("create table test(i)")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         self.con1.commit()
+    1:         self.cur1.execute("update test set i=6")
+    1:         self.cur2.execute("select i from test")
+    1:         res = self.cur2.fetchone()[0]
+    1:         self.assertEqual(res, 5)
+       
+    1:     def CheckDeleteStartsTransaction(self):
+    1:         self.cur1.execute("create table test(i)")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         self.con1.commit()
+    1:         self.cur1.execute("delete from test")
+    1:         self.cur2.execute("select i from test")
+    1:         res = self.cur2.fetchall()
+    1:         self.assertEqual(len(res), 1)
+       
+    1:     def CheckReplaceStartsTransaction(self):
+    1:         self.cur1.execute("create table test(i)")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         self.con1.commit()
+    1:         self.cur1.execute("replace into test(i) values (6)")
+    1:         self.cur2.execute("select i from test")
+    1:         res = self.cur2.fetchall()
+    1:         self.assertEqual(len(res), 1)
+    1:         self.assertEqual(res[0][0], 5)
+       
+    1:     def CheckToggleAutoCommit(self):
+    1:         self.cur1.execute("create table test(i)")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         self.con1.isolation_level = None
+    1:         self.assertEqual(self.con1.isolation_level, None)
+    1:         self.cur2.execute("select i from test")
+    1:         res = self.cur2.fetchall()
+    1:         self.assertEqual(len(res), 1)
+       
+    1:         self.con1.isolation_level = "DEFERRED"
+    1:         self.assertEqual(self.con1.isolation_level , "DEFERRED")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         self.cur2.execute("select i from test")
+    1:         res = self.cur2.fetchall()
+    1:         self.assertEqual(len(res), 1)
+       
+    1:     def CheckRaiseTimeout(self):
+    1:         if sqlite.sqlite_version_info < (3, 2, 2):
+                   # This will fail (hang) on earlier versions of sqlite.
+                   # Determine exact version it was fixed. 3.2.1 hangs.
+>>>>>>             return
+    1:         self.cur1.execute("create table test(i)")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         try:
+    1:             self.cur2.execute("insert into test(i) values (5)")
+>>>>>>             self.fail("should have raised an OperationalError")
+    1:         except sqlite.OperationalError:
+    1:             pass
+>>>>>>         except:
+>>>>>>             self.fail("should have raised an OperationalError")
+       
+    1:     def CheckLocking(self):
+               """
+               This tests the improved concurrency with pysqlite 2.3.4. You needed
+               to roll back con2 before you could commit con1.
+               """
+    1:         if sqlite.sqlite_version_info < (3, 2, 2):
+                   # This will fail (hang) on earlier versions of sqlite.
+                   # Determine exact version it was fixed. 3.2.1 hangs.
+>>>>>>             return
+    1:         self.cur1.execute("create table test(i)")
+    1:         self.cur1.execute("insert into test(i) values (5)")
+    1:         try:
+    1:             self.cur2.execute("insert into test(i) values (5)")
+>>>>>>             self.fail("should have raised an OperationalError")
+    1:         except sqlite.OperationalError:
+    1:             pass
+>>>>>>         except:
+>>>>>>             self.fail("should have raised an OperationalError")
+               # NO self.con2.rollback() HERE!!!
+    1:         self.con1.commit()
+       
+    1:     def CheckRollbackCursorConsistency(self):
+               """
+               Checks if cursors on the connection are set into a "reset" state
+               when a rollback is done on the connection.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         cur = con.cursor()
+    1:         cur.execute("create table test(x)")
+    1:         cur.execute("insert into test(x) values (5)")
+    1:         cur.execute("select 1 union select 2 union select 3")
+       
+    1:         con.rollback()
+    1:         try:
+    1:             cur.fetchall()
+>>>>>>             self.fail("InterfaceError should have been raised")
+    1:         except sqlite.InterfaceError, e:
+    1:             pass
+>>>>>>         except:
+>>>>>>             self.fail("InterfaceError should have been raised")
+       
+    2: class SpecialCommandTests(unittest.TestCase):
+    1:     def setUp(self):
+    3:         self.con = sqlite.connect(":memory:")
+    3:         self.cur = self.con.cursor()
+       
+    1:     def CheckVacuum(self):
+    1:         self.cur.execute("create table test(i)")
+    1:         self.cur.execute("insert into test(i) values (5)")
+    1:         self.cur.execute("vacuum")
+       
+    1:     def CheckDropTable(self):
+    1:         self.cur.execute("create table test(i)")
+    1:         self.cur.execute("insert into test(i) values (5)")
+    1:         self.cur.execute("drop table test")
+       
+    1:     def CheckPragma(self):
+    1:         self.cur.execute("create table test(i)")
+    1:         self.cur.execute("insert into test(i) values (5)")
+    1:         self.cur.execute("pragma count_changes=1")
+       
+    1:     def tearDown(self):
+    3:         self.cur.close()
+    3:         self.con.close()
+       
+    1: def suite():
+    1:     default_suite = unittest.makeSuite(TransactionTests, "Check")
+    1:     special_command_suite = unittest.makeSuite(SpecialCommandTests, "Check")
+    1:     return unittest.TestSuite((default_suite, special_command_suite))
+       
+    1: def test():
+>>>>>>     runner = unittest.TextTestRunner()
+>>>>>>     runner.run(suite())
+       
+    1: if __name__ == "__main__":
+>>>>>>     test()

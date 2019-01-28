@@ -1,0 +1,160 @@
+       # This set of tests exercises the backward-compatibility class
+       # in mailbox.py (the ones without write support).
+       
+    1: import mailbox
+    1: import os
+    1: import time
+    1: import unittest
+    1: from test import test_support
+       
+       # cleanup earlier tests
+    1: try:
+    1:     os.unlink(test_support.TESTFN)
+    1: except os.error:
+    1:     pass
+       
+    1: FROM_ = "From some.body@dummy.domain  Sat Jul 24 13:43:35 2004\n"
+       DUMMY_MESSAGE = """\
+       From: some.body@dummy.domain
+       To: me@my.domain
+       Subject: Simple Test
+       
+       This is a dummy message.
+    1: """
+       
+    2: class MaildirTestCase(unittest.TestCase):
+       
+    1:     def setUp(self):
+               # create a new maildir mailbox to work with:
+    5:         self._dir = test_support.TESTFN
+    5:         os.mkdir(self._dir)
+    5:         os.mkdir(os.path.join(self._dir, "cur"))
+    5:         os.mkdir(os.path.join(self._dir, "tmp"))
+    5:         os.mkdir(os.path.join(self._dir, "new"))
+    5:         self._counter = 1
+    5:         self._msgfiles = []
+       
+    1:     def tearDown(self):
+    5:         map(os.unlink, self._msgfiles)
+    5:         os.rmdir(os.path.join(self._dir, "cur"))
+    5:         os.rmdir(os.path.join(self._dir, "tmp"))
+    5:         os.rmdir(os.path.join(self._dir, "new"))
+    5:         os.rmdir(self._dir)
+       
+    1:     def createMessage(self, dir, mbox=False):
+    5:         t = int(time.time() % 1000000)
+    5:         pid = self._counter
+    5:         self._counter += 1
+    5:         filename = os.extsep.join((str(t), str(pid), "myhostname", "mydomain"))
+    5:         tmpname = os.path.join(self._dir, "tmp", filename)
+    5:         newname = os.path.join(self._dir, dir, filename)
+    5:         with open(tmpname, "w") as fp:
+    5:             self._msgfiles.append(tmpname)
+    5:             if mbox:
+    1:                 fp.write(FROM_)
+    5:             fp.write(DUMMY_MESSAGE)
+    5:         if hasattr(os, "link"):
+    5:             os.link(tmpname, newname)
+               else:
+>>>>>>             with open(newname, "w") as fp:
+>>>>>>                 fp.write(DUMMY_MESSAGE)
+    5:         self._msgfiles.append(newname)
+    5:         return tmpname
+       
+    1:     def test_empty_maildir(self):
+               """Test an empty maildir mailbox"""
+               # Test for regression on bug #117490:
+    1:         self.mbox = mailbox.Maildir(test_support.TESTFN)
+    1:         self.assertTrue(len(self.mbox) == 0)
+    1:         self.assertTrue(self.mbox.next() is None)
+    1:         self.assertTrue(self.mbox.next() is None)
+       
+    1:     def test_nonempty_maildir_cur(self):
+    1:         self.createMessage("cur")
+    1:         self.mbox = mailbox.Maildir(test_support.TESTFN)
+    1:         self.assertTrue(len(self.mbox) == 1)
+    1:         msg = self.mbox.next()
+    1:         self.assertTrue(msg is not None)
+    1:         msg.fp.close()
+    1:         self.assertTrue(self.mbox.next() is None)
+    1:         self.assertTrue(self.mbox.next() is None)
+       
+    1:     def test_nonempty_maildir_new(self):
+    1:         self.createMessage("new")
+    1:         self.mbox = mailbox.Maildir(test_support.TESTFN)
+    1:         self.assertTrue(len(self.mbox) == 1)
+    1:         msg = self.mbox.next()
+    1:         self.assertTrue(msg is not None)
+    1:         msg.fp.close()
+    1:         self.assertTrue(self.mbox.next() is None)
+    1:         self.assertTrue(self.mbox.next() is None)
+       
+    1:     def test_nonempty_maildir_both(self):
+    1:         self.createMessage("cur")
+    1:         self.createMessage("new")
+    1:         self.mbox = mailbox.Maildir(test_support.TESTFN)
+    1:         self.assertTrue(len(self.mbox) == 2)
+    1:         msg = self.mbox.next()
+    1:         self.assertTrue(msg is not None)
+    1:         msg.fp.close()
+    1:         msg = self.mbox.next()
+    1:         self.assertTrue(msg is not None)
+    1:         msg.fp.close()
+    1:         self.assertTrue(self.mbox.next() is None)
+    1:         self.assertTrue(self.mbox.next() is None)
+       
+    1:     def test_unix_mbox(self):
+               ### should be better!
+    1:         import email.parser
+    1:         fname = self.createMessage("cur", True)
+    1:         n = 0
+    1:         with open(fname) as f:
+    1:             for msg in mailbox.PortableUnixMailbox(f,
+    2:                                                email.parser.Parser().parse):
+    1:                 n += 1
+    1:                 self.assertEqual(msg["subject"], "Simple Test")
+    1:                 self.assertEqual(len(str(msg)), len(FROM_)+len(DUMMY_MESSAGE))
+    1:         self.assertEqual(n, 1)
+       
+    2: class MboxTestCase(unittest.TestCase):
+    1:     def setUp(self):
+               # create a new maildir mailbox to work with:
+    1:         self._path = test_support.TESTFN
+       
+    1:     def tearDown(self):
+    1:         os.unlink(self._path)
+       
+    1:     def test_from_regex (self):
+               # Testing new regex from bug #1633678
+    1:         with open(self._path, 'w') as f:
+    1:             f.write("""From fred@example.com Mon May 31 13:24:50 2004 +0200
+       Subject: message 1
+       
+       body1
+       From fred@example.com Mon May 31 13:24:50 2004 -0200
+       Subject: message 2
+       
+       body2
+       From fred@example.com Mon May 31 13:24:50 2004
+       Subject: message 3
+       
+       body3
+       From fred@example.com Mon May 31 13:24:50 2004
+       Subject: message 4
+       
+       body4
+    1: """)
+    1:         with open(self._path, 'r') as f:
+    1:             box = mailbox.UnixMailbox(f)
+    1:             self.assertTrue(len(list(iter(box))) == 4)
+       
+       
+           # XXX We still need more tests!
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(MaildirTestCase, MboxTestCase)
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

@@ -1,0 +1,289 @@
+    1: from test.test_support import verbose, run_unittest, import_module
+       
+       #Skip these tests if either fcntl or termios is not available
+    1: fcntl = import_module('fcntl')
+    1: import_module('termios')
+       
+    1: import errno
+    1: import pty
+    1: import os
+    1: import sys
+    1: import select
+    1: import signal
+    1: import socket
+    1: import unittest
+       
+    1: TEST_STRING_1 = "I wish to buy a fish license.\n"
+    1: TEST_STRING_2 = "For my pet fish, Eric.\n"
+       
+    1: if verbose:
+>>>>>>     def debug(msg):
+>>>>>>         print msg
+       else:
+    1:     def debug(msg):
+    9:         pass
+       
+       
+    1: def normalize_output(data):
+           # Some operating systems do conversions on newline.  We could possibly
+           # fix that by doing the appropriate termios.tcsetattr()s.  I couldn't
+           # figure out the right combo on Tru64 and I don't have an IRIX box.
+           # So just normalize the output and doc the problem O/Ses by allowing
+           # certain combinations for some platforms, but avoid allowing other
+           # differences (like extra whitespace, trailing garbage, etc.)
+       
+           # This is about the best we can do without getting some feedback
+           # from someone more knowledgable.
+       
+           # OSF/1 (Tru64) apparently turns \n into \r\r\n.
+    2:     if data.endswith('\r\r\n'):
+>>>>>>         return data.replace('\r\r\n', '\n')
+       
+           # IRIX apparently turns \n into \r\n.
+    2:     if data.endswith('\r\n'):
+    2:         return data.replace('\r\n', '\n')
+       
+>>>>>>     return data
+       
+       
+       # Marginal testing of pty suite. Cannot do extensive 'do or fail' testing
+       # because pty code is not too portable.
+       # XXX(nnorwitz):  these tests leak fds when there is an error.
+    2: class PtyTest(unittest.TestCase):
+    1:     def setUp(self):
+               # isatty() and close() can hang on some platforms.  Set an alarm
+               # before running the test to make sure we don't hang forever.
+    2:         self.old_alarm = signal.signal(signal.SIGALRM, self.handle_sig)
+    2:         signal.alarm(10)
+       
+    1:     def tearDown(self):
+               # remove alarm, restore old alarm handler
+    2:         signal.alarm(0)
+    2:         signal.signal(signal.SIGALRM, self.old_alarm)
+       
+    1:     def handle_sig(self, sig, frame):
+>>>>>>         self.fail("isatty hung")
+       
+    1:     def test_basic(self):
+    1:         try:
+    1:             debug("Calling master_open()")
+    1:             master_fd, slave_name = pty.master_open()
+    1:             debug("Got master_fd '%d', slave_name '%s'" %
+    1:                   (master_fd, slave_name))
+    1:             debug("Calling slave_open(%r)" % (slave_name,))
+    1:             slave_fd = pty.slave_open(slave_name)
+    1:             debug("Got slave_fd '%d'" % slave_fd)
+>>>>>>         except OSError:
+                   # " An optional feature could not be imported " ... ?
+>>>>>>             raise unittest.SkipTest, "Pseudo-terminals (seemingly) not functional."
+       
+    1:         self.assertTrue(os.isatty(slave_fd), 'slave_fd is not a tty')
+       
+               # Solaris requires reading the fd before anything is returned.
+               # My guess is that since we open and close the slave fd
+               # in master_open(), we need to read the EOF.
+       
+               # Ensure the fd is non-blocking in case there's nothing to read.
+    1:         orig_flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+    1:         fcntl.fcntl(master_fd, fcntl.F_SETFL, orig_flags | os.O_NONBLOCK)
+    1:         try:
+    1:             s1 = os.read(master_fd, 1024)
+>>>>>>             self.assertEqual('', s1)
+    1:         except OSError, e:
+    1:             if e.errno != errno.EAGAIN:
+>>>>>>                 raise
+               # Restore the original flags.
+    1:         fcntl.fcntl(master_fd, fcntl.F_SETFL, orig_flags)
+       
+    1:         debug("Writing to slave_fd")
+    1:         os.write(slave_fd, TEST_STRING_1)
+    1:         s1 = os.read(master_fd, 1024)
+    1:         self.assertEqual('I wish to buy a fish license.\n',
+    1:                          normalize_output(s1))
+       
+    1:         debug("Writing chunked output")
+    1:         os.write(slave_fd, TEST_STRING_2[:5])
+    1:         os.write(slave_fd, TEST_STRING_2[5:])
+    1:         s2 = os.read(master_fd, 1024)
+    1:         self.assertEqual('For my pet fish, Eric.\n', normalize_output(s2))
+       
+    1:         os.close(slave_fd)
+    1:         os.close(master_fd)
+       
+       
+    1:     def test_fork(self):
+    1:         debug("calling pty.fork()")
+    1:         pid, master_fd = pty.fork()
+    1:         if pid == pty.CHILD:
+                   # stdout should be connected to a tty.
+>>>>>>             if not os.isatty(1):
+>>>>>>                 debug("Child's fd 1 is not a tty?!")
+>>>>>>                 os._exit(3)
+       
+                   # After pty.fork(), the child should already be a session leader.
+                   # (on those systems that have that concept.)
+>>>>>>             debug("In child, calling os.setsid()")
+>>>>>>             try:
+>>>>>>                 os.setsid()
+>>>>>>             except OSError:
+                       # Good, we already were session leader
+>>>>>>                 debug("Good: OSError was raised.")
+>>>>>>                 pass
+>>>>>>             except AttributeError:
+                       # Have pty, but not setsid()?
+>>>>>>                 debug("No setsid() available?")
+>>>>>>                 pass
+>>>>>>             except:
+                       # We don't want this error to propagate, escaping the call to
+                       # os._exit() and causing very peculiar behavior in the calling
+                       # regrtest.py !
+                       # Note: could add traceback printing here.
+>>>>>>                 debug("An unexpected error was raised.")
+>>>>>>                 os._exit(1)
+                   else:
+>>>>>>                 debug("os.setsid() succeeded! (bad!)")
+>>>>>>                 os._exit(2)
+>>>>>>             os._exit(4)
+               else:
+    1:             debug("Waiting for child (%d) to finish." % pid)
+                   # In verbose mode, we have to consume the debug output from the
+                   # child or the child will block, causing this test to hang in the
+                   # parent's waitpid() call.  The child blocks after a
+                   # platform-dependent amount of data is written to its fd.  On
+                   # Linux 2.6, it's 4000 bytes and the child won't block, but on OS
+                   # X even the small writes in the child above will block it.  Also
+                   # on Linux, the read() will raise an OSError (input/output error)
+                   # when it tries to read past the end of the buffer but the child's
+                   # already exited, so catch and discard those exceptions.  It's not
+                   # worth checking for EIO.
+    1:             while True:
+    1:                 try:
+    1:                     data = os.read(master_fd, 80)
+>>>>>>                 except OSError:
+>>>>>>                     break
+    1:                 if not data:
+    1:                     break
+>>>>>>                 sys.stdout.write(data.replace('\r\n', '\n'))
+       
+                   ##line = os.read(master_fd, 80)
+                   ##lines = line.replace('\r\n', '\n').split('\n')
+                   ##if False and lines != ['In child, calling os.setsid()',
+                   ##             'Good: OSError was raised.', '']:
+                   ##    raise TestFailed("Unexpected output from child: %r" % line)
+       
+    1:             (pid, status) = os.waitpid(pid, 0)
+    1:             res = status >> 8
+    1:             debug("Child (%d) exited with status %d (%d)." % (pid, res, status))
+    1:             if res == 1:
+>>>>>>                 self.fail("Child raised an unexpected exception in os.setsid()")
+    1:             elif res == 2:
+>>>>>>                 self.fail("pty.fork() failed to make child a session leader.")
+    1:             elif res == 3:
+>>>>>>                 self.fail("Child spawned by pty.fork() did not have a tty as stdout")
+    1:             elif res != 4:
+>>>>>>                 self.fail("pty.fork() failed for unknown reasons.")
+       
+                   ##debug("Reading from master_fd now that the child has exited")
+                   ##try:
+                   ##    s1 = os.read(master_fd, 1024)
+                   ##except os.error:
+                   ##    pass
+                   ##else:
+                   ##    raise TestFailed("Read from master_fd did not raise exception")
+       
+    1:         os.close(master_fd)
+       
+               # pty.fork() passed.
+       
+       
+    2: class SmallPtyTests(unittest.TestCase):
+    1:     """These tests don't spawn children or hang."""
+       
+    1:     def setUp(self):
+    2:         self.orig_stdin_fileno = pty.STDIN_FILENO
+    2:         self.orig_stdout_fileno = pty.STDOUT_FILENO
+    2:         self.orig_pty_select = pty.select
+    2:         self.fds = []  # A list of file descriptors to close.
+    2:         self.select_rfds_lengths = []
+    2:         self.select_rfds_results = []
+       
+    1:     def tearDown(self):
+    2:         pty.STDIN_FILENO = self.orig_stdin_fileno
+    2:         pty.STDOUT_FILENO = self.orig_stdout_fileno
+    2:         pty.select = self.orig_pty_select
+   14:         for fd in self.fds:
+   12:             try:
+   12:                 os.close(fd)
+    5:             except:
+    5:                 pass
+       
+    1:     def _pipe(self):
+    4:         pipe_fds = os.pipe()
+    4:         self.fds.extend(pipe_fds)
+    4:         return pipe_fds
+       
+    1:     def _mock_select(self, rfds, wfds, xfds):
+               # This will raise IndexError when no more expected calls exist.
+    4:         self.assertEqual(self.select_rfds_lengths.pop(0), len(rfds))
+    4:         return self.select_rfds_results.pop(0), [], []
+       
+    1:     def test__copy_to_each(self):
+               """Test the normal data case on both master_fd and stdin."""
+    1:         read_from_stdout_fd, mock_stdout_fd = self._pipe()
+    1:         pty.STDOUT_FILENO = mock_stdout_fd
+    1:         mock_stdin_fd, write_to_stdin_fd = self._pipe()
+    1:         pty.STDIN_FILENO = mock_stdin_fd
+    1:         socketpair = socket.socketpair()
+    3:         masters = [s.fileno() for s in socketpair]
+    1:         self.fds.extend(masters)
+       
+               # Feed data.  Smaller than PIPEBUF.  These writes will not block.
+    1:         os.write(masters[1], b'from master')
+    1:         os.write(write_to_stdin_fd, b'from stdin')
+       
+               # Expect two select calls, the last one will cause IndexError
+    1:         pty.select = self._mock_select
+    1:         self.select_rfds_lengths.append(2)
+    1:         self.select_rfds_results.append([mock_stdin_fd, masters[0]])
+    1:         self.select_rfds_lengths.append(2)
+       
+    1:         with self.assertRaises(IndexError):
+    1:             pty._copy(masters[0])
+       
+               # Test that the right data went to the right places.
+    1:         rfds = select.select([read_from_stdout_fd, masters[1]], [], [], 0)[0]
+    1:         self.assertEqual([read_from_stdout_fd, masters[1]], rfds)
+    1:         self.assertEqual(os.read(read_from_stdout_fd, 20), b'from master')
+    1:         self.assertEqual(os.read(masters[1], 20), b'from stdin')
+       
+    1:     def test__copy_eof_on_all(self):
+               """Test the empty read EOF case on both master_fd and stdin."""
+    1:         read_from_stdout_fd, mock_stdout_fd = self._pipe()
+    1:         pty.STDOUT_FILENO = mock_stdout_fd
+    1:         mock_stdin_fd, write_to_stdin_fd = self._pipe()
+    1:         pty.STDIN_FILENO = mock_stdin_fd
+    1:         socketpair = socket.socketpair()
+    3:         masters = [s.fileno() for s in socketpair]
+    1:         self.fds.extend(masters)
+       
+    1:         os.close(masters[1])
+    1:         socketpair[1].close()
+    1:         os.close(write_to_stdin_fd)
+       
+               # Expect two select calls, the last one will cause IndexError
+    1:         pty.select = self._mock_select
+    1:         self.select_rfds_lengths.append(2)
+    1:         self.select_rfds_results.append([mock_stdin_fd, masters[0]])
+               # We expect that both fds were removed from the fds list as they
+               # both encountered an EOF before the second select call.
+    1:         self.select_rfds_lengths.append(0)
+       
+    1:         with self.assertRaises(IndexError):
+    1:             pty._copy(masters[0])
+       
+       
+    1: def test_main(verbose=None):
+    1:     run_unittest(SmallPtyTests, PtyTest)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

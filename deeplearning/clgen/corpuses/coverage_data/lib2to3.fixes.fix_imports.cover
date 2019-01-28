@@ -1,0 +1,145 @@
+    1: """Fix incompatible imports and module references."""
+       # Authors: Collin Winter, Nick Edds
+       
+       # Local imports
+    1: from .. import fixer_base
+    1: from ..fixer_util import Name, attr_chain
+       
+    1: MAPPING = {'StringIO':  'io',
+    1:            'cStringIO': 'io',
+    1:            'cPickle': 'pickle',
+    1:            '__builtin__' : 'builtins',
+    1:            'copy_reg': 'copyreg',
+    1:            'Queue': 'queue',
+    1:            'SocketServer': 'socketserver',
+    1:            'ConfigParser': 'configparser',
+    1:            'repr': 'reprlib',
+    1:            'FileDialog': 'tkinter.filedialog',
+    1:            'tkFileDialog': 'tkinter.filedialog',
+    1:            'SimpleDialog': 'tkinter.simpledialog',
+    1:            'tkSimpleDialog': 'tkinter.simpledialog',
+    1:            'tkColorChooser': 'tkinter.colorchooser',
+    1:            'tkCommonDialog': 'tkinter.commondialog',
+    1:            'Dialog': 'tkinter.dialog',
+    1:            'Tkdnd': 'tkinter.dnd',
+    1:            'tkFont': 'tkinter.font',
+    1:            'tkMessageBox': 'tkinter.messagebox',
+    1:            'ScrolledText': 'tkinter.scrolledtext',
+    1:            'Tkconstants': 'tkinter.constants',
+    1:            'Tix': 'tkinter.tix',
+    1:            'ttk': 'tkinter.ttk',
+    1:            'Tkinter': 'tkinter',
+    1:            'markupbase': '_markupbase',
+    1:            '_winreg': 'winreg',
+    1:            'thread': '_thread',
+    1:            'dummy_thread': '_dummy_thread',
+                  # anydbm and whichdb are handled by fix_imports2
+    1:            'dbhash': 'dbm.bsd',
+    1:            'dumbdbm': 'dbm.dumb',
+    1:            'dbm': 'dbm.ndbm',
+    1:            'gdbm': 'dbm.gnu',
+    1:            'xmlrpclib': 'xmlrpc.client',
+    1:            'DocXMLRPCServer': 'xmlrpc.server',
+    1:            'SimpleXMLRPCServer': 'xmlrpc.server',
+    1:            'httplib': 'http.client',
+    1:            'htmlentitydefs' : 'html.entities',
+    1:            'HTMLParser' : 'html.parser',
+    1:            'Cookie': 'http.cookies',
+    1:            'cookielib': 'http.cookiejar',
+    1:            'BaseHTTPServer': 'http.server',
+    1:            'SimpleHTTPServer': 'http.server',
+    1:            'CGIHTTPServer': 'http.server',
+                  #'test.test_support': 'test.support',
+    1:            'commands': 'subprocess',
+    1:            'UserString' : 'collections',
+    1:            'UserList' : 'collections',
+    1:            'urlparse' : 'urllib.parse',
+    1:            'robotparser' : 'urllib.robotparser',
+       }
+       
+       
+    1: def alternates(members):
+  138:     return "(" + "|".join(map(repr, members)) + ")"
+       
+       
+    1: def build_pattern(mapping=MAPPING):
+ 1294:     mod_list = ' | '.join(["module_name='%s'" % key for key in mapping])
+   48:     bare_names = alternates(mapping.keys())
+       
+           yield """name_import=import_name< 'import' ((%s) |
+                      multiple_imports=dotted_as_names< any* (%s) any* >) >
+   48:           """ % (mod_list, mod_list)
+           yield """import_from< 'from' (%s) 'import' ['(']
+                     ( any | import_as_name< any 'as' any > |
+                       import_as_names< any* >)  [')'] >
+   48:           """ % mod_list
+           yield """import_name< 'import' (dotted_as_name< (%s) 'as' any > |
+                      multiple_imports=dotted_as_names<
+                        any* dotted_as_name< (%s) 'as' any > any* >) >
+   48:           """ % (mod_list, mod_list)
+       
+           # Find usages of module members in code e.g. thread.foo(bar)
+   48:     yield "power< bare_with_attr=(%s) trailer<'.' any > any* >" % bare_names
+       
+       
+    2: class FixImports(fixer_base.BaseFix):
+       
+    1:     BM_compatible = True
+    1:     keep_line_order = True
+           # This is overridden in fix_imports2.
+    1:     mapping = MAPPING
+       
+           # We want to run this fixer late, so fix_import doesn't try to make stdlib
+           # renames into relative imports.
+    1:     run_order = 6
+       
+    1:     def build_pattern(self):
+   48:         return "|".join(build_pattern(self.mapping))
+       
+    1:     def compile_pattern(self):
+               # We override this, so MAPPING can be pragmatically altered and the
+               # changes will be reflected in PATTERN.
+   63:         self.PATTERN = self.build_pattern()
+   63:         super(FixImports, self).compile_pattern()
+       
+           # Don't match the node if it's within another match.
+    1:     def match(self, node):
+ 5349:         match = super(FixImports, self).match
+ 5349:         results = match(node)
+ 5349:         if results:
+                   # Module usage could be in the trailer of an attribute lookup, so we
+                   # might have nested matches when "bare_with_attr" is present.
+ 1534:             if "bare_with_attr" not in results and \
+ 4460:                     any(match(obj) for obj in attr_chain(node, "parent")):
+>>>>>>                 return False
+ 1534:             return results
+ 3815:         return False
+       
+    1:     def start_tree(self, tree, filename):
+ 1327:         super(FixImports, self).start_tree(tree, filename)
+ 1327:         self.replace = {}
+       
+    1:     def transform(self, node, results):
+  960:         import_mod = results.get("module_name")
+  960:         if import_mod:
+  734:             mod_name = import_mod.value
+  734:             new_name = unicode(self.mapping[mod_name])
+  734:             import_mod.replace(Name(new_name, prefix=import_mod.prefix))
+  734:             if "name_import" in results:
+                       # If it's not a "from x import x, y" or "import x as y" import,
+                       # marked its usage to be replaced.
+  284:                 self.replace[mod_name] = new_name
+  734:             if "multiple_imports" in results:
+                       # This is a nasty hack to fix multiple imports on a line (e.g.,
+                       # "import StringIO, urlparse"). The problem is that I can't
+                       # figure out an easy way to make a pattern recognize the keys of
+                       # MAPPING randomly sprinkled in an import statement.
+   61:                 results = self.match(node)
+   61:                 if results:
+    3:                     self.transform(node, results)
+               else:
+                   # Replace usage of the module.
+  226:             bare_name = results["bare_with_attr"][0]
+  226:             new_name = self.replace.get(bare_name.value)
+  226:             if new_name:
+  170:                 bare_name.replace(Name(new_name, prefix=bare_name.prefix))

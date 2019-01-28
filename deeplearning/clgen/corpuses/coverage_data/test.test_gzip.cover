@@ -1,0 +1,346 @@
+       """Test script for the gzip module.
+    1: """
+       
+    1: import unittest
+    1: from test import test_support
+    1: import os
+    1: import io
+    1: import struct
+    1: gzip = test_support.import_module('gzip')
+       
+       data1 = """  int length=DEFAULTALLOC, err = Z_OK;
+         PyObject *RetVal;
+         int flushmode = Z_FINISH;
+         unsigned long start_total_out;
+       
+    1: """
+       
+       data2 = """/* zlibmodule.c -- gzip-compatible data compression */
+       /* See http://www.gzip.org/zlib/
+       /* See http://www.winimage.com/zLibDll for Windows */
+    1: """
+       
+       
+    2: class TestGzip(unittest.TestCase):
+    1:     filename = test_support.TESTFN
+       
+    1:     def setUp(self):
+   23:         test_support.unlink(self.filename)
+       
+    1:     def tearDown(self):
+   23:         test_support.unlink(self.filename)
+       
+    1:     def write_and_read_back(self, data, mode='b'):
+    1:         b_data = memoryview(data).tobytes()
+    1:         with gzip.GzipFile(self.filename, 'w'+mode) as f:
+    1:             l = f.write(data)
+    1:         self.assertEqual(l, len(b_data))
+    1:         with gzip.GzipFile(self.filename, 'r'+mode) as f:
+    1:             self.assertEqual(f.read(), b_data)
+       
+    1:     @test_support.requires_unicode
+           def test_unicode_filename(self):
+    1:         unicode_filename = test_support.TESTFN_UNICODE
+    1:         try:
+    1:             unicode_filename.encode(test_support.TESTFN_ENCODING)
+>>>>>>         except (UnicodeError, TypeError):
+>>>>>>             self.skipTest("Requires unicode filenames support")
+    1:         self.filename = unicode_filename
+    1:         with gzip.GzipFile(unicode_filename, "wb") as f:
+    1:             f.write(data1 * 50)
+    1:         with gzip.GzipFile(unicode_filename, "rb") as f:
+    1:             self.assertEqual(f.read(), data1 * 50)
+               # Sanity check that we are actually operating on the right file.
+    1:         with open(unicode_filename, 'rb') as fobj, \
+    1:              gzip.GzipFile(fileobj=fobj, mode="rb") as f:
+    1:             self.assertEqual(f.read(), data1 * 50)
+       
+    1:     def test_write(self):
+   11:         with gzip.GzipFile(self.filename, 'wb') as f:
+   11:             f.write(data1 * 50)
+       
+                   # Try flush and fileno.
+   11:             f.flush()
+   11:             f.fileno()
+   11:             if hasattr(os, 'fsync'):
+   11:                 os.fsync(f.fileno())
+   11:             f.close()
+       
+               # Test multiple close() calls.
+   11:         f.close()
+       
+           # The following test_write_xy methods test that write accepts
+           # the corresponding bytes-like object type as input
+           # and that the data written equals bytes(xy) in all cases.
+    1:     def test_write_memoryview(self):
+    1:         self.write_and_read_back(memoryview(data1 * 50))
+       
+    1:     def test_write_incompatible_type(self):
+               # Test that non-bytes-like types raise TypeError.
+               # Issue #21560: attempts to write incompatible types
+               # should not affect the state of the fileobject
+    1:         with gzip.GzipFile(self.filename, 'wb') as f:
+    1:             with self.assertRaises(UnicodeEncodeError):
+    1:                 f.write(u'\xff')
+    1:             with self.assertRaises(TypeError):
+    1:                 f.write([1])
+    1:             f.write(data1)
+    1:         with gzip.GzipFile(self.filename, 'rb') as f:
+    1:             self.assertEqual(f.read(), data1)
+       
+    1:     def test_read(self):
+    1:         self.test_write()
+               # Try reading.
+    1:         with gzip.GzipFile(self.filename, 'r') as f:
+    1:             d = f.read()
+    1:         self.assertEqual(d, data1*50)
+       
+    1:     def test_read_universal_newlines(self):
+               # Issue #5148: Reading breaks when mode contains 'U'.
+    1:         self.test_write()
+    1:         with gzip.GzipFile(self.filename, 'rU') as f:
+    1:             d = f.read()
+    1:         self.assertEqual(d, data1*50)
+       
+    1:     def test_io_on_closed_object(self):
+               # Test that I/O operations on closed GzipFile objects raise a
+               # ValueError, just like the corresponding functions on file objects.
+       
+               # Write to a file, open it for reading, then close it.
+    1:         self.test_write()
+    1:         f = gzip.GzipFile(self.filename, 'r')
+    1:         f.close()
+    1:         with self.assertRaises(ValueError):
+    1:             f.read(1)
+    1:         with self.assertRaises(ValueError):
+    1:             f.seek(0)
+    1:         with self.assertRaises(ValueError):
+    1:             f.tell()
+               # Open the file for writing, then close it.
+    1:         f = gzip.GzipFile(self.filename, 'w')
+    1:         f.close()
+    1:         with self.assertRaises(ValueError):
+    1:             f.write('')
+    1:         with self.assertRaises(ValueError):
+    1:             f.flush()
+       
+    1:     def test_append(self):
+    1:         self.test_write()
+               # Append to the previous file
+    1:         with gzip.GzipFile(self.filename, 'ab') as f:
+    1:             f.write(data2 * 15)
+       
+    1:         with gzip.GzipFile(self.filename, 'rb') as f:
+    1:             d = f.read()
+    1:         self.assertEqual(d, (data1*50) + (data2*15))
+       
+    1:     def test_many_append(self):
+               # Bug #1074261 was triggered when reading a file that contained
+               # many, many members.  Create such a file and verify that reading it
+               # works.
+    1:         with gzip.open(self.filename, 'wb', 9) as f:
+    1:             f.write('a')
+  201:         for i in range(0, 200):
+  200:             with gzip.open(self.filename, "ab", 9) as f: # append
+  200:                 f.write('a')
+       
+               # Try reading the file
+    1:         with gzip.open(self.filename, "rb") as zgfile:
+    1:             contents = ""
+    1:             while 1:
+    2:                 ztxt = zgfile.read(8192)
+    2:                 contents += ztxt
+    2:                 if not ztxt: break
+    1:         self.assertEqual(contents, 'a'*201)
+       
+    1:     def test_buffered_reader(self):
+               # Issue #7471: a GzipFile can be wrapped in a BufferedReader for
+               # performance.
+    1:         self.test_write()
+       
+    1:         with gzip.GzipFile(self.filename, 'rb') as f:
+    1:             with io.BufferedReader(f) as r:
+  251:                 lines = [line for line in r]
+       
+    1:         self.assertEqual(lines, 50 * data1.splitlines(True))
+       
+    1:     def test_readline(self):
+    1:         self.test_write()
+               # Try .readline() with varying line lengths
+       
+    1:         with gzip.GzipFile(self.filename, 'rb') as f:
+    1:             line_length = 0
+    1:             while 1:
+  428:                 L = f.readline(line_length)
+  428:                 if not L and line_length != 0: break
+  427:                 self.assertTrue(len(L) <= line_length)
+  427:                 line_length = (line_length + 1) % 50
+       
+    1:     def test_readlines(self):
+    1:         self.test_write()
+               # Try .readlines()
+       
+    1:         with gzip.GzipFile(self.filename, 'rb') as f:
+    1:             L = f.readlines()
+       
+    1:         with gzip.GzipFile(self.filename, 'rb') as f:
+    1:             while 1:
+   39:                 L = f.readlines(150)
+   39:                 if L == []: break
+       
+    1:     def test_seek_read(self):
+    1:         self.test_write()
+               # Try seek, read test
+       
+    1:         with gzip.GzipFile(self.filename) as f:
+    1:             while 1:
+  251:                 oldpos = f.tell()
+  251:                 line1 = f.readline()
+  251:                 if not line1: break
+  250:                 newpos = f.tell()
+  250:                 f.seek(oldpos)  # negative seek
+  250:                 if len(line1)>10:
+  200:                     amount = 10
+                       else:
+   50:                     amount = len(line1)
+  250:                 line2 = f.read(amount)
+  250:                 self.assertEqual(line1[:amount], line2)
+  250:                 f.seek(newpos)  # positive seek
+       
+    1:     def test_seek_whence(self):
+    1:         self.test_write()
+               # Try seek(whence=1), read test
+       
+    1:         with gzip.GzipFile(self.filename) as f:
+    1:             f.read(10)
+    1:             f.seek(10, whence=1)
+    1:             y = f.read(10)
+    1:         self.assertEqual(y, data1[20:30])
+       
+    1:     def test_seek_write(self):
+               # Try seek, write test
+    1:         with gzip.GzipFile(self.filename, 'w') as f:
+   17:             for pos in range(0, 256, 16):
+   16:                 f.seek(pos)
+   16:                 f.write('GZ\n')
+       
+    1:     def test_mode(self):
+    1:         self.test_write()
+    1:         with gzip.GzipFile(self.filename, 'r') as f:
+    1:             self.assertEqual(f.myfileobj.mode, 'rb')
+       
+    1:     def test_1647484(self):
+    3:         for mode in ('wb', 'rb'):
+    2:             with gzip.GzipFile(self.filename, mode) as f:
+    2:                 self.assertTrue(hasattr(f, "name"))
+    2:                 self.assertEqual(f.name, self.filename)
+       
+    1:     def test_mtime(self):
+    1:         mtime = 123456789
+    1:         with gzip.GzipFile(self.filename, 'w', mtime = mtime) as fWrite:
+    1:             fWrite.write(data1)
+    1:         with gzip.GzipFile(self.filename) as fRead:
+    1:             dataRead = fRead.read()
+    1:             self.assertEqual(dataRead, data1)
+    1:             self.assertTrue(hasattr(fRead, 'mtime'))
+    1:             self.assertEqual(fRead.mtime, mtime)
+       
+    1:     def test_metadata(self):
+    1:         mtime = 123456789
+       
+    1:         with gzip.GzipFile(self.filename, 'w', mtime = mtime) as fWrite:
+    1:             fWrite.write(data1)
+       
+    1:         with open(self.filename, 'rb') as fRead:
+                   # see RFC 1952: http://www.faqs.org/rfcs/rfc1952.html
+       
+    1:             idBytes = fRead.read(2)
+    1:             self.assertEqual(idBytes, '\x1f\x8b') # gzip ID
+       
+    1:             cmByte = fRead.read(1)
+    1:             self.assertEqual(cmByte, '\x08') # deflate
+       
+    1:             flagsByte = fRead.read(1)
+    1:             self.assertEqual(flagsByte, '\x08') # only the FNAME flag is set
+       
+    1:             mtimeBytes = fRead.read(4)
+    1:             self.assertEqual(mtimeBytes, struct.pack('<i', mtime)) # little-endian
+       
+    1:             xflByte = fRead.read(1)
+    1:             self.assertEqual(xflByte, '\x02') # maximum compression
+       
+    1:             osByte = fRead.read(1)
+    1:             self.assertEqual(osByte, '\xff') # OS "unknown" (OS-independent)
+       
+                   # Since the FNAME flag is set, the zero-terminated filename follows.
+                   # RFC 1952 specifies that this is the name of the input file, if any.
+                   # However, the gzip module defaults to storing the name of the output
+                   # file in this field.
+    1:             expected = self.filename.encode('Latin-1') + '\x00'
+    1:             nameBytes = fRead.read(len(expected))
+    1:             self.assertEqual(nameBytes, expected)
+       
+                   # Since no other flags were set, the header ends here.
+                   # Rather than process the compressed data, let's seek to the trailer.
+    1:             fRead.seek(os.stat(self.filename).st_size - 8)
+       
+    1:             crc32Bytes = fRead.read(4) # CRC32 of uncompressed data [data1]
+    1:             self.assertEqual(crc32Bytes, '\xaf\xd7d\x83')
+       
+    1:             isizeBytes = fRead.read(4)
+    1:             self.assertEqual(isizeBytes, struct.pack('<i', len(data1)))
+       
+    1:     def test_with_open(self):
+               # GzipFile supports the context management protocol
+    1:         with gzip.GzipFile(self.filename, "wb") as f:
+    1:             f.write(b"xxx")
+    1:         f = gzip.GzipFile(self.filename, "rb")
+    1:         f.close()
+    1:         try:
+    1:             with f:
+>>>>>>                 pass
+    1:         except ValueError:
+    1:             pass
+               else:
+>>>>>>             self.fail("__enter__ on a closed file didn't raise an exception")
+    1:         try:
+    1:             with gzip.GzipFile(self.filename, "wb") as f:
+    1:                 1 // 0
+    1:         except ZeroDivisionError:
+    1:             pass
+               else:
+>>>>>>             self.fail("1 // 0 didn't raise an exception")
+       
+    1:     def test_zero_padded_file(self):
+    1:         with gzip.GzipFile(self.filename, "wb") as f:
+    1:             f.write(data1 * 50)
+       
+               # Pad the file with zeroes
+    1:         with open(self.filename, "ab") as f:
+    1:             f.write("\x00" * 50)
+       
+    1:         with gzip.GzipFile(self.filename, "rb") as f:
+    1:             d = f.read()
+    1:             self.assertEqual(d, data1 * 50, "Incorrect data in file")
+       
+    1:     def test_fileobj_from_fdopen(self):
+               # Issue #13781: Creating a GzipFile using a fileobj from os.fdopen()
+               # should not embed the fake filename "<fdopen>" in the output file.
+    1:         fd = os.open(self.filename, os.O_WRONLY | os.O_CREAT)
+    1:         with os.fdopen(fd, "wb") as f:
+    1:             with gzip.GzipFile(fileobj=f, mode="w") as g:
+    1:                 self.assertEqual(g.name, "")
+       
+    1:     def test_read_with_extra(self):
+               # Gzip data with an extra field
+    1:         gzdata = (b'\x1f\x8b\x08\x04\xb2\x17cQ\x02\xff'
+                         b'\x05\x00Extra'
+                         b'\x0bI-.\x01\x002\xd1Mx\x04\x00\x00\x00')
+    1:         with gzip.GzipFile(fileobj=io.BytesIO(gzdata)) as f:
+    1:             self.assertEqual(f.read(), b'Test')
+       
+    1: def test_main(verbose=None):
+    1:     test_support.run_unittest(TestGzip)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main(verbose=True)

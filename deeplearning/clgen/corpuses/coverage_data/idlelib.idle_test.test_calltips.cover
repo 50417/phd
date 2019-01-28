@@ -1,0 +1,185 @@
+    1: import unittest
+    1: import idlelib.CallTips as ct
+    1: CTi = ct.CallTips()  # needed for get_entity test in 2.7
+    1: import textwrap
+    1: import types
+    1: import warnings
+       
+    1: default_tip = ''
+       
+       # Test Class TC is used in multiple get_argspec test methods
+    2: class TC(object):
+    1:     'doc'
+    1:     tip = "(ai=None, *args)"
+    2:     def __init__(self, ai=None, *b): 'doc'
+    1:     __init__.tip = "(self, ai=None, *args)"
+    1:     def t1(self): 'doc'
+    1:     t1.tip = "(self)"
+    1:     def t2(self, ai, b=None): 'doc'
+    1:     t2.tip = "(self, ai, b=None)"
+    1:     def t3(self, ai, *args): 'doc'
+    1:     t3.tip = "(self, ai, *args)"
+    1:     def t4(self, *args): 'doc'
+    1:     t4.tip = "(self, *args)"
+    1:     def t5(self, ai, b=None, *args, **kw): 'doc'
+    1:     t5.tip = "(self, ai, b=None, *args, **kwargs)"
+    1:     def t6(no, self): 'doc'
+    1:     t6.tip = "(no, self)"
+    1:     def __call__(self, ci): 'doc'
+    1:     __call__.tip = "(self, ci)"
+           # attaching .tip to wrapped methods does not work
+    1:     @classmethod
+           def cm(cls, a): 'doc'
+    1:     @staticmethod
+           def sm(b): 'doc'
+       
+    1: tc = TC()
+       
+    1: signature = ct.get_arg_text  # 2.7 and 3.x use different functions
+    2: class Get_signatureTest(unittest.TestCase):
+           # The signature function must return a string, even if blank.
+           # Test a variety of objects to be sure that none cause it to raise
+           # (quite aside from getting as correct an answer as possible).
+           # The tests of builtins may break if the docstrings change,
+           # but a red buildbot is better than a user crash (as has happened).
+           # For a simple mismatch, change the expected output to the actual.
+       
+    1:     def test_builtins(self):
+               # 2.7 puts '()\n' where 3.x does not, other minor differences
+       
+               # Python class that inherits builtin methods
+    2:         class List(list): "List() doc"
+               # Simulate builtin with no docstring for default argspec test
+    2:         class SB:  __call__ = None
+       
+    1:         def gtest(obj, out):
+    8:             self.assertEqual(signature(obj), out)
+       
+    1:         if List.__doc__ is not None:
+    1:             gtest(List, '()\n' + List.__doc__)
+    1:         gtest(list.__new__,
+    1:                'T.__new__(S, ...) -> a new object with type S, a subtype of T')
+    1:         gtest(list.__init__,
+    1:                'x.__init__(...) initializes x; see help(type(x)) for signature')
+    1:         append_doc =  "L.append(object) -- append object to end"
+    1:         gtest(list.append, append_doc)
+    1:         gtest([].append, append_doc)
+    1:         gtest(List.append, append_doc)
+       
+    1:         gtest(types.MethodType, '()\ninstancemethod(function, instance, class)')
+    1:         gtest(SB(), default_tip)
+       
+    1:     def test_signature_wrap(self):
+               # This is also a test of an old-style class
+    1:         if textwrap.TextWrapper.__doc__ is not None:
+    1:             self.assertEqual(signature(textwrap.TextWrapper), '''\
+       (width=70, initial_indent='', subsequent_indent='', expand_tabs=True,
+           replace_whitespace=True, fix_sentence_endings=False, break_long_words=True,
+    1:     drop_whitespace=True, break_on_hyphens=True)''')
+       
+    1:     def test_docline_truncation(self):
+    1:         def f(): pass
+    1:         f.__doc__ = 'a'*300
+    1:         self.assertEqual(signature(f), '()\n' + 'a' * (ct._MAX_COLS-3) + '...')
+       
+    1:     def test_multiline_docstring(self):
+               # Test fewer lines than max.
+    1:         self.assertEqual(signature(list),
+    1:                 "()\nlist() -> new empty list\n"
+                       "list(iterable) -> new list initialized from iterable's items")
+       
+               # Test max lines and line (currently) too long.
+    1:         def f():
+>>>>>>             pass
+    1:         s = 'a\nb\nc\nd\n'
+    1:         f.__doc__ = s + 300 * 'e' + 'f'
+    1:         self.assertEqual(signature(f),
+    1:                          '()\n' + s + (ct._MAX_COLS - 3) * 'e' + '...')
+       
+    1:     def test_functions(self):
+    1:         def t1(): 'doc'
+    1:         t1.tip = "()"
+    1:         def t2(a, b=None): 'doc'
+    1:         t2.tip = "(a, b=None)"
+    1:         def t3(a, *args): 'doc'
+    1:         t3.tip = "(a, *args)"
+    1:         def t4(*args): 'doc'
+    1:         t4.tip = "(*args)"
+    1:         def t5(a, b=None, *args, **kwds): 'doc'
+    1:         t5.tip = "(a, b=None, *args, **kwargs)"
+       
+    1:         doc = '\ndoc' if t1.__doc__ is not None else ''
+    7:         for func in (t1, t2, t3, t4, t5, TC):
+    6:             self.assertEqual(signature(func), func.tip + doc)
+       
+    1:     def test_methods(self):
+    1:         doc = '\ndoc' if TC.__doc__ is not None else ''
+    8:         for meth in (TC.t1, TC.t2, TC.t3, TC.t4, TC.t5, TC.t6, TC.__call__):
+    7:             self.assertEqual(signature(meth), meth.tip + doc)
+    1:         self.assertEqual(signature(TC.cm), "(a)" + doc)
+    1:         self.assertEqual(signature(TC.sm), "(b)" + doc)
+       
+    1:     def test_bound_methods(self):
+               # test that first parameter is correctly removed from argspec
+    1:         doc = '\ndoc' if TC.__doc__ is not None else ''
+    1:         for meth, mtip  in ((tc.t1, "()"), (tc.t4, "(*args)"), (tc.t6, "(self)"),
+    7:                             (tc.__call__, '(ci)'), (tc, '(ci)'), (TC.cm, "(a)"),):
+    6:             self.assertEqual(signature(meth), mtip + doc)
+       
+    1:     def test_starred_parameter(self):
+               # test that starred first parameter is *not* removed from argspec
+    2:         class C:
+    1:             def m1(*args): pass
+    1:             def m2(**kwds): pass
+    1:         def f1(args, kwargs, *a, **k): pass
+    1:         def f2(args, kwargs, args1, kwargs1, *a, **k): pass
+    1:         c = C()
+    1:         self.assertEqual(signature(C.m1), '(*args)')
+    1:         self.assertEqual(signature(c.m1), '(*args)')
+    1:         self.assertEqual(signature(C.m2), '(**kwargs)')
+    1:         self.assertEqual(signature(c.m2), '(**kwargs)')
+    1:         self.assertEqual(signature(f1), '(args, kwargs, *args1, **kwargs1)')
+    1:         self.assertEqual(signature(f2),
+    1:                          '(args, kwargs, args1, kwargs1, *args2, **kwargs2)')
+       
+    1:     def test_no_docstring(self):
+    1:         def nd(s): pass
+    1:         TC.nd = nd
+    1:         self.assertEqual(signature(nd), "(s)")
+    1:         self.assertEqual(signature(TC.nd), "(s)")
+    1:         self.assertEqual(signature(tc.nd), "()")
+       
+    1:     def test_attribute_exception(self):
+    2:         class NoCall(object):
+    1:             def __getattr__(self, name):
+    1:                 raise BaseException
+    2:         class Call(NoCall):
+    1:             def __call__(self, ci):
+>>>>>>                 pass
+    1:         for meth, mtip  in ((NoCall, '()'), (Call, '()'),
+    5:                             (NoCall(), ''), (Call(), '(ci)')):
+    4:             self.assertEqual(signature(meth), mtip)
+       
+    1:     def test_non_callables(self):
+    7:         for obj in (0, 0.0, '0', b'0', [], {}):
+    6:             self.assertEqual(signature(obj), '')
+       
+    2: class Get_entityTest(unittest.TestCase):
+           # In 3.x, get_entity changed from 'instance method' to module function
+           # since 'self' not used. Use dummy instance until change 2.7 also.
+    1:     def test_bad_entity(self):
+    1:         self.assertIsNone(CTi.get_entity('1//0'))
+    1:     def test_good_entity(self):
+    1:         self.assertIs(CTi.get_entity('int'), int)
+       
+    2: class Py2Test(unittest.TestCase):
+    1:     def test_paramtuple_float(self):
+               # 18539: (a,b) becomes '.0' in code object; change that but not 0.0
+    1:         with warnings.catch_warnings():
+                   # Suppess message of py3 deprecation of parameter unpacking
+    1:             warnings.simplefilter("ignore")
+    1:             exec "def f((a,b), c=0.0): pass"
+    1:         self.assertEqual(signature(f), '(<tuple>, c=0.0)')
+       
+    1: if __name__ == '__main__':
+>>>>>>     unittest.main(verbosity=2, exit=False)

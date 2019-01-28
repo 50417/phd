@@ -1,0 +1,99 @@
+       """Fixer for import statements.
+       If spam is being imported from the local directory, this import:
+           from spam import eggs
+       Becomes:
+           from .spam import eggs
+       
+       And this import:
+           import spam
+       Becomes:
+           from . import spam
+    1: """
+       
+       # Local imports
+    1: from .. import fixer_base
+    1: from os.path import dirname, join, exists, sep
+    1: from ..fixer_util import FromImport, syms, token
+       
+       
+    1: def traverse_imports(names):
+           """
+           Walks over all the names imported in a dotted_as_names node.
+           """
+   34:     pending = [names]
+  106:     while pending:
+   72:         node = pending.pop()
+   72:         if node.type == token.NAME:
+   45:             yield node.value
+   27:         elif node.type == syms.dotted_name:
+   24:             yield "".join([ch.value for ch in node.children])
+   21:         elif node.type == syms.dotted_as_name:
+   10:             pending.append(node.children[0])
+   11:         elif node.type == syms.dotted_as_names:
+   11:             pending.extend(node.children[::-2])
+               else:
+>>>>>>             raise AssertionError("unknown node type")
+       
+       
+    2: class FixImport(fixer_base.BaseFix):
+    1:     BM_compatible = True
+       
+           PATTERN = """
+           import_from< 'from' imp=any 'import' ['('] any [')'] >
+           |
+           import_name< 'import' imp=any >
+    1:     """
+       
+    1:     def start_tree(self, tree, name):
+   53:         super(FixImport, self).start_tree(tree, name)
+   53:         self.skip = "absolute_import" in tree.future_features
+       
+    1:     def transform(self, node, results):
+   55:         if self.skip:
+    2:             return
+   53:         imp = results['imp']
+       
+   53:         if node.type == syms.import_from:
+                   # Some imps are top-level (eg: 'import ham')
+                   # some are first level (eg: 'import ham.eggs')
+                   # some are third level (eg: 'import ham.eggs as spam')
+                   # Hence, the loop
+   24:             while not hasattr(imp, 'value'):
+    5:                 imp = imp.children[0]
+   19:             if self.probably_a_local_import(imp.value):
+    5:                 imp.value = u"." + imp.value
+    5:                 imp.changed()
+               else:
+   34:             have_local = False
+   34:             have_absolute = False
+   85:             for mod_name in traverse_imports(imp):
+   51:                 if self.probably_a_local_import(mod_name):
+   20:                     have_local = True
+                       else:
+   31:                     have_absolute = True
+   34:             if have_absolute:
+   22:                 if have_local:
+                           # We won't handle both sibling and absolute imports in the
+                           # same statement at the moment.
+    1:                     self.warning(node, "absolute and local imports together")
+   22:                 return
+       
+   12:             new = FromImport(u".", [imp])
+   12:             new.prefix = node.prefix
+   12:             return new
+       
+    1:     def probably_a_local_import(self, imp_name):
+   70:         if imp_name.startswith(u"."):
+                   # Relative imports are certainly not local imports.
+    1:             return False
+   69:         imp_name = imp_name.split(u".", 1)[0]
+   69:         base_path = dirname(self.filename)
+   69:         base_path = join(base_path, imp_name)
+               # If there is no __init__.py next to the file its not in a package
+               # so can't be a relative import.
+   69:         if not exists(join(dirname(base_path), "__init__.py")):
+   22:             return False
+  180:         for ext in [".py", sep, ".pyc", ".so", ".sl", ".pyd"]:
+  158:             if exists(base_path + ext):
+   25:                 return True
+   22:         return False

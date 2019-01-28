@@ -1,0 +1,449 @@
+       """
+       SAX driver for the pyexpat C module.  This driver works with
+       pyexpat.__version__ == '2.22'.
+    2: """
+       
+    2: version = "0.20"
+       
+    2: from xml.sax._exceptions import *
+    2: from xml.sax.handler import feature_validation, feature_namespaces
+    2: from xml.sax.handler import feature_namespace_prefixes
+    2: from xml.sax.handler import feature_external_ges, feature_external_pes
+    2: from xml.sax.handler import feature_string_interning
+    2: from xml.sax.handler import property_xml_string, property_interning_dict
+       
+       # xml.parsers.expat does not raise ImportError in Jython
+    2: import sys
+    2: if sys.platform[:4] == "java":
+>>>>>>     raise SAXReaderNotAvailable("expat not available in Java", None)
+    2: del sys
+       
+    2: try:
+    2:     from xml.parsers import expat
+>>>>>> except ImportError:
+>>>>>>     raise SAXReaderNotAvailable("expat not supported", None)
+       else:
+    2:     if not hasattr(expat, "ParserCreate"):
+>>>>>>         raise SAXReaderNotAvailable("expat not supported", None)
+    2: from xml.sax import xmlreader, saxutils, handler
+       
+    2: AttributesImpl = xmlreader.AttributesImpl
+    2: AttributesNSImpl = xmlreader.AttributesNSImpl
+       
+       # If we're using a sufficiently recent version of Python, we can use
+       # weak references to avoid cycles between the parser and content
+       # handler, otherwise we'll just have to pretend.
+    2: try:
+    2:     import _weakref
+>>>>>> except ImportError:
+>>>>>>     def _mkproxy(o):
+>>>>>>         return o
+       else:
+    2:     import weakref
+    2:     _mkproxy = weakref.proxy
+    2:     del weakref, _weakref
+       
+    4: class _ClosedParser:
+    2:     pass
+       
+       # --- ExpatLocator
+       
+    4: class ExpatLocator(xmlreader.Locator):
+           """Locator for use with the ExpatParser class.
+       
+           This uses a weak reference to the parser object to avoid creating
+           a circular reference between the parser and the content handler.
+    2:     """
+    2:     def __init__(self, parser):
+   72:         self._ref = _mkproxy(parser)
+       
+    2:     def getColumnNumber(self):
+>>>>>>         parser = self._ref
+>>>>>>         if parser._parser is None:
+>>>>>>             return None
+>>>>>>         return parser._parser.ErrorColumnNumber
+       
+    2:     def getLineNumber(self):
+>>>>>>         parser = self._ref
+>>>>>>         if parser._parser is None:
+>>>>>>             return 1
+>>>>>>         return parser._parser.ErrorLineNumber
+       
+    2:     def getPublicId(self):
+>>>>>>         parser = self._ref
+>>>>>>         if parser is None:
+>>>>>>             return None
+>>>>>>         return parser._source.getPublicId()
+       
+    2:     def getSystemId(self):
+>>>>>>         parser = self._ref
+>>>>>>         if parser is None:
+>>>>>>             return None
+>>>>>>         return parser._source.getSystemId()
+       
+       
+       # --- ExpatParser
+       
+    4: class ExpatParser(xmlreader.IncrementalParser, xmlreader.Locator):
+    2:     """SAX driver for the pyexpat C module."""
+       
+    2:     def __init__(self, namespaceHandling=0, bufsize=2**16-20):
+   89:         xmlreader.IncrementalParser.__init__(self, bufsize)
+   89:         self._source = xmlreader.InputSource()
+   89:         self._parser = None
+   89:         self._namespaces = namespaceHandling
+   89:         self._lex_handler_prop = None
+   89:         self._parsing = 0
+   89:         self._entity_stack = []
+   89:         self._external_ges = 1
+   89:         self._interning = None
+       
+           # XMLReader methods
+       
+    2:     def parse(self, source):
+               "Parse an XML document from a URL or an InputSource."
+   72:         source = saxutils.prepare_input_source(source)
+       
+   72:         self._source = source
+   72:         try:
+   72:             self.reset()
+   72:             self._cont_handler.setDocumentLocator(ExpatLocator(self))
+   72:             xmlreader.IncrementalParser.parse(self, source)
+    8:         except:
+                   # bpo-30264: Close the source on error to not leak resources:
+                   # xml.sax.parse() doesn't give access to the underlying parser
+                   # to the caller
+    8:             self._close_source()
+    8:             raise
+       
+    2:     def prepareParser(self, source):
+   73:         if source.getSystemId() is not None:
+   37:             base = source.getSystemId()
+   37:             if isinstance(base, unicode):
+    3:                 base = base.encode('utf-8')
+   37:             self._parser.SetBase(base)
+       
+           # Redefined setContentHandler to allow changing handlers during parsing
+       
+    2:     def setContentHandler(self, handler):
+   80:         xmlreader.IncrementalParser.setContentHandler(self, handler)
+   80:         if self._parsing:
+    1:             self._reset_cont_handler()
+       
+    2:     def getFeature(self, name):
+>>>>>>         if name == feature_namespaces:
+>>>>>>             return self._namespaces
+>>>>>>         elif name == feature_string_interning:
+>>>>>>             return self._interning is not None
+>>>>>>         elif name in (feature_validation, feature_external_pes,
+>>>>>>                       feature_namespace_prefixes):
+>>>>>>             return 0
+>>>>>>         elif name == feature_external_ges:
+>>>>>>             return self._external_ges
+>>>>>>         raise SAXNotRecognizedException("Feature '%s' not recognized" % name)
+       
+    2:     def setFeature(self, name, state):
+    3:         if self._parsing:
+>>>>>>             raise SAXNotSupportedException("Cannot set features while parsing")
+       
+    3:         if name == feature_namespaces:
+    3:             self._namespaces = state
+>>>>>>         elif name == feature_external_ges:
+>>>>>>             self._external_ges = state
+>>>>>>         elif name == feature_string_interning:
+>>>>>>             if state:
+>>>>>>                 if self._interning is None:
+>>>>>>                     self._interning = {}
+                   else:
+>>>>>>                 self._interning = None
+>>>>>>         elif name == feature_validation:
+>>>>>>             if state:
+>>>>>>                 raise SAXNotSupportedException(
+>>>>>>                     "expat does not support validation")
+>>>>>>         elif name == feature_external_pes:
+>>>>>>             if state:
+>>>>>>                 raise SAXNotSupportedException(
+>>>>>>                     "expat does not read external parameter entities")
+>>>>>>         elif name == feature_namespace_prefixes:
+>>>>>>             if state:
+>>>>>>                 raise SAXNotSupportedException(
+>>>>>>                     "expat does not report namespace prefixes")
+               else:
+>>>>>>             raise SAXNotRecognizedException(
+>>>>>>                 "Feature '%s' not recognized" % name)
+       
+    2:     def getProperty(self, name):
+>>>>>>         if name == handler.property_lexical_handler:
+>>>>>>             return self._lex_handler_prop
+>>>>>>         elif name == property_interning_dict:
+>>>>>>             return self._interning
+>>>>>>         elif name == property_xml_string:
+>>>>>>             if self._parser:
+>>>>>>                 if hasattr(self._parser, "GetInputContext"):
+>>>>>>                     return self._parser.GetInputContext()
+                       else:
+>>>>>>                     raise SAXNotRecognizedException(
+>>>>>>                         "This version of expat does not support getting"
+                               " the XML string")
+                   else:
+>>>>>>                 raise SAXNotSupportedException(
+>>>>>>                     "XML string cannot be returned when not parsing")
+>>>>>>         raise SAXNotRecognizedException("Property '%s' not recognized" % name)
+       
+    2:     def setProperty(self, name, value):
+>>>>>>         if name == handler.property_lexical_handler:
+>>>>>>             self._lex_handler_prop = value
+>>>>>>             if self._parsing:
+>>>>>>                 self._reset_lex_handler_prop()
+>>>>>>         elif name == property_interning_dict:
+>>>>>>             self._interning = value
+>>>>>>         elif name == property_xml_string:
+>>>>>>             raise SAXNotSupportedException("Property '%s' cannot be set" %
+>>>>>>                                            name)
+               else:
+>>>>>>             raise SAXNotRecognizedException("Property '%s' not recognized" %
+>>>>>>                                             name)
+       
+           # IncrementalParser methods
+       
+    2:     def feed(self, data, isFinal = 0):
+  170:         if not self._parsing:
+   82:             self.reset()
+   82:             self._parsing = 1
+   82:             self._cont_handler.startDocument()
+       
+  170:         try:
+                   # The isFinal parameter is internal to the expat reader.
+                   # If it is set to true, expat will check validity of the entire
+                   # document. When feeding chunks, they are not normally final -
+                   # except when invoked from close.
+  170:             self._parser.Parse(data, isFinal)
+    8:         except expat.error, e:
+    8:             exc = SAXParseException(expat.ErrorString(e.code), e, self)
+                   # FIXME: when to invoke error()?
+    8:             self._err_handler.fatalError(exc)
+       
+    2:     def _close_source(self):
+   83:         source = self._source
+   83:         try:
+   83:             file = source.getCharacterStream()
+   83:             if file is not None:
+>>>>>>                 file.close()
+               finally:
+   83:             file = source.getByteStream()
+   83:             if file is not None:
+   74:                 file.close()
+       
+    2:     def close(self):
+   76:         if (self._entity_stack or self._parser is None or
+   75:             isinstance(self._parser, _ClosedParser)):
+                   # If we are completing an external entity, do nothing here
+    1:             return
+   75:         try:
+   75:             self.feed("", isFinal = 1)
+   73:             self._cont_handler.endDocument()
+   73:             self._parsing = 0
+                   # break cycle created by expat handlers pointing to our methods
+   73:             self._parser = None
+               finally:
+   75:             self._parsing = 0
+   75:             if self._parser is not None:
+                       # Keep ErrorColumnNumber and ErrorLineNumber after closing.
+    2:                 parser = _ClosedParser()
+    2:                 parser.ErrorColumnNumber = self._parser.ErrorColumnNumber
+    2:                 parser.ErrorLineNumber = self._parser.ErrorLineNumber
+    2:                 self._parser = parser
+   75:             self._close_source()
+       
+    2:     def _reset_cont_handler(self):
+               self._parser.ProcessingInstructionHandler = \
+  156:                                     self._cont_handler.processingInstruction
+  156:         self._parser.CharacterDataHandler = self._cont_handler.characters
+       
+    2:     def _reset_lex_handler_prop(self):
+>>>>>>         lex = self._lex_handler_prop
+>>>>>>         parser = self._parser
+>>>>>>         if lex is None:
+>>>>>>             parser.CommentHandler = None
+>>>>>>             parser.StartCdataSectionHandler = None
+>>>>>>             parser.EndCdataSectionHandler = None
+>>>>>>             parser.StartDoctypeDeclHandler = None
+>>>>>>             parser.EndDoctypeDeclHandler = None
+               else:
+>>>>>>             parser.CommentHandler = lex.comment
+>>>>>>             parser.StartCdataSectionHandler = lex.startCDATA
+>>>>>>             parser.EndCdataSectionHandler = lex.endCDATA
+>>>>>>             parser.StartDoctypeDeclHandler = self.start_doctype_decl
+>>>>>>             parser.EndDoctypeDeclHandler = lex.endDTD
+       
+    2:     def reset(self):
+  155:         if self._namespaces:
+    8:             self._parser = expat.ParserCreate(self._source.getEncoding(), " ",
+    8:                                               intern=self._interning)
+    8:             self._parser.namespace_prefixes = 1
+    8:             self._parser.StartElementHandler = self.start_element_ns
+    8:             self._parser.EndElementHandler = self.end_element_ns
+               else:
+  147:             self._parser = expat.ParserCreate(self._source.getEncoding(),
+  147:                                               intern = self._interning)
+  147:             self._parser.StartElementHandler = self.start_element
+  147:             self._parser.EndElementHandler = self.end_element
+       
+  155:         self._reset_cont_handler()
+  155:         self._parser.UnparsedEntityDeclHandler = self.unparsed_entity_decl
+  155:         self._parser.NotationDeclHandler = self.notation_decl
+  155:         self._parser.StartNamespaceDeclHandler = self.start_namespace_decl
+  155:         self._parser.EndNamespaceDeclHandler = self.end_namespace_decl
+       
+  155:         self._decl_handler_prop = None
+  155:         if self._lex_handler_prop:
+>>>>>>             self._reset_lex_handler_prop()
+       #         self._parser.DefaultHandler =
+       #         self._parser.DefaultHandlerExpand =
+       #         self._parser.NotStandaloneHandler =
+  155:         self._parser.ExternalEntityRefHandler = self.external_entity_ref
+  155:         try:
+  155:             self._parser.SkippedEntityHandler = self.skipped_entity_handler
+>>>>>>         except AttributeError:
+                   # This pyexpat does not support SkippedEntity
+>>>>>>             pass
+  155:         self._parser.SetParamEntityParsing(
+  155:             expat.XML_PARAM_ENTITY_PARSING_UNLESS_STANDALONE)
+       
+  155:         self._parsing = 0
+  155:         self._entity_stack = []
+       
+           # Locator methods
+       
+    2:     def getColumnNumber(self):
+    9:         if self._parser is None:
+>>>>>>             return None
+    9:         return self._parser.ErrorColumnNumber
+       
+    2:     def getLineNumber(self):
+   10:         if self._parser is None:
+    1:             return 1
+    9:         return self._parser.ErrorLineNumber
+       
+    2:     def getPublicId(self):
+    3:         return self._source.getPublicId()
+       
+    2:     def getSystemId(self):
+   11:         return self._source.getSystemId()
+       
+           # event handlers
+    2:     def start_element(self, name, attrs):
+  391:         self._cont_handler.startElement(name, AttributesImpl(attrs))
+       
+    2:     def end_element(self, name):
+  389:         self._cont_handler.endElement(name)
+       
+    2:     def start_element_ns(self, name, attrs):
+    8:         pair = name.split()
+    8:         if len(pair) == 1:
+                   # no namespace
+    2:             pair = (None, name)
+    6:         elif len(pair) == 3:
+    6:             pair = pair[0], pair[1]
+               else:
+                   # default namespace
+>>>>>>             pair = tuple(pair)
+       
+    8:         newattrs = {}
+    8:         qnames = {}
+   12:         for (aname, value) in attrs.items():
+    4:             parts = aname.split()
+    4:             length = len(parts)
+    4:             if length == 1:
+                       # no namespace
+>>>>>>                 qname = aname
+>>>>>>                 apair = (None, aname)
+    4:             elif length == 3:
+    4:                 qname = "%s:%s" % (parts[2], parts[1])
+    4:                 apair = parts[0], parts[1]
+                   else:
+                       # default namespace
+>>>>>>                 qname = parts[1]
+>>>>>>                 apair = tuple(parts)
+       
+    4:             newattrs[apair] = value
+    4:             qnames[apair] = qname
+       
+    8:         self._cont_handler.startElementNS(pair, None,
+    8:                                           AttributesNSImpl(newattrs, qnames))
+       
+    2:     def end_element_ns(self, name):
+    8:         pair = name.split()
+    8:         if len(pair) == 1:
+    2:             pair = (None, name)
+    6:         elif len(pair) == 3:
+    6:             pair = pair[0], pair[1]
+               else:
+>>>>>>             pair = tuple(pair)
+       
+    8:         self._cont_handler.endElementNS(pair, None)
+       
+           # this is not used (call directly to ContentHandler)
+    2:     def processing_instruction(self, target, data):
+>>>>>>         self._cont_handler.processingInstruction(target, data)
+       
+           # this is not used (call directly to ContentHandler)
+    2:     def character_data(self, data):
+>>>>>>         self._cont_handler.characters(data)
+       
+    2:     def start_namespace_decl(self, prefix, uri):
+    4:         self._cont_handler.startPrefixMapping(prefix, uri)
+       
+    2:     def end_namespace_decl(self, prefix):
+    4:         self._cont_handler.endPrefixMapping(prefix)
+       
+    2:     def start_doctype_decl(self, name, sysid, pubid, has_internal_subset):
+>>>>>>         self._lex_handler_prop.startDTD(name, pubid, sysid)
+       
+    2:     def unparsed_entity_decl(self, name, base, sysid, pubid, notation_name):
+    1:         self._dtd_handler.unparsedEntityDecl(name, pubid, sysid, notation_name)
+       
+    2:     def notation_decl(self, name, base, sysid, pubid):
+    1:         self._dtd_handler.notationDecl(name, pubid, sysid)
+       
+    2:     def external_entity_ref(self, context, base, sysid, pubid):
+    1:         if not self._external_ges:
+>>>>>>             return 1
+       
+    1:         source = self._ent_handler.resolveEntity(pubid, sysid)
+    1:         source = saxutils.prepare_input_source(source,
+    1:                                                self._source.getSystemId() or
+    1:                                                "")
+       
+    1:         self._entity_stack.append((self._parser, self._source))
+    1:         self._parser = self._parser.ExternalEntityParserCreate(context)
+    1:         self._source = source
+       
+    1:         try:
+    1:             xmlreader.IncrementalParser.parse(self, source)
+>>>>>>         except:
+>>>>>>             return 0  # FIXME: save error info here?
+       
+    1:         (self._parser, self._source) = self._entity_stack[-1]
+    1:         del self._entity_stack[-1]
+    1:         return 1
+       
+    2:     def skipped_entity_handler(self, name, is_pe):
+>>>>>>         if is_pe:
+                   # The SAX spec requires to report skipped PEs with a '%'
+>>>>>>             name = '%'+name
+>>>>>>         self._cont_handler.skippedEntity(name)
+       
+       # ---
+       
+    2: def create_parser(*args, **kwargs):
+   89:     return ExpatParser(*args, **kwargs)
+       
+       # ---
+       
+    2: if __name__ == "__main__":
+>>>>>>     import xml.sax.saxutils
+>>>>>>     p = create_parser()
+>>>>>>     p.setContentHandler(xml.sax.saxutils.XMLGenerator())
+>>>>>>     p.setErrorHandler(xml.sax.ErrorHandler())
+>>>>>>     p.parse("http://www.ibiblio.org/xml/examples/shakespeare/hamlet.xml")

@@ -1,0 +1,239 @@
+       # Written to test interrupted system calls interfering with our many buffered
+       # IO implementations.  http://bugs.python.org/issue12268
+       #
+       # This tests the '_io' module.  Similar tests for Python 2.x's older
+       # default file I/O implementation exist within test_file2k.py.
+       #
+       # It was suggested that this code could be merged into test_io and the tests
+       # made to work using the same method as the existing signal tests in test_io.
+       # I was unable to get single process tests using alarm or setitimer that way
+       # to reproduce the EINTR problems.  This process based test suite reproduces
+       # the problems prior to the issue12268 patch reliably on Linux and OSX.
+       #  - gregory.p.smith
+       
+    1: import os
+    1: import select
+    1: import signal
+    1: import subprocess
+    1: import sys
+    1: from test.test_support import run_unittest
+    1: import time
+    1: import unittest
+       
+       # Test import all of the things we're about to try testing up front.
+    1: from _io import FileIO
+       
+       
+    2: @unittest.skipUnless(os.name == 'posix', 'tests requires a posix system.')
+    1: class TestFileIOSignalInterrupt(unittest.TestCase):
+    1:     def setUp(self):
+    9:         self._process = None
+       
+    1:     def tearDown(self):
+    9:         if self._process and self._process.poll() is None:
+>>>>>>             try:
+>>>>>>                 self._process.kill()
+>>>>>>             except OSError:
+>>>>>>                 pass
+       
+    1:     def _generate_infile_setup_code(self):
+               """Returns the infile = ... line of code for the reader process.
+       
+               subclasseses should override this to test different IO objects.
+               """
+    4:         return ('import _io ;'
+                       'infile = _io.FileIO(sys.stdin.fileno(), "rb")')
+       
+    1:     def fail_with_process_info(self, why, stdout=b'', stderr=b'',
+    1:                                communicate=True):
+               """A common way to cleanup and fail with useful debug output.
+       
+               Kills the process if it is still running, collects remaining output
+               and fails the test with an error message including the output.
+       
+               Args:
+                   why: Text to go after "Error from IO process" in the message.
+                   stdout, stderr: standard output and error from the process so
+                       far to include in the error message.
+                   communicate: bool, when True we call communicate() on the process
+                       after killing it to gather additional output.
+               """
+>>>>>>         if self._process.poll() is None:
+>>>>>>             time.sleep(0.1)  # give it time to finish printing the error.
+>>>>>>             try:
+>>>>>>                 self._process.terminate()  # Ensure it dies.
+>>>>>>             except OSError:
+>>>>>>                 pass
+>>>>>>         if communicate:
+>>>>>>             stdout_end, stderr_end = self._process.communicate()
+>>>>>>             stdout += stdout_end
+>>>>>>             stderr += stderr_end
+>>>>>>         self.fail('Error from IO process %s:\nSTDOUT:\n%sSTDERR:\n%s\n' %
+>>>>>>                   (why, stdout.decode(), stderr.decode()))
+       
+    1:     def _test_reading(self, data_to_write, read_and_verify_code):
+               """Generic buffered read method test harness to validate EINTR behavior.
+       
+               Also validates that Python signal handlers are run during the read.
+       
+               Args:
+                   data_to_write: String to write to the child process for reading
+                       before sending it a signal, confirming the signal was handled,
+                       writing a final newline and closing the infile pipe.
+                   read_and_verify_code: Single "line" of code to read from a file
+                       object named 'infile' and validate the result.  This will be
+                       executed as part of a python subprocess fed data_to_write.
+               """
+   10:         infile_setup_code = self._generate_infile_setup_code()
+               # Total pipe IO in this function is smaller than the minimum posix OS
+               # pipe buffer size of 512 bytes.  No writer should block.
+   10:         assert len(data_to_write) < 512, 'data_to_write must fit in pipe buf.'
+       
+               # Start a subprocess to call our read method while handling a signal.
+   10:         self._process = subprocess.Popen(
+   10:                 [sys.executable, '-u', '-c',
+                        'import io, signal, sys ;'
+                        'signal.signal(signal.SIGINT, '
+                                      'lambda s, f: sys.stderr.write("$\\n")) ;'
+                        + infile_setup_code + ' ;' +
+                        'sys.stderr.write("Worm Sign!\\n") ;'
+   10:                  + read_and_verify_code + ' ;' +
+   10:                  'infile.close()'
+                       ],
+   10:                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+   10:                 stderr=subprocess.PIPE)
+       
+               # Wait for the signal handler to be installed.
+   10:         worm_sign = self._process.stderr.read(len(b'Worm Sign!\n'))
+   10:         if worm_sign != b'Worm Sign!\n':  # See also, Dune by Frank Herbert.
+>>>>>>             self.fail_with_process_info('while awaiting a sign',
+>>>>>>                                         stderr=worm_sign)
+   10:         self._process.stdin.write(data_to_write)
+       
+   10:         signals_sent = 0
+   10:         rlist = []
+               # We don't know when the read_and_verify_code in our child is actually
+               # executing within the read system call we want to interrupt.  This
+               # loop waits for a bit before sending the first signal to increase
+               # the likelihood of that.  Implementations without correct EINTR
+               # and signal handling usually fail this test.
+   30:         while not rlist:
+   20:             rlist, _, _ = select.select([self._process.stderr], (), (), 0.05)
+   20:             self._process.send_signal(signal.SIGINT)
+   20:             signals_sent += 1
+   20:             if signals_sent > 200:
+>>>>>>                 self._process.kill()
+>>>>>>                 self.fail('reader process failed to handle our signals.')
+               # This assumes anything unexpected that writes to stderr will also
+               # write a newline.  That is true of the traceback printing code.
+   10:         signal_line = self._process.stderr.readline()
+   10:         if signal_line != b'$\n':
+>>>>>>             self.fail_with_process_info('while awaiting signal',
+>>>>>>                                         stderr=signal_line)
+       
+               # We append a newline to our input so that a readline call can
+               # end on its own before the EOF is seen and so that we're testing
+               # the read call that was interrupted by a signal before the end of
+               # the data stream has been reached.
+   10:         stdout, stderr = self._process.communicate(input=b'\n')
+   10:         if self._process.returncode:
+>>>>>>             self.fail_with_process_info(
+>>>>>>                     'exited rc=%d' % self._process.returncode,
+>>>>>>                     stdout, stderr, communicate=False)
+               # PASS!
+       
+           # String format for the read_and_verify_code used by read methods.
+           _READING_CODE_TEMPLATE = (
+    1:             'got = infile.{read_method_name}() ;'
+                   'expected = {expected!r} ;'
+                   'assert got == expected, ('
+                           '"{read_method_name} returned wrong data.\\n"'
+                           '"got data %r\\nexpected %r" % (got, expected))'
+                   )
+       
+    1:     def test_readline(self):
+               """readline() must handle signals and not lose data."""
+    2:         self._test_reading(
+    2:                 data_to_write=b'hello, world!',
+    2:                 read_and_verify_code=self._READING_CODE_TEMPLATE.format(
+    2:                         read_method_name='readline',
+    2:                         expected=b'hello, world!\n'))
+       
+    1:     def test_readlines(self):
+               """readlines() must handle signals and not lose data."""
+    2:         self._test_reading(
+    2:                 data_to_write=b'hello\nworld!',
+    2:                 read_and_verify_code=self._READING_CODE_TEMPLATE.format(
+    2:                         read_method_name='readlines',
+    2:                         expected=[b'hello\n', b'world!\n']))
+       
+    1:     def test_readall(self):
+               """readall() must handle signals and not lose data."""
+    1:         self._test_reading(
+    1:                 data_to_write=b'hello\nworld!',
+    1:                 read_and_verify_code=self._READING_CODE_TEMPLATE.format(
+    1:                         read_method_name='readall',
+    1:                         expected=b'hello\nworld!\n'))
+               # read() is the same thing as readall().
+    1:         self._test_reading(
+    1:                 data_to_write=b'hello\nworld!',
+    1:                 read_and_verify_code=self._READING_CODE_TEMPLATE.format(
+    1:                         read_method_name='read',
+    1:                         expected=b'hello\nworld!\n'))
+       
+       
+    2: class TestBufferedIOSignalInterrupt(TestFileIOSignalInterrupt):
+    1:     def _generate_infile_setup_code(self):
+               """Returns the infile = ... line of code to make a BufferedReader."""
+    3:         return ('infile = io.open(sys.stdin.fileno(), "rb") ;'
+                       'import _io ;assert isinstance(infile, _io.BufferedReader)')
+       
+    1:     def test_readall(self):
+               """BufferedReader.read() must handle signals and not lose data."""
+    1:         self._test_reading(
+    1:                 data_to_write=b'hello\nworld!',
+    1:                 read_and_verify_code=self._READING_CODE_TEMPLATE.format(
+    1:                         read_method_name='read',
+    1:                         expected=b'hello\nworld!\n'))
+       
+       
+    2: class TestTextIOSignalInterrupt(TestFileIOSignalInterrupt):
+    1:     def _generate_infile_setup_code(self):
+               """Returns the infile = ... line of code to make a TextIOWrapper."""
+    3:         return ('infile = io.open(sys.stdin.fileno(), "rt", newline=None) ;'
+                       'import _io ;assert isinstance(infile, _io.TextIOWrapper)')
+       
+    1:     def test_readline(self):
+               """readline() must handle signals and not lose data."""
+    1:         self._test_reading(
+    1:                 data_to_write=b'hello, world!',
+    1:                 read_and_verify_code=self._READING_CODE_TEMPLATE.format(
+    1:                         read_method_name='readline',
+    1:                         expected='hello, world!\n'))
+       
+    1:     def test_readlines(self):
+               """readlines() must handle signals and not lose data."""
+    1:         self._test_reading(
+    1:                 data_to_write=b'hello\r\nworld!',
+    1:                 read_and_verify_code=self._READING_CODE_TEMPLATE.format(
+    1:                         read_method_name='readlines',
+    1:                         expected=['hello\n', 'world!\n']))
+       
+    1:     def test_readall(self):
+               """read() must handle signals and not lose data."""
+    1:         self._test_reading(
+    1:                 data_to_write=b'hello\nworld!',
+    1:                 read_and_verify_code=self._READING_CODE_TEMPLATE.format(
+    1:                         read_method_name='read',
+    1:                         expected="hello\nworld!\n"))
+       
+       
+    1: def test_main():
+           test_cases = [
+   19:             tc for tc in globals().values()
+   18:             if isinstance(tc, type) and issubclass(tc, unittest.TestCase)]
+    1:     run_unittest(*test_cases)
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

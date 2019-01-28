@@ -1,0 +1,321 @@
+       # -*- Mode: Python; tab-width: 4 -*-
+       #       Id: asynchat.py,v 2.26 2000/09/07 22:29:26 rushing Exp
+       #       Author: Sam Rushing <rushing@nightmare.com>
+       
+       # ======================================================================
+       # Copyright 1996 by Sam Rushing
+       #
+       #                         All Rights Reserved
+       #
+       # Permission to use, copy, modify, and distribute this software and
+       # its documentation for any purpose and without fee is hereby
+       # granted, provided that the above copyright notice appear in all
+       # copies and that both that copyright notice and this permission
+       # notice appear in supporting documentation, and that the name of Sam
+       # Rushing not be used in advertising or publicity pertaining to
+       # distribution of the software without specific, written prior
+       # permission.
+       #
+       # SAM RUSHING DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+       # INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN
+       # NO EVENT SHALL SAM RUSHING BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+       # CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+       # OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+       # NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+       # CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+       # ======================================================================
+       
+       r"""A class supporting chat-style (command/response) protocols.
+       
+       This class adds support for 'chat' style protocols - where one side
+       sends a 'command', and the other sends a response (examples would be
+       the common internet protocols - smtp, nntp, ftp, etc..).
+       
+       The handle_read() method looks at the input stream for the current
+       'terminator' (usually '\r\n' for single-line responses, '\r\n.\r\n'
+       for multi-line output), calling self.found_terminator() on its
+       receipt.
+       
+       for example:
+       Say you build an async nntp client using this class.  At the start
+       of the connection, you'll have self.terminator set to '\r\n', in
+       order to process the single-line greeting.  Just before issuing a
+       'LIST' command you'll set it to '\r\n.\r\n'.  The output of the LIST
+       command will be accumulated (using your own 'collect_incoming_data'
+       method) up to the terminator, and then control will be returned to
+       you - by calling your self.found_terminator() method.
+    1: """
+       
+    1: import asyncore
+    1: import errno
+    1: import socket
+    1: from collections import deque
+    1: from sys import py3kwarning
+    1: from warnings import filterwarnings, catch_warnings
+       
+    1: _BLOCKING_IO_ERRORS = (errno.EAGAIN, errno.EALREADY, errno.EINPROGRESS,
+    1:                        errno.EWOULDBLOCK)
+       
+       
+    2: class async_chat (asyncore.dispatcher):
+           """This is an abstract class.  You must derive from this class, and add
+    1:     the two methods collect_incoming_data() and found_terminator()"""
+       
+           # these are overridable defaults
+       
+    1:     ac_in_buffer_size       = 4096
+    1:     ac_out_buffer_size      = 4096
+       
+    1:     def __init__ (self, sock=None, map=None):
+               # for string terminator matching
+  191:         self.ac_in_buffer = ''
+       
+               # we use a list here rather than cStringIO for a few reasons...
+               # del lst[:] is faster than sio.truncate(0)
+               # lst = [] is faster than sio.truncate(0)
+               # cStringIO will be gaining unicode support in py3k, which
+               # will negatively affect the performance of bytes compared to
+               # a ''.join() equivalent
+  191:         self.incoming = []
+       
+               # we toss the use of the "simple producer" and replace it with
+               # a pure deque, which the original fifo was a wrapping of
+  191:         self.producer_fifo = deque()
+  191:         asyncore.dispatcher.__init__ (self, sock, map)
+       
+    1:     def collect_incoming_data(self, data):
+>>>>>>         raise NotImplementedError("must be implemented in subclass")
+       
+    1:     def _collect_incoming_data(self, data):
+>>>>>>         self.incoming.append(data)
+       
+    1:     def _get_data(self):
+>>>>>>         d = ''.join(self.incoming)
+>>>>>>         del self.incoming[:]
+>>>>>>         return d
+       
+    1:     def found_terminator(self):
+>>>>>>         raise NotImplementedError("must be implemented in subclass")
+       
+    1:     def set_terminator (self, term):
+               "Set the input delimiter.  Can be a fixed string of any length, an integer, or None"
+  150:         self.terminator = term
+       
+    1:     def get_terminator (self):
+ 1186:         return self.terminator
+       
+           # grab some more data from the socket,
+           # throw it to the collector method,
+           # check for the terminator,
+           # if found, transition to the next state.
+       
+    1:     def handle_read (self):
+       
+ 1271:         try:
+ 1271:             data = self.recv (self.ac_in_buffer_size)
+    1:         except socket.error, why:
+    1:             if why.args[0] in _BLOCKING_IO_ERRORS:
+    1:                 return
+>>>>>>             self.handle_error()
+>>>>>>             return
+       
+ 1270:         self.ac_in_buffer = self.ac_in_buffer + data
+       
+               # Continue to search for self.terminator in self.ac_in_buffer,
+               # while calling self.collect_incoming_data.  The while loop
+               # is necessary because we might read several data+terminator
+               # combos with a single recv(4096).
+       
+ 2432:         while self.ac_in_buffer:
+ 1186:             lb = len(self.ac_in_buffer)
+ 1186:             terminator = self.get_terminator()
+ 1186:             if not terminator:
+                       # no terminator, collect it all
+  232:                 self.collect_incoming_data (self.ac_in_buffer)
+  232:                 self.ac_in_buffer = ''
+  954:             elif isinstance(terminator, (int, long)):
+                       # numeric terminator
+   16:                 n = terminator
+   16:                 if lb < n:
+   10:                     self.collect_incoming_data (self.ac_in_buffer)
+   10:                     self.ac_in_buffer = ''
+   10:                     self.terminator = self.terminator - lb
+                       else:
+    6:                     self.collect_incoming_data (self.ac_in_buffer[:n])
+    6:                     self.ac_in_buffer = self.ac_in_buffer[n:]
+    6:                     self.terminator = 0
+    6:                     self.found_terminator()
+                   else:
+                       # 3 cases:
+                       # 1) end of buffer matches terminator exactly:
+                       #    collect data, transition
+                       # 2) end of buffer matches some prefix:
+                       #    collect data to the prefix
+                       # 3) end of buffer does not match any prefix:
+                       #    collect data
+  938:                 terminator_len = len(terminator)
+  938:                 index = self.ac_in_buffer.find(terminator)
+  938:                 if index != -1:
+                           # we found the terminator
+  438:                     if index > 0:
+                               # don't bother reporting the empty string (source of subtle bugs)
+  394:                         self.collect_incoming_data (self.ac_in_buffer[:index])
+  438:                     self.ac_in_buffer = self.ac_in_buffer[index+terminator_len:]
+                           # This does the Right Thing if the terminator is changed here.
+  438:                     self.found_terminator()
+                       else:
+                           # check for a prefix of the terminator
+  500:                     index = find_prefix_at_end (self.ac_in_buffer, terminator)
+  500:                     if index:
+   24:                         if index != lb:
+                                   # we found a prefix, collect up to the prefix
+   12:                             self.collect_incoming_data (self.ac_in_buffer[:-index])
+   12:                             self.ac_in_buffer = self.ac_in_buffer[-index:]
+   24:                         break
+                           else:
+                               # no prefix, collect it all
+  476:                         self.collect_incoming_data (self.ac_in_buffer)
+  476:                         self.ac_in_buffer = ''
+       
+    1:     def handle_write (self):
+  204:         self.initiate_send()
+       
+    1:     def handle_close (self):
+  125:         self.close()
+       
+    1:     def push (self, data):
+  675:         sabs = self.ac_out_buffer_size
+  675:         if len(data) > sabs:
+   62:             for i in xrange(0, len(data), sabs):
+   48:                 self.producer_fifo.append(data[i:i+sabs])
+               else:
+  661:             self.producer_fifo.append(data)
+  675:         self.initiate_send()
+       
+    1:     def push_with_producer (self, producer):
+    4:         self.producer_fifo.append(producer)
+    4:         self.initiate_send()
+       
+    1:     def readable (self):
+               "predicate for inclusion in the readable for select()"
+               # cannot use the old predicate, it violates the claim of the
+               # set_terminator method.
+       
+               # return (len(self.ac_in_buffer) <= self.ac_in_buffer_size)
+ 8106:         return 1
+       
+    1:     def writable (self):
+               "predicate for inclusion in the writable for select()"
+ 8106:         return self.producer_fifo or (not self.connected)
+       
+    1:     def close_when_done (self):
+               "automatically close this channel once the outgoing queue is empty"
+   40:         self.producer_fifo.append(None)
+       
+    1:     def initiate_send(self):
+  895:         while self.producer_fifo and self.connected:
+  792:             first = self.producer_fifo[0]
+                   # handle empty string/buffer or None entry
+  792:             if not first:
+   35:                 del self.producer_fifo[0]
+   35:                 if first is None:
+   35:                     self.handle_close()
+   35:                     return
+       
+                   # handle classic producer behavior
+  757:             obs = self.ac_out_buffer_size
+  757:             try:
+  757:                 with catch_warnings():
+  757:                     if py3kwarning:
+>>>>>>                         filterwarnings("ignore", ".*buffer", DeprecationWarning)
+  757:                     data = buffer(first, 0, obs)
+   12:             except TypeError:
+   12:                 data = first.more()
+   12:                 if data:
+   10:                     self.producer_fifo.appendleft(data)
+                       else:
+    2:                     del self.producer_fifo[0]
+    2:                 continue
+       
+                   # send the data
+  745:             try:
+  745:                 num_sent = self.send(data)
+>>>>>>             except socket.error:
+>>>>>>                 self.handle_error()
+>>>>>>                 return
+       
+  745:             if num_sent:
+  718:                 if num_sent < len(data) or obs < len(first):
+>>>>>>                     self.producer_fifo[0] = first[num_sent:]
+                       else:
+  718:                     del self.producer_fifo[0]
+                   # we tried to send some actual data
+  745:             return
+       
+    1:     def discard_buffers (self):
+               # Emergencies only!
+>>>>>>         self.ac_in_buffer = ''
+>>>>>>         del self.incoming[:]
+>>>>>>         self.producer_fifo.clear()
+       
+    2: class simple_producer:
+       
+    1:     def __init__ (self, data, buffer_size=512):
+    2:         self.data = data
+    2:         self.buffer_size = buffer_size
+       
+    1:     def more (self):
+   12:         if len (self.data) > self.buffer_size:
+    8:             result = self.data[:self.buffer_size]
+    8:             self.data = self.data[self.buffer_size:]
+    8:             return result
+               else:
+    4:             result = self.data
+    4:             self.data = ''
+    4:             return result
+       
+    2: class fifo:
+    1:     def __init__ (self, list=None):
+    2:         if not list:
+    1:             self.list = deque()
+               else:
+    1:             self.list = deque(list)
+       
+    1:     def __len__ (self):
+    4:         return len(self.list)
+       
+    1:     def is_empty (self):
+    2:         return not self.list
+       
+    1:     def first (self):
+    2:         return self.list[0]
+       
+    1:     def push (self, data):
+    2:         self.list.append(data)
+       
+    1:     def pop (self):
+    7:         if self.list:
+    5:             return (1, self.list.popleft())
+               else:
+    2:             return (0, None)
+       
+       # Given 'haystack', see if any prefix of 'needle' is at its end.  This
+       # assumes an exact match has already been checked.  Return the number of
+       # characters matched.
+       # for example:
+       # f_p_a_e ("qwerty\r", "\r\n") => 1
+       # f_p_a_e ("qwertydkjf", "\r\n") => 0
+       # f_p_a_e ("qwerty\r\n", "\r\n") => <undefined>
+       
+       # this could maybe be made faster with a computed regex?
+       # [answer: no; circa Python-2.0, Jan 2001]
+       # new python:   28961/s
+       # old python:   18307/s
+       # re:        12820/s
+       # regex:     14035/s
+       
+    1: def find_prefix_at_end (haystack, needle):
+  502:     l = len(needle) - 1
+  823:     while l and not haystack.endswith(needle[:l]):
+  321:         l -= 1
+  502:     return l

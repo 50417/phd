@@ -1,0 +1,281 @@
+       """
+       Test suite for _osx_support: shared OS X support functions.
+    1: """
+       
+    1: import os
+    1: import platform
+    1: import shutil
+    1: import stat
+    1: import sys
+    1: import unittest
+       
+    1: import test.test_support
+       
+    1: import _osx_support
+       
+    2: @unittest.skipUnless(sys.platform.startswith("darwin"), "requires OS X")
+    1: class Test_OSXSupport(unittest.TestCase):
+       
+    1:     def setUp(self):
+   14:         self.maxDiff = None
+   14:         self.prog_name = 'bogus_program_xxxx'
+   14:         self.temp_path_dir = os.path.abspath(os.getcwd())
+   14:         self.env = test.test_support.EnvironmentVarGuard()
+   14:         self.addCleanup(self.env.__exit__)
+   14:         for cv in ('CFLAGS', 'LDFLAGS', 'CPPFLAGS',
+                                   'BASECFLAGS', 'BLDSHARED', 'LDSHARED', 'CC',
+                                   'CXX', 'PY_CFLAGS', 'PY_LDFLAGS', 'PY_CPPFLAGS',
+  182:                             'PY_CORE_CFLAGS'):
+  168:             if cv in self.env:
+>>>>>>                 self.env.unset(cv)
+       
+    1:     def add_expected_saved_initial_values(self, config_vars, expected_vars):
+               # Ensure that the initial values for all modified config vars
+               # are also saved with modified keys.
+   43:         expected_vars.update(('_OSX_SUPPORT_INITIAL_'+ k,
+   37:                 config_vars[k]) for k in config_vars
+   31:                     if config_vars[k] != expected_vars[k])
+       
+    1:     def test__find_executable(self):
+    1:         if self.env['PATH']:
+    1:             self.env['PATH'] = self.env['PATH'] + ':'
+    1:         self.env['PATH'] = self.env['PATH'] + os.path.abspath(self.temp_path_dir)
+    1:         test.test_support.unlink(self.prog_name)
+    1:         self.assertIsNone(_osx_support._find_executable(self.prog_name))
+    1:         self.addCleanup(test.test_support.unlink, self.prog_name)
+    1:         with open(self.prog_name, 'w') as f:
+    1:             f.write("#!/bin/sh\n/bin/echo OK\n")
+    1:         os.chmod(self.prog_name, stat.S_IRWXU)
+    1:         self.assertEqual(self.prog_name,
+    1:                             _osx_support._find_executable(self.prog_name))
+       
+    1:     def test__read_output(self):
+    1:         if self.env['PATH']:
+    1:             self.env['PATH'] = self.env['PATH'] + ':'
+    1:         self.env['PATH'] = self.env['PATH'] + os.path.abspath(self.temp_path_dir)
+    1:         test.test_support.unlink(self.prog_name)
+    1:         self.addCleanup(test.test_support.unlink, self.prog_name)
+    1:         with open(self.prog_name, 'w') as f:
+    1:             f.write("#!/bin/sh\n/bin/echo ExpectedOutput\n")
+    1:         os.chmod(self.prog_name, stat.S_IRWXU)
+    1:         self.assertEqual('ExpectedOutput',
+    1:                             _osx_support._read_output(self.prog_name))
+       
+    1:     def test__find_build_tool(self):
+    1:         out = _osx_support._find_build_tool('cc')
+    1:         self.assertTrue(os.path.isfile(out),
+    1:                             'cc not found - check xcode-select')
+       
+    1:     def test__get_system_version(self):
+    1:         self.assertTrue(platform.mac_ver()[0].startswith(
+    1:                                     _osx_support._get_system_version()))
+       
+    1:     def test__remove_original_values(self):
+    1:         config_vars = {
+    1:         'CC': 'gcc-test -pthreads',
+               }
+    1:         expected_vars = {
+    1:         'CC': 'clang -pthreads',
+               }
+    1:         cv = 'CC'
+    1:         newvalue = 'clang -pthreads'
+    1:         _osx_support._save_modified_value(config_vars, cv, newvalue)
+    1:         self.assertNotEqual(expected_vars, config_vars)
+    1:         _osx_support._remove_original_values(config_vars)
+    1:         self.assertEqual(expected_vars, config_vars)
+       
+    1:     def test__save_modified_value(self):
+    1:         config_vars = {
+    1:         'CC': 'gcc-test -pthreads',
+               }
+    1:         expected_vars = {
+    1:         'CC': 'clang -pthreads',
+               }
+    1:         self.add_expected_saved_initial_values(config_vars, expected_vars)
+    1:         cv = 'CC'
+    1:         newvalue = 'clang -pthreads'
+    1:         _osx_support._save_modified_value(config_vars, cv, newvalue)
+    1:         self.assertEqual(expected_vars, config_vars)
+       
+    1:     def test__save_modified_value_unchanged(self):
+    1:         config_vars = {
+    1:         'CC': 'gcc-test -pthreads',
+               }
+    1:         expected_vars = config_vars.copy()
+    1:         cv = 'CC'
+    1:         newvalue = 'gcc-test -pthreads'
+    1:         _osx_support._save_modified_value(config_vars, cv, newvalue)
+    1:         self.assertEqual(expected_vars, config_vars)
+       
+    1:     def test__supports_universal_builds(self):
+    1:         import platform
+    4:         mac_ver_tuple = tuple(int(i) for i in
+    1:                             platform.mac_ver()[0].split('.')[0:2])
+    1:         self.assertEqual(mac_ver_tuple >= (10, 4),
+    1:                             _osx_support._supports_universal_builds())
+       
+    1:     def test__find_appropriate_compiler(self):
+               compilers = (
+    1:                         ('gcc-test', 'i686-apple-darwin11-llvm-gcc-4.2'),
+    1:                         ('clang', 'clang version 3.1'),
+                           )
+    1:         config_vars = {
+    1:         'CC': 'gcc-test -pthreads',
+    1:         'CXX': 'cc++-test',
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3 -arch ppc -arch i386  ',
+    1:         'LDFLAGS': '-arch ppc -arch i386   -g',
+    1:         'CPPFLAGS': '-I. -isysroot /Developer/SDKs/MacOSX10.4u.sdk',
+    1:         'BLDSHARED': 'gcc-test -bundle -arch ppc -arch i386 -g',
+    1:         'LDSHARED': 'gcc-test -bundle -arch ppc -arch i386 '
+                               '-isysroot /Developer/SDKs/MacOSX10.4u.sdk -g',
+               }
+    1:         expected_vars = {
+    1:         'CC': 'clang -pthreads',
+    1:         'CXX': 'clang++',
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3 -arch ppc -arch i386  ',
+    1:         'LDFLAGS': '-arch ppc -arch i386   -g',
+    1:         'CPPFLAGS': '-I. -isysroot /Developer/SDKs/MacOSX10.4u.sdk',
+    1:         'BLDSHARED': 'clang -bundle -arch ppc -arch i386 -g',
+    1:         'LDSHARED': 'clang -bundle -arch ppc -arch i386 '
+                               '-isysroot /Developer/SDKs/MacOSX10.4u.sdk -g',
+               }
+    1:         self.add_expected_saved_initial_values(config_vars, expected_vars)
+       
+    1:         suffix = (':' + self.env['PATH']) if self.env['PATH'] else ''
+    1:         self.env['PATH'] = os.path.abspath(self.temp_path_dir) + suffix
+    3:         for c_name, c_output in compilers:
+    2:             test.test_support.unlink(c_name)
+    2:             self.addCleanup(test.test_support.unlink, c_name)
+    2:             with open(c_name, 'w') as f:
+    2:                 f.write("#!/bin/sh\n/bin/echo " + c_output)
+    2:             os.chmod(c_name, stat.S_IRWXU)
+    1:         self.assertEqual(expected_vars,
+    1:                             _osx_support._find_appropriate_compiler(
+    1:                                     config_vars))
+       
+    1:     def test__remove_universal_flags(self):
+    1:         config_vars = {
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3 -arch ppc -arch i386  ',
+    1:         'LDFLAGS': '-arch ppc -arch i386   -g',
+    1:         'CPPFLAGS': '-I. -isysroot /Developer/SDKs/MacOSX10.4u.sdk',
+    1:         'BLDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 -g',
+    1:         'LDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 '
+                               '-isysroot /Developer/SDKs/MacOSX10.4u.sdk -g',
+               }
+    1:         expected_vars = {
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3    ',
+    1:         'LDFLAGS': '    -g',
+    1:         'CPPFLAGS': '-I.  ',
+    1:         'BLDSHARED': 'gcc-4.0 -bundle    -g',
+    1:         'LDSHARED': 'gcc-4.0 -bundle      -g',
+               }
+    1:         self.add_expected_saved_initial_values(config_vars, expected_vars)
+       
+    1:         self.assertEqual(expected_vars,
+    1:                             _osx_support._remove_universal_flags(
+    1:                                     config_vars))
+       
+    1:     def test__remove_unsupported_archs(self):
+    1:         config_vars = {
+    1:         'CC': 'clang',
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3 -arch ppc -arch i386  ',
+    1:         'LDFLAGS': '-arch ppc -arch i386   -g',
+    1:         'CPPFLAGS': '-I. -isysroot /Developer/SDKs/MacOSX10.4u.sdk',
+    1:         'BLDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 -g',
+    1:         'LDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 '
+                               '-isysroot /Developer/SDKs/MacOSX10.4u.sdk -g',
+               }
+    1:         expected_vars = {
+    1:         'CC': 'clang',
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3  -arch i386  ',
+    1:         'LDFLAGS': ' -arch i386   -g',
+    1:         'CPPFLAGS': '-I. -isysroot /Developer/SDKs/MacOSX10.4u.sdk',
+    1:         'BLDSHARED': 'gcc-4.0 -bundle   -arch i386 -g',
+    1:         'LDSHARED': 'gcc-4.0 -bundle   -arch i386 '
+                               '-isysroot /Developer/SDKs/MacOSX10.4u.sdk -g',
+               }
+    1:         self.add_expected_saved_initial_values(config_vars, expected_vars)
+       
+    1:         suffix = (':' + self.env['PATH']) if self.env['PATH'] else ''
+    1:         self.env['PATH'] = os.path.abspath(self.temp_path_dir) + suffix
+    1:         c_name = 'clang'
+    1:         test.test_support.unlink(c_name)
+    1:         self.addCleanup(test.test_support.unlink, c_name)
+               # exit status 255 means no PPC support in this compiler chain
+    1:         with open(c_name, 'w') as f:
+    1:             f.write("#!/bin/sh\nexit 255")
+    1:         os.chmod(c_name, stat.S_IRWXU)
+    1:         self.assertEqual(expected_vars,
+    1:                             _osx_support._remove_unsupported_archs(
+    1:                                     config_vars))
+       
+    1:     def test__override_all_archs(self):
+    1:         self.env['ARCHFLAGS'] = '-arch x86_64'
+    1:         config_vars = {
+    1:         'CC': 'clang',
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3 -arch ppc -arch i386  ',
+    1:         'LDFLAGS': '-arch ppc -arch i386   -g',
+    1:         'CPPFLAGS': '-I. -isysroot /Developer/SDKs/MacOSX10.4u.sdk',
+    1:         'BLDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 -g',
+    1:         'LDSHARED': 'gcc-4.0 -bundle -arch ppc -arch i386 '
+                               '-isysroot /Developer/SDKs/MacOSX10.4u.sdk -g',
+               }
+    1:         expected_vars = {
+    1:         'CC': 'clang',
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3     -arch x86_64',
+    1:         'LDFLAGS': '    -g -arch x86_64',
+    1:         'CPPFLAGS': '-I. -isysroot /Developer/SDKs/MacOSX10.4u.sdk',
+    1:         'BLDSHARED': 'gcc-4.0 -bundle    -g -arch x86_64',
+    1:         'LDSHARED': 'gcc-4.0 -bundle   -isysroot '
+                               '/Developer/SDKs/MacOSX10.4u.sdk -g -arch x86_64',
+               }
+    1:         self.add_expected_saved_initial_values(config_vars, expected_vars)
+       
+    1:         self.assertEqual(expected_vars,
+    1:                             _osx_support._override_all_archs(
+    1:                                     config_vars))
+       
+    1:     def test__check_for_unavailable_sdk(self):
+    1:         config_vars = {
+    1:         'CC': 'clang',
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3 -arch ppc -arch i386  '
+                               '-isysroot /Developer/SDKs/MacOSX10.1.sdk',
+    1:         'LDFLAGS': '-arch ppc -arch i386   -g',
+    1:         'CPPFLAGS': '-I. -isysroot /Developer/SDKs/MacOSX10.1.sdk',
+    1:         'BLDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 -g',
+    1:         'LDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 '
+                               '-isysroot /Developer/SDKs/MacOSX10.1.sdk -g',
+               }
+    1:         expected_vars = {
+    1:         'CC': 'clang',
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3 -arch ppc -arch i386  '
+                               ' ',
+    1:         'LDFLAGS': '-arch ppc -arch i386   -g',
+    1:         'CPPFLAGS': '-I.  ',
+    1:         'BLDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 -g',
+    1:         'LDSHARED': 'gcc-4.0 -bundle  -arch ppc -arch i386 '
+                               ' -g',
+               }
+    1:         self.add_expected_saved_initial_values(config_vars, expected_vars)
+       
+    1:         self.assertEqual(expected_vars,
+    1:                             _osx_support._check_for_unavailable_sdk(
+    1:                                     config_vars))
+       
+    1:     def test_get_platform_osx(self):
+               # Note, get_platform_osx is currently tested more extensively
+               # indirectly by test_sysconfig and test_distutils
+    1:         config_vars = {
+    1:         'CFLAGS': '-fno-strict-aliasing  -g -O3 -arch ppc -arch i386  '
+                               '-isysroot /Developer/SDKs/MacOSX10.1.sdk',
+    1:         'MACOSX_DEPLOYMENT_TARGET': '10.6',
+               }
+    1:         result = _osx_support.get_platform_osx(config_vars, ' ', ' ', ' ')
+    1:         self.assertEqual(('macosx', '10.6', 'fat'), result)
+       
+    1: def test_main():
+    1:     if sys.platform == 'darwin':
+    1:         test.test_support.run_unittest(Test_OSXSupport)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

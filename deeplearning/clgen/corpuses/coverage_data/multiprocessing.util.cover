@@ -1,0 +1,353 @@
+       #
+       # Module providing various facilities to other parts of the package
+       #
+       # multiprocessing/util.py
+       #
+       # Copyright (c) 2006-2008, R Oudkerk
+       # All rights reserved.
+       #
+       # Redistribution and use in source and binary forms, with or without
+       # modification, are permitted provided that the following conditions
+       # are met:
+       #
+       # 1. Redistributions of source code must retain the above copyright
+       #    notice, this list of conditions and the following disclaimer.
+       # 2. Redistributions in binary form must reproduce the above copyright
+       #    notice, this list of conditions and the following disclaimer in the
+       #    documentation and/or other materials provided with the distribution.
+       # 3. Neither the name of author nor the names of any contributors may be
+       #    used to endorse or promote products derived from this software
+       #    without specific prior written permission.
+       #
+       # THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS "AS IS" AND
+       # ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+       # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+       # ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+       # FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+       # DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+       # OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+       # HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+       # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+       # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+       # SUCH DAMAGE.
+       #
+       
+    1: import os
+    1: import itertools
+    1: import weakref
+    1: import atexit
+    1: import threading        # we want threading to install it's
+                               # cleanup function before multiprocessing does
+    1: from subprocess import _args_from_interpreter_flags
+       
+    1: from multiprocessing.process import current_process, active_children
+       
+       __all__ = [
+    1:     'sub_debug', 'debug', 'info', 'sub_warning', 'get_logger',
+    1:     'log_to_stderr', 'get_temp_dir', 'register_after_fork',
+    1:     'is_exiting', 'Finalize', 'ForkAwareThreadLock', 'ForkAwareLocal',
+    1:     'SUBDEBUG', 'SUBWARNING',
+           ]
+       
+       #
+       # Logging
+       #
+       
+    1: NOTSET = 0
+    1: SUBDEBUG = 5
+    1: DEBUG = 10
+    1: INFO = 20
+    1: SUBWARNING = 25
+       
+    1: LOGGER_NAME = 'multiprocessing'
+    1: DEFAULT_LOGGING_FORMAT = '[%(levelname)s/%(processName)s] %(message)s'
+       
+    1: _logger = None
+    1: _log_to_stderr = False
+       
+    1: def sub_debug(msg, *args):
+30974:     if _logger:
+30975:         _logger.log(SUBDEBUG, msg, *args)
+       
+    1: def debug(msg, *args):
+  724:     if _logger:
+  724:         _logger.log(DEBUG, msg, *args)
+       
+    1: def info(msg, *args):
+   19:     if _logger:
+   18:         _logger.log(INFO, msg, *args)
+       
+    1: def sub_warning(msg, *args):
+>>>>>>     if _logger:
+>>>>>>         _logger.log(SUBWARNING, msg, *args)
+       
+    1: def get_logger():
+           '''
+           Returns logger used by multiprocessing
+           '''
+           global _logger
+    3:     import logging, atexit
+       
+    3:     logging._acquireLock()
+    3:     try:
+    3:         if not _logger:
+       
+    1:             _logger = logging.getLogger(LOGGER_NAME)
+    1:             _logger.propagate = 0
+    1:             logging.addLevelName(SUBDEBUG, 'SUBDEBUG')
+    1:             logging.addLevelName(SUBWARNING, 'SUBWARNING')
+       
+                   # XXX multiprocessing should cleanup before logging
+    1:             if hasattr(atexit, 'unregister'):
+>>>>>>                 atexit.unregister(_exit_function)
+>>>>>>                 atexit.register(_exit_function)
+                   else:
+    1:                 atexit._exithandlers.remove((_exit_function, (), {}))
+    1:                 atexit._exithandlers.append((_exit_function, (), {}))
+       
+           finally:
+    3:         logging._releaseLock()
+       
+    3:     return _logger
+       
+    1: def log_to_stderr(level=None):
+           '''
+           Turn on logging and add a handler which prints to stderr
+           '''
+           global _log_to_stderr
+>>>>>>     import logging
+       
+>>>>>>     logger = get_logger()
+>>>>>>     formatter = logging.Formatter(DEFAULT_LOGGING_FORMAT)
+>>>>>>     handler = logging.StreamHandler()
+>>>>>>     handler.setFormatter(formatter)
+>>>>>>     logger.addHandler(handler)
+       
+>>>>>>     if level:
+>>>>>>         logger.setLevel(level)
+>>>>>>     _log_to_stderr = True
+>>>>>>     return _logger
+       
+       #
+       # Function returning a temp directory which will be removed on exit
+       #
+       
+    1: def get_temp_dir():
+           # get name of a temp directory which will be automatically cleaned up
+    3:     if current_process()._tempdir is None:
+    1:         import shutil, tempfile
+    1:         tempdir = tempfile.mkdtemp(prefix='pymp-')
+    1:         info('created temp directory %s', tempdir)
+    1:         Finalize(None, shutil.rmtree, args=[tempdir], exitpriority=-100)
+    1:         current_process()._tempdir = tempdir
+    3:     return current_process()._tempdir
+       
+       #
+       # Support for reinitialization of objects when bootstrapping a child process
+       #
+       
+    1: _afterfork_registry = weakref.WeakValueDictionary()
+    1: _afterfork_counter = itertools.count()
+       
+    1: def _run_after_forkers():
+>>>>>>     items = list(_afterfork_registry.items())
+>>>>>>     items.sort()
+>>>>>>     for (index, ident, func), obj in items:
+>>>>>>         try:
+>>>>>>             func(obj)
+>>>>>>         except Exception, e:
+>>>>>>             info('after forker raised exception %s', e)
+       
+    1: def register_after_fork(obj, func):
+  265:     _afterfork_registry[(_afterfork_counter.next(), id(obj), func)] = obj
+       
+       #
+       # Finalization using weakrefs
+       #
+       
+    1: _finalizer_registry = {}
+    1: _finalizer_counter = itertools.count()
+       
+       
+    2: class Finalize(object):
+           '''
+           Class which supports object finalization using weakrefs
+    1:     '''
+    1:     def __init__(self, obj, callback, args=(), kwargs=None, exitpriority=None):
+29569:         assert exitpriority is None or type(exitpriority) in (int, long)
+       
+29569:         if obj is not None:
+29568:             self._weakref = weakref.ref(obj, self)
+               else:
+    1:             assert exitpriority is not None
+       
+29569:         self._callback = callback
+29569:         self._args = args
+29569:         self._kwargs = kwargs or {}
+29569:         self._key = (exitpriority, _finalizer_counter.next())
+29569:         self._pid = os.getpid()
+       
+29569:         _finalizer_registry[self._key] = self
+       
+    1:     def __call__(self, wr=None):
+               '''
+               Run the callback unless it has already been called or cancelled
+               '''
+25483:         try:
+25476:             del _finalizer_registry[self._key]
+ 3307:         except KeyError:
+ 3307:             sub_debug('finalizer no longer registered')
+               else:
+22182:             if self._pid != os.getpid():
+>>>>>>                 sub_debug('finalizer ignored because different process')
+>>>>>>                 res = None
+                   else:
+22183:                 sub_debug('finalizer calling %s with args %s and kwargs %s',
+22186:                           self._callback, self._args, self._kwargs)
+22178:                 res = self._callback(*self._args, **self._kwargs)
+                   self._weakref = self._callback = self._args = \
+22175:                             self._kwargs = self._key = None
+22185:             return res
+       
+    1:     def cancel(self):
+               '''
+               Cancel finalization of the object
+               '''
+>>>>>>         try:
+>>>>>>             del _finalizer_registry[self._key]
+>>>>>>         except KeyError:
+>>>>>>             pass
+               else:
+                   self._weakref = self._callback = self._args = \
+>>>>>>                             self._kwargs = self._key = None
+       
+    1:     def still_active(self):
+               '''
+               Return whether this finalizer is still waiting to invoke callback
+               '''
+>>>>>>         return self._key in _finalizer_registry
+       
+    1:     def __repr__(self):
+>>>>>>         try:
+>>>>>>             obj = self._weakref()
+>>>>>>         except (AttributeError, TypeError):
+>>>>>>             obj = None
+       
+>>>>>>         if obj is None:
+>>>>>>             return '<Finalize object, dead>'
+       
+>>>>>>         x = '<Finalize object, callback=%s' % \
+>>>>>>             getattr(self._callback, '__name__', self._callback)
+>>>>>>         if self._args:
+>>>>>>             x += ', args=' + str(self._args)
+>>>>>>         if self._kwargs:
+>>>>>>             x += ', kwargs=' + str(self._kwargs)
+>>>>>>         if self._key[0] is not None:
+>>>>>>             x += ', exitprority=' + str(self._key[0])
+>>>>>>         return x + '>'
+       
+       
+    1: def _run_finalizers(minpriority=None):
+           '''
+           Run all finalizers whose exit priority is not None and at least minpriority
+       
+           Finalizers with highest priority are called first; finalizers with
+           the same priority will be called in reverse order of creation.
+           '''
+    5:     if _finalizer_registry is None:
+               # This function may be called after this module's globals are
+               # destroyed.  See the _exit_function function in this module for more
+               # notes.
+>>>>>>         return
+       
+    5:     if minpriority is None:
+ 5498:         f = lambda p : p[0][0] is not None
+           else:
+>>>>>>         f = lambda p : p[0][0] is not None and p[0][0] >= minpriority
+       
+           # Careful: _finalizer_registry may be mutated while this function
+           # is running (either by a GC run or by another thread).
+       
+ 5498:     items = [x for x in _finalizer_registry.items() if f(x)]
+    5:     items.sort(reverse=True)
+       
+ 5498:     for key, finalizer in items:
+ 5493:         sub_debug('calling %s', finalizer)
+ 5493:         try:
+ 5493:             finalizer()
+>>>>>>         except Exception:
+>>>>>>             import traceback
+>>>>>>             traceback.print_exc()
+       
+    5:     if minpriority is None:
+    5:         _finalizer_registry.clear()
+       
+       #
+       # Clean up on exit
+       #
+       
+    1: def is_exiting():
+           '''
+           Returns true if the process is shutting down
+           '''
+    1:     return _exiting or _exiting is None
+       
+    1: _exiting = False
+       
+    1: def _exit_function(info=info, debug=debug, _run_finalizers=_run_finalizers,
+    1:                    active_children=active_children,
+    1:                    current_process=current_process):
+           # NB: we hold on to references to functions in the arglist due to the
+           # situation described below, where this function is called after this
+           # module's globals are destroyed.
+       
+           global _exiting
+       
+>>>>>>     info('process shutting down')
+>>>>>>     debug('running all "atexit" finalizers with priority >= 0')
+>>>>>>     _run_finalizers(0)
+       
+>>>>>>     if current_process() is not None:
+               # NB: we check if the current process is None here because if
+               # it's None, any call to ``active_children()`` will throw an
+               # AttributeError (active_children winds up trying to get
+               # attributes from util._current_process).  This happens in a
+               # variety of shutdown circumstances that are not well-understood
+               # because module-scope variables are not apparently supposed to
+               # be destroyed until after this function is called.  However,
+               # they are indeed destroyed before this function is called.  See
+               # issues 9775 and 15881.  Also related: 4106, 9205, and 9207.
+       
+>>>>>>         for p in active_children():
+>>>>>>             if p._daemonic:
+>>>>>>                 info('calling terminate() for daemon %s', p.name)
+>>>>>>                 p._popen.terminate()
+       
+>>>>>>         for p in active_children():
+>>>>>>             info('calling join() for process %s', p.name)
+>>>>>>             p.join()
+       
+>>>>>>     debug('running the remaining "atexit" finalizers')
+>>>>>>     _run_finalizers()
+       
+    1: atexit.register(_exit_function)
+       
+       #
+       # Some fork aware types
+       #
+       
+    2: class ForkAwareThreadLock(object):
+    1:     def __init__(self):
+    2:         self._reset()
+    2:         register_after_fork(self, ForkAwareThreadLock._reset)
+       
+    1:     def _reset(self):
+    2:         self._lock = threading.Lock()
+    2:         self.acquire = self._lock.acquire
+    2:         self.release = self._lock.release
+       
+    2: class ForkAwareLocal(threading.local):
+    1:     def __init__(self):
+   16:         register_after_fork(self, lambda obj : obj.__dict__.clear())
+    1:     def __reduce__(self):
+>>>>>>         return type(self), ()

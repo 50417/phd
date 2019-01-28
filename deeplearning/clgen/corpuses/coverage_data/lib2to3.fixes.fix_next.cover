@@ -1,0 +1,103 @@
+    1: """Fixer for it.next() -> next(it), per PEP 3114."""
+       # Author: Collin Winter
+       
+       # Things that currently aren't covered:
+       #   - listcomp "next" names aren't warned
+       #   - "with" statement targets aren't checked
+       
+       # Local imports
+    1: from ..pgen2 import token
+    1: from ..pygram import python_symbols as syms
+    1: from .. import fixer_base
+    1: from ..fixer_util import Name, Call, find_binding
+       
+    1: bind_warning = "Calls to builtin next() possibly shadowed by global binding"
+       
+       
+    2: class FixNext(fixer_base.BaseFix):
+    1:     BM_compatible = True
+           PATTERN = """
+           power< base=any+ trailer< '.' attr='next' > trailer< '(' ')' > >
+           |
+           power< head=any+ trailer< '.' attr='next' > not trailer< '(' ')' > >
+           |
+           classdef< 'class' any+ ':'
+                     suite< any*
+                            funcdef< 'def'
+                                     name='next'
+                                     parameters< '(' NAME ')' > any+ >
+                            any* > >
+           |
+           global=global_stmt< 'global' any* 'next' any* >
+    1:     """
+       
+    1:     order = "pre" # Pre-order tree traversal
+       
+    1:     def start_tree(self, tree, filename):
+   60:         super(FixNext, self).start_tree(tree, filename)
+       
+   60:         n = find_binding(u'next', tree)
+   60:         if n:
+   20:             self.warning(n, bind_warning)
+   20:             self.shadowed_next = True
+               else:
+   40:             self.shadowed_next = False
+       
+    1:     def transform(self, node, results):
+   38:         assert results
+       
+   38:         base = results.get("base")
+   38:         attr = results.get("attr")
+   38:         name = results.get("name")
+       
+   38:         if base:
+   16:             if self.shadowed_next:
+    4:                 attr.replace(Name(u"__next__", prefix=attr.prefix))
+                   else:
+   30:                 base = [n.clone() for n in base]
+   12:                 base[0].prefix = u""
+   12:                 node.replace(Call(Name(u"next", prefix=node.prefix), base))
+   22:         elif name:
+    5:             n = Name(u"__next__", prefix=name.prefix)
+    5:             name.replace(n)
+   17:         elif attr:
+                   # We don't do this transformation if we're assigning to "x.next".
+                   # Unfortunately, it doesn't seem possible to do this in PATTERN,
+                   #  so it's being done here.
+   15:             if is_assign_target(node):
+   12:                 head = results["head"]
+   24:                 if "".join([str(n) for n in head]).strip() == u'__builtin__':
+    6:                     self.warning(node, bind_warning)
+   12:                 return
+    3:             attr.replace(Name(u"__next__"))
+    2:         elif "global" in results:
+    2:             self.warning(node, bind_warning)
+    2:             self.shadowed_next = True
+       
+       
+       ### The following functions help test if node is part of an assignment
+       ###  target.
+       
+    1: def is_assign_target(node):
+   15:     assign = find_assign(node)
+   15:     if assign is None:
+    2:         return False
+       
+   14:     for child in assign.children:
+   14:         if child.type == token.EQUAL:
+    1:             return False
+   13:         elif is_subtree(child, node):
+   12:             return True
+>>>>>>     return False
+       
+    1: def find_assign(node):
+   52:     if node.type == syms.expr_stmt:
+   13:         return node
+   39:     if node.type == syms.simple_stmt or node.parent is None:
+    2:         return None
+   37:     return find_assign(node.parent)
+       
+    1: def is_subtree(root, node):
+   53:     if root == node:
+   12:         return True
+  106:     return any(is_subtree(c, node) for c in root.children)

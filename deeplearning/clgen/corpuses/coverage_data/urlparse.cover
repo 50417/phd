@@ -1,0 +1,428 @@
+       """Parse (absolute and relative) URLs.
+       
+       urlparse module is based upon the following RFC specifications.
+       
+       RFC 3986 (STD66): "Uniform Resource Identifiers" by T. Berners-Lee, R. Fielding
+       and L.  Masinter, January 2005.
+       
+       RFC 2732 : "Format for Literal IPv6 Addresses in URL's by R.Hinden, B.Carpenter
+       and L.Masinter, December 1999.
+       
+       RFC 2396:  "Uniform Resource Identifiers (URI)": Generic Syntax by T.
+       Berners-Lee, R. Fielding, and L. Masinter, August 1998.
+       
+       RFC 2368: "The mailto URL scheme", by P.Hoffman , L Masinter, J. Zwinski, July 1998.
+       
+       RFC 1808: "Relative Uniform Resource Locators", by R. Fielding, UC Irvine, June
+       1995.
+       
+       RFC 1738: "Uniform Resource Locators (URL)" by T. Berners-Lee, L. Masinter, M.
+       McCahill, December 1994
+       
+       RFC 3986 is considered the current standard and any future changes to
+       urlparse module should conform with it.  The urlparse module is
+       currently not entirely compliant with this RFC due to defacto
+       scenarios for parsing, and for backward compatibility purposes, some
+       parsing quirks from older RFCs are retained. The testcases in
+       test_urlparse.py provides a good indicator of parsing behavior.
+       
+    2: """
+       
+    2: import re
+       
+    2: __all__ = ["urlparse", "urlunparse", "urljoin", "urldefrag",
+    2:            "urlsplit", "urlunsplit", "parse_qs", "parse_qsl"]
+       
+       # A classification of schemes ('' means apply by default)
+    2: uses_relative = ['ftp', 'http', 'gopher', 'nntp', 'imap',
+    2:                  'wais', 'file', 'https', 'shttp', 'mms',
+    2:                  'prospero', 'rtsp', 'rtspu', '', 'sftp',
+    2:                  'svn', 'svn+ssh']
+    2: uses_netloc = ['ftp', 'http', 'gopher', 'nntp', 'telnet',
+    2:                'imap', 'wais', 'file', 'mms', 'https', 'shttp',
+    2:                'snews', 'prospero', 'rtsp', 'rtspu', 'rsync', '',
+    2:                'svn', 'svn+ssh', 'sftp','nfs','git', 'git+ssh']
+    2: uses_params = ['ftp', 'hdl', 'prospero', 'http', 'imap',
+    2:                'https', 'shttp', 'rtsp', 'rtspu', 'sip', 'sips',
+    2:                'mms', '', 'sftp', 'tel']
+       
+       # These are not actually used anymore, but should stay for backwards
+       # compatibility.  (They are undocumented, but have a public-looking name.)
+    2: non_hierarchical = ['gopher', 'hdl', 'mailto', 'news',
+    2:                     'telnet', 'wais', 'imap', 'snews', 'sip', 'sips']
+    2: uses_query = ['http', 'wais', 'imap', 'https', 'shttp', 'mms',
+    2:               'gopher', 'rtsp', 'rtspu', 'sip', 'sips', '']
+    2: uses_fragment = ['ftp', 'hdl', 'http', 'gopher', 'news',
+    2:                  'nntp', 'wais', 'https', 'shttp', 'snews',
+    2:                  'file', 'prospero', '']
+       
+       # Characters valid in scheme names
+    2: scheme_chars = ('abcdefghijklmnopqrstuvwxyz'
+                       'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                       '0123456789'
+                       '+-.')
+       
+    2: MAX_CACHE_SIZE = 20
+    2: _parse_cache = {}
+       
+    2: def clear_cache():
+           """Clear the parse cache."""
+  415:     _parse_cache.clear()
+       
+       
+    4: class ResultMixin(object):
+    2:     """Shared methods for the parsed result objects."""
+       
+    2:     @property
+           def username(self):
+   69:         netloc = self.netloc
+   69:         if "@" in netloc:
+    6:             userinfo = netloc.rsplit("@", 1)[0]
+    6:             if ":" in userinfo:
+    2:                 userinfo = userinfo.split(":", 1)[0]
+    6:             return userinfo
+   63:         return None
+       
+    2:     @property
+           def password(self):
+   69:         netloc = self.netloc
+   69:         if "@" in netloc:
+    6:             userinfo = netloc.rsplit("@", 1)[0]
+    6:             if ":" in userinfo:
+    2:                 return userinfo.split(":", 1)[1]
+   67:         return None
+       
+    2:     @property
+           def hostname(self):
+   94:         netloc = self.netloc.split('@')[-1]
+   94:         if '[' in netloc and ']' in netloc:
+   18:             return netloc.split(']')[0][1:].lower()
+   76:         elif ':' in netloc:
+    6:             return netloc.split(':')[0].lower()
+   70:         elif netloc == '':
+    6:             return None
+               else:
+   64:             return netloc.lower()
+       
+    2:     @property
+           def port(self):
+   96:         netloc = self.netloc.split('@')[-1].split(']')[-1]
+   96:         if ':' in netloc:
+   21:             port = netloc.split(':')[1]
+   21:             if port:
+   13:                 port = int(port, 10)
+                       # verify legal port
+   11:                 if (0 <= port <= 65535):
+   10:                     return port
+   84:         return None
+       
+    2: from collections import namedtuple
+       
+    4: class SplitResult(namedtuple('SplitResult', 'scheme netloc path query fragment'), ResultMixin):
+       
+    2:     __slots__ = ()
+       
+    2:     def geturl(self):
+   67:         return urlunsplit(self)
+       
+       
+    4: class ParseResult(namedtuple('ParseResult', 'scheme netloc path params query fragment'), ResultMixin):
+       
+    2:     __slots__ = ()
+       
+    2:     def geturl(self):
+   65:         return urlunparse(self)
+       
+       
+    2: def urlparse(url, scheme='', allow_fragments=True):
+           """Parse a URL into 6 components:
+           <scheme>://<netloc>/<path>;<params>?<query>#<fragment>
+           Return a 6-tuple: (scheme, netloc, path, params, query, fragment).
+           Note that we don't break the components up in smaller bits
+           (e.g. netloc is a single string) and we don't expand % escapes."""
+ 1375:     tuple = urlsplit(url, scheme, allow_fragments)
+ 1370:     scheme, netloc, url, query, fragment = tuple
+ 1370:     if scheme in uses_params and ';' in url:
+  135:         url, params = _splitparams(url)
+           else:
+ 1235:         params = ''
+ 1370:     return ParseResult(scheme, netloc, url, params, query, fragment)
+       
+    2: def _splitparams(url):
+  135:     if '/'  in url:
+  122:         i = url.find(';', url.rfind('/'))
+  122:         if i < 0:
+    4:             return url, ''
+           else:
+   13:         i = url.find(';')
+  131:     return url[:i], url[i+1:]
+       
+    2: def _splitnetloc(url, start=0):
+  296:     delim = len(url)   # position of end of domain part of url, default is end
+ 1184:     for c in '/?#':    # look for delimiters; the order is NOT important
+  888:         wdelim = url.find(c, start)        # find first of this delim
+  888:         if wdelim >= 0:                    # if found
+  288:             delim = min(delim, wdelim)     # use earliest delim position
+  296:     return url[start:delim], url[delim:]   # return (domain, rest)
+       
+    2: def urlsplit(url, scheme='', allow_fragments=True):
+           """Parse a URL into 5 components:
+           <scheme>://<netloc>/<path>?<query>#<fragment>
+           Return a 5-tuple: (scheme, netloc, path, query, fragment).
+           Note that we don't break the components up in smaller bits
+           (e.g. netloc is a single string) and we don't expand % escapes."""
+ 1784:     allow_fragments = bool(allow_fragments)
+ 1784:     key = url, scheme, allow_fragments, type(url), type(scheme)
+ 1784:     cached = _parse_cache.get(key, None)
+ 1784:     if cached:
+ 1284:         return cached
+  500:     if len(_parse_cache) >= MAX_CACHE_SIZE: # avoid runaway growth
+   20:         clear_cache()
+  500:     netloc = query = fragment = ''
+  500:     i = url.find(':')
+  500:     if i > 0:
+  326:         if url[:i] == 'http': # optimize the common case
+  237:             scheme = url[:i].lower()
+  237:             url = url[i+1:]
+  237:             if url[:2] == '//':
+  228:                 netloc, url = _splitnetloc(url, 2)
+  228:                 if (('[' in netloc and ']' not in netloc) or
+  225:                         (']' in netloc and '[' not in netloc)):
+    4:                     raise ValueError("Invalid IPv6 URL")
+  233:             if allow_fragments and '#' in url:
+   19:                 url, fragment = url.split('#', 1)
+  233:             if '?' in url:
+   22:                 url, query = url.split('?', 1)
+  233:             v = SplitResult(scheme, netloc, url, query, fragment)
+  233:             _parse_cache[key] = v
+  233:             return v
+  529:         for c in url[:i]:
+  441:             if c not in scheme_chars:
+    1:                 break
+               else:
+                   # make sure "url" is not actually a port number (in which case
+                   # "scheme" is really part of the path)
+   88:             rest = url[i+1:]
+  212:             if not rest or any(c not in '0123456789' for c in rest):
+                       # not a port number
+   79:                 scheme, url = url[:i].lower(), rest
+       
+  263:     if url[:2] == '//':
+   68:         netloc, url = _splitnetloc(url, 2)
+   68:         if (('[' in netloc and ']' not in netloc) or
+   67:                 (']' in netloc and '[' not in netloc)):
+    1:             raise ValueError("Invalid IPv6 URL")
+  262:     if allow_fragments and '#' in url:
+   22:         url, fragment = url.split('#', 1)
+  262:     if '?' in url:
+   31:         url, query = url.split('?', 1)
+  262:     v = SplitResult(scheme, netloc, url, query, fragment)
+  262:     _parse_cache[key] = v
+  262:     return v
+       
+    2: def urlunparse(data):
+           """Put a parsed URL back together again.  This may result in a
+           slightly different, but equivalent URL, if the URL that was parsed
+           originally had redundant delimiters, e.g. a ? with an empty query
+           (the draft states that these are equivalent)."""
+  349:     scheme, netloc, url, params, query, fragment = data
+  349:     if params:
+   26:         url = "%s;%s" % (url, params)
+  349:     return urlunsplit((scheme, netloc, url, query, fragment))
+       
+    2: def urlunsplit(data):
+           """Combine the elements of a tuple as returned by urlsplit() into a
+           complete URL as a string. The data argument can be any five-item iterable.
+           This may result in a slightly different, but equivalent URL, if the URL that
+           was parsed originally had unnecessary delimiters (for example, a ? with an
+           empty query; the RFC states that these are equivalent)."""
+  443:     scheme, netloc, url, query, fragment = data
+  443:     if netloc or (scheme and scheme in uses_netloc and url[:2] != '//'):
+  373:         if url and url[:1] != '/': url = '/' + url
+  373:         url = '//' + (netloc or '') + url
+  443:     if scheme:
+  379:         url = scheme + ':' + url
+  443:     if query:
+   76:         url = url + '?' + query
+  443:     if fragment:
+   81:         url = url + '#' + fragment
+  443:     return url
+       
+    2: def urljoin(base, url, allow_fragments=True):
+           """Join a base URL and a possibly relative URL to form an absolute
+           interpretation of the latter."""
+  194:     if not base:
+    2:         return url
+  192:     if not url:
+    3:         return base
+           bscheme, bnetloc, bpath, bparams, bquery, bfragment = \
+  189:             urlparse(base, '', allow_fragments)
+           scheme, netloc, path, params, query, fragment = \
+  189:             urlparse(url, bscheme, allow_fragments)
+  189:     if scheme != bscheme or scheme not in uses_relative:
+   20:         return url
+  169:     if scheme in uses_netloc:
+  169:         if netloc:
+   32:             return urlunparse((scheme, netloc, path,
+   32:                                params, query, fragment))
+  137:         netloc = bnetloc
+  137:     if path[:1] == '/':
+    9:         return urlunparse((scheme, netloc, path,
+    9:                            params, query, fragment))
+  128:     if not path and not params:
+   10:         path = bpath
+   10:         params = bparams
+   10:         if not query:
+    5:             query = bquery
+   10:         return urlunparse((scheme, netloc, path,
+   10:                            params, query, fragment))
+  118:     segments = bpath.split('/')[:-1] + path.split('/')
+           # XXX The stuff below is bogus in various ways...
+  118:     if segments[-1] == '.':
+    8:         segments[-1] = ''
+  140:     while '.' in segments:
+   22:         segments.remove('.')
+  118:     while 1:
+  164:         i = 1
+  164:         n = len(segments) - 1
+  461:         while i < n:
+  343:             if (segments[i] == '..'
+   53:                 and segments[i-1] not in ('', '..')):
+   46:                 del segments[i-1:i+1]
+   46:                 break
+  297:             i = i+1
+               else:
+  118:             break
+  118:     if segments == ['', '..']:
+    1:         segments[-1] = ''
+  117:     elif len(segments) >= 2 and segments[-1] == '..':
+    8:         segments[-2:] = ['']
+  118:     return urlunparse((scheme, netloc, '/'.join(segments),
+  118:                        params, query, fragment))
+       
+    2: def urldefrag(url):
+           """Removes any existing fragment from URL.
+       
+           Returns a tuple of the defragmented URL and the fragment.  If
+           the URL contained no fragments, the second element is the
+           empty string.
+           """
+   10:     if '#' in url:
+    5:         s, n, p, a, q, frag = urlparse(url)
+    5:         defrag = urlunparse((s, n, p, a, q, ''))
+    5:         return defrag, frag
+           else:
+    5:         return url, ''
+       
+    2: try:
+    2:     unicode
+>>>>>> except NameError:
+>>>>>>     def _is_unicode(x):
+>>>>>>         return 0
+       else:
+    2:     def _is_unicode(x):
+  558:         return isinstance(x, unicode)
+       
+       # unquote method for parse_qs and parse_qsl
+       # Cannot use directly from urllib as it would create a circular reference
+       # because urllib uses urlparse methods (urljoin).  If you update this function,
+       # update it also in urllib.  This code duplication does not existin in Python3.
+       
+    2: _hexdig = '0123456789ABCDEFabcdef'
+   48: _hextochr = dict((a+b, chr(int(a+b,16)))
+ 1014:                  for a in _hexdig for b in _hexdig)
+    2: _asciire = re.compile('([\x00-\x7f]+)')
+       
+    2: def unquote(s):
+           """unquote('abc%20def') -> 'abc def'."""
+  558:     if _is_unicode(s):
+>>>>>>         if '%' not in s:
+>>>>>>             return s
+>>>>>>         bits = _asciire.split(s)
+>>>>>>         res = [bits[0]]
+>>>>>>         append = res.append
+>>>>>>         for i in range(1, len(bits), 2):
+>>>>>>             append(unquote(str(bits[i])).decode('latin1'))
+>>>>>>             append(bits[i + 1])
+>>>>>>         return ''.join(res)
+       
+  558:     bits = s.split('%')
+           # fastpath
+  558:     if len(bits) == 1:
+  542:         return s
+   16:     res = [bits[0]]
+   16:     append = res.append
+   32:     for item in bits[1:]:
+   16:         try:
+   16:             append(_hextochr[item[:2]])
+   16:             append(item[2:])
+>>>>>>         except KeyError:
+>>>>>>             append('%')
+>>>>>>             append(item)
+   16:     return ''.join(res)
+       
+    2: def parse_qs(qs, keep_blank_values=0, strict_parsing=0):
+           """Parse a query given as a string argument.
+       
+               Arguments:
+       
+               qs: percent-encoded query string to be parsed
+       
+               keep_blank_values: flag indicating whether blank values in
+                   percent-encoded queries should be treated as blank strings.
+                   A true value indicates that blanks should be retained as
+                   blank strings.  The default false value indicates that
+                   blank values are to be ignored and treated as if they were
+                   not included.
+       
+               strict_parsing: flag indicating what to do with parsing errors.
+                   If false (the default), errors are silently ignored.
+                   If true, errors raise a ValueError exception.
+           """
+  162:     dict = {}
+  355:     for name, value in parse_qsl(qs, keep_blank_values, strict_parsing):
+  193:         if name in dict:
+   12:             dict[name].append(value)
+               else:
+  181:             dict[name] = [value]
+  142:     return dict
+       
+    2: def parse_qsl(qs, keep_blank_values=0, strict_parsing=0):
+           """Parse a query given as a string argument.
+       
+           Arguments:
+       
+           qs: percent-encoded query string to be parsed
+       
+           keep_blank_values: flag indicating whether blank values in
+               percent-encoded queries should be treated as blank strings.  A
+               true value indicates that blanks should be retained as blank
+               strings.  The default false value indicates that blank values
+               are to be ignored and treated as if they were  not included.
+       
+           strict_parsing: flag indicating what to do with parsing errors. If
+               false (the default), errors are silently ignored. If true,
+               errors raise a ValueError exception.
+       
+           Returns a list, as G-d intended.
+           """
+ 1153:     pairs = [s2 for s1 in qs.split('&') for s2 in s1.split(';')]
+  234:     r = []
+  695:     for name_value in pairs:
+  481:         if not name_value and not strict_parsing:
+  136:             continue
+  345:         nv = name_value.split('=', 1)
+  345:         if len(nv) != 2:
+   32:             if strict_parsing:
+   20:                 raise ValueError, "bad query field: %r" % (name_value,)
+                   # Handle case of a control-name with no equal sign
+   12:             if keep_blank_values:
+    3:                 nv.append('')
+                   else:
+>>>>>>                 continue
+  316:         if len(nv[1]) or keep_blank_values:
+  279:             name = unquote(nv[0].replace('+', ' '))
+  279:             value = unquote(nv[1].replace('+', ' '))
+  279:             r.append((name, value))
+       
+  214:     return r

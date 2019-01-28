@@ -1,5 +1,4 @@
 """This file contains the definition of atomizers.
-
 An atomizer converts a block of text into a sequence of vocbulary tokens.
 """
 from collections import Counter
@@ -9,134 +8,20 @@ import pathlib
 import pickle
 import typing
 from absl import flags
-from phd.lib.labm8 import labdate
-
-from deeplearning.clgen import errors
+import errors
 
 
-FLAGS = flags.FLAGS
-OPENCL_ATOMS = set([
-    '  ',
-    '__assert',
-    '__attribute',
-    '__builtin_astype',
-    '__clc_fabs',
-    '__clc_fma',
-    '__constant',
-    '__global',
-    '__inline',
-    '__kernel',
-    '__local',
-    '__private',
-    '__read_only',
-    '__read_write',
-    '__write_only',
-    '*/',
-    '/*',
-    '//',
-    'abs',
-    'alignas',
-    'alignof',
-    'atomic_add',
-    'auto',
-    'barrier',
-    'bool',
-    'break',
-    'case',
-    'char',
-    'clamp',
-    'complex',
-    'const',
-    'constant',
-    'continue',
-    'default',
-    'define',
-    'defined',
-    'do',
-    'double',
-    'elif',
-    'else',
-    'endif',
-    'enum',
-    'error',
-    'event_t',
-    'extern',
-    'fabs',
-    'false',
-    'float',
-    'for',
-    'get_global_id',
-    'get_global_size',
-    'get_local_id',
-    'get_local_size',
-    'get_num_groups',
-    'global',
-    'goto',
-    'half',
-    'if',
-    'ifdef',
-    'ifndef',
-    'image1d_array_t',
-    'image1d_buffer_t',
-    'image1d_t',
-    'image2d_array_t',
-    'image2d_t',
-    'image3d_t',
-    'imaginary',
-    'include',
-    'inline',
-    'int',
-    'into',
-    'kernel',
-    'line',
-    'local',
-    'long',
-    'noreturn',
-    'pragma',
-    'private',
-    'quad',
-    'read_only',
-    'read_write',
-    'register',
-    'restrict',
-    'return',
-    'sampler_t',
-    'short',
-    'shuffle',
-    'signed',
-    'size_t',
-    'sizeof',
-    'sqrt',
-    'static',
-    'struct',
-    'switch',
-    'true',
-    'typedef',
-    'u32',
-    'uchar',
-    'uint',
-    'ulong',
-    'undef',
-    'union',
-    'unsigned',
-    'void',
-    'volatile',
-    'while',
-    'wide',
-    'write_only',
-])
+FLAGS = flags.FLAGS# pragma: no cover
 
 
-class AtomizerBase(object):
+class AtomizerBase(object):# pragma: no cover
   """The base class for implementing atomizers."""
 
   def __init__(self, vocab: typing.Dict[str, int]):
     """Instantiate an atomizer.
-
     Args:
       vocab: A dictionary of mappings from character sequences (atoms) into
         indices.
-
     Raises:
       TypeError: If vocab is not a dictionary.
       InvalidVocab: If the dictionary of mappings includes any duplicate values.
@@ -170,13 +55,10 @@ class AtomizerBase(object):
 
   def AtomizeString(self, text: str) -> np.array:
     """Atomize a text into an array of vocabulary indices.
-
     Args:
       text: Input text.
-
     Returns:
       An array of indices into vocabulary for all atoms in text.
-
     Raises:
       VocabError: If the input text contains elements not in the vocabulary.
     """
@@ -184,10 +66,8 @@ class AtomizerBase(object):
 
   def TokenizeString(self, text: str) -> typing.List[str]:
     """Split the text into atoms, but do not encode to indices.
-
     Args:
       text: Input text.
-
     Returns:
       A list of tokens.
     """
@@ -196,10 +76,8 @@ class AtomizerBase(object):
 
   def DeatomizeIndices(self, encoded: np.array) -> str:
     """Translate atomized code back into a string.
-
     Args:
       encoded: An nparray of encoded vocabulary indices.
-
     Returns:
       The decoded text.
     """
@@ -216,10 +94,8 @@ class AtomizerBase(object):
   @classmethod
   def FromText(cls, text: str) -> 'AtomizerBase':
     """Instantiate and specialize an atomizer from a corpus text.
-
     Args:
       text: Text corpus
-
     Returns:
       An atomizer instance.
     """
@@ -232,15 +108,13 @@ class AtomizerBase(object):
       return pickle.load(infile)
 
 
-class AsciiCharacterAtomizer(AtomizerBase):
+class AsciiCharacterAtomizer(AtomizerBase):# pragma: no cover
   """An atomizer for character-level syntactic modelling."""
 
   def AtomizeString(self, text: str) -> np.array:
     """Atomize a text into an array of vocabulary indices.
-
     Args:
       text: Input text.
-
     Returns:
       An array of indices into vocabulary for all atoms in text.
     """
@@ -255,10 +129,8 @@ class AsciiCharacterAtomizer(AtomizerBase):
   @classmethod
   def FromText(cls, text: str) -> 'AsciiCharacterAtomizer':
     """Instantiate and an atomizer from a corpus text.
-
     Args:
       text: Text corpus.
-
     Returns:
       An atomizer instance.
     """
@@ -272,7 +144,7 @@ class AsciiCharacterAtomizer(AtomizerBase):
 class GreedyAtomizer(AtomizerBase):
   """A greedy atomizer supports multi-character tokens."""
 
-  def __init__(self, vocab: typing.Dict[str, int], determine_chars=False):
+  def __init__(self, vocab: typing.Dict[str, int], determine_chars=False):# pragma: no cover
     self.determine_chars = determine_chars
     super(GreedyAtomizer, self).__init__(vocab)
 
@@ -283,10 +155,8 @@ class GreedyAtomizer(AtomizerBase):
 
   def AtomizeString(self, text: str) -> np.array:
     """Atomize a text into an array of vocabulary indices.
-
     Args:
       text: Input text.
-
     Returns:
       An array of indices into vocabulary for all atoms in text.
     """
@@ -332,17 +202,15 @@ class GreedyAtomizer(AtomizerBase):
 
     return np.array(indices, dtype=np.int32)
 
-  def __repr__(self) -> str:
+  def __repr__(self) -> str:# pragma: no cover
     return f'GreedyAtomizer[{self.vocab_size} tokens]'
 
-  @classmethod
-  def FromText(cls, text: str, atoms = OPENCL_ATOMS) -> 'GreedyAtomizer':
+  @classmethod# pragma: no cover
+  def FromText(cls, text: str, atoms: typing.Set[str]) -> 'GreedyAtomizer':# pragma: no cover
     """Instantiate and an atomizer from a corpus text.
-
     Args:
       text: Text corpus
       atoms: A list of multi-character tokens.
-
     Returns:
       An atomizer instance.
     """
@@ -355,6 +223,5 @@ class GreedyAtomizer(AtomizerBase):
     # Derive the subset of the vocabulary required to encode the given text.
     tokens = sorted(list(set(c.TokenizeString(text))))
     vocab_subset = dict(zip(tokens, range(len(tokens))))
-    end_time = labdate.MillisecondsTimestamp()
     # Return a new atomizer using the subset vocabulary.
     return GreedyAtomizer(vocab_subset)

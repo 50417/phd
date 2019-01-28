@@ -1,0 +1,704 @@
+    1: import unittest
+    1: from test.test_support import verbose, run_unittest, start_threads
+    1: import sys
+    1: import time
+    1: import gc
+    1: import weakref
+       
+    1: try:
+    1:     import threading
+>>>>>> except ImportError:
+>>>>>>     threading = None
+       
+       ### Support code
+       ###############################################################################
+       
+       # Bug 1055820 has several tests of longstanding bugs involving weakrefs and
+       # cyclic gc.
+       
+       # An instance of C1055820 has a self-loop, so becomes cyclic trash when
+       # unreachable.
+    2: class C1055820(object):
+    1:     def __init__(self, i):
+   10:         self.i = i
+   10:         self.loop = self
+       
+    2: class GC_Detector(object):
+           # Create an instance I.  Then gc hasn't happened again so long as
+           # I.gc_happened is false.
+       
+    1:     def __init__(self):
+    2:         self.gc_happened = False
+       
+    2:         def it_happened(ignored):
+    2:             self.gc_happened = True
+       
+               # Create a piece of cyclic trash that triggers it_happened when
+               # gc collects it.
+    2:         self.wr = weakref.ref(C1055820(666), it_happened)
+       
+       
+       ### Tests
+       ###############################################################################
+       
+    2: class GCTests(unittest.TestCase):
+    1:     def test_list(self):
+    1:         l = []
+    1:         l.append(l)
+    1:         gc.collect()
+    1:         del l
+    1:         self.assertEqual(gc.collect(), 1)
+       
+    1:     def test_dict(self):
+    1:         d = {}
+    1:         d[1] = d
+    1:         gc.collect()
+    1:         del d
+    1:         self.assertEqual(gc.collect(), 1)
+       
+    1:     def test_tuple(self):
+               # since tuples are immutable we close the loop with a list
+    1:         l = []
+    1:         t = (l,)
+    1:         l.append(t)
+    1:         gc.collect()
+    1:         del t
+    1:         del l
+    1:         self.assertEqual(gc.collect(), 2)
+       
+    1:     def test_class(self):
+    2:         class A:
+    1:             pass
+    1:         A.a = A
+    1:         gc.collect()
+    1:         del A
+    1:         self.assertNotEqual(gc.collect(), 0)
+       
+    1:     def test_newstyleclass(self):
+    2:         class A(object):
+    1:             pass
+    1:         gc.collect()
+    1:         del A
+    1:         self.assertNotEqual(gc.collect(), 0)
+       
+    1:     def test_instance(self):
+    2:         class A:
+    1:             pass
+    1:         a = A()
+    1:         a.a = a
+    1:         gc.collect()
+    1:         del a
+    1:         self.assertNotEqual(gc.collect(), 0)
+       
+    1:     def test_newinstance(self):
+    2:         class A(object):
+    1:             pass
+    1:         a = A()
+    1:         a.a = a
+    1:         gc.collect()
+    1:         del a
+    1:         self.assertNotEqual(gc.collect(), 0)
+    2:         class B(list):
+    1:             pass
+    2:         class C(B, A):
+    1:             pass
+    1:         a = C()
+    1:         a.a = a
+    1:         gc.collect()
+    1:         del a
+    1:         self.assertNotEqual(gc.collect(), 0)
+    1:         del B, C
+    1:         self.assertNotEqual(gc.collect(), 0)
+    1:         A.a = A()
+    1:         del A
+    1:         self.assertNotEqual(gc.collect(), 0)
+    1:         self.assertEqual(gc.collect(), 0)
+       
+    1:     def test_method(self):
+               # Tricky: self.__init__ is a bound method, it references the instance.
+    2:         class A:
+    1:             def __init__(self):
+    1:                 self.init = self.__init__
+    1:         a = A()
+    1:         gc.collect()
+    1:         del a
+    1:         self.assertNotEqual(gc.collect(), 0)
+       
+    1:     def test_finalizer(self):
+               # A() is uncollectable if it is part of a cycle, make sure it shows up
+               # in gc.garbage.
+    2:         class A:
+    2:             def __del__(self): pass
+    2:         class B:
+    1:             pass
+    1:         a = A()
+    1:         a.a = a
+    1:         id_a = id(a)
+    1:         b = B()
+    1:         b.b = b
+    1:         gc.collect()
+    1:         del a
+    1:         del b
+    1:         self.assertNotEqual(gc.collect(), 0)
+    1:         for obj in gc.garbage:
+    1:             if id(obj) == id_a:
+    1:                 del obj.a
+    1:                 break
+               else:
+>>>>>>             self.fail("didn't find obj in garbage (finalizer)")
+    1:         gc.garbage.remove(obj)
+       
+    1:     def test_finalizer_newclass(self):
+               # A() is uncollectable if it is part of a cycle, make sure it shows up
+               # in gc.garbage.
+    2:         class A(object):
+    2:             def __del__(self): pass
+    2:         class B(object):
+    1:             pass
+    1:         a = A()
+    1:         a.a = a
+    1:         id_a = id(a)
+    1:         b = B()
+    1:         b.b = b
+    1:         gc.collect()
+    1:         del a
+    1:         del b
+    1:         self.assertNotEqual(gc.collect(), 0)
+    1:         for obj in gc.garbage:
+    1:             if id(obj) == id_a:
+    1:                 del obj.a
+    1:                 break
+               else:
+>>>>>>             self.fail("didn't find obj in garbage (finalizer)")
+    1:         gc.garbage.remove(obj)
+       
+    1:     def test_function(self):
+               # Tricky: f -> d -> f, code should call d.clear() after the exec to
+               # break the cycle.
+    1:         d = {}
+    1:         exec("def f(): pass\n") in d
+    1:         gc.collect()
+    1:         del d
+    1:         self.assertEqual(gc.collect(), 2)
+       
+    1:     def test_frame(self):
+    1:         def f():
+    1:             frame = sys._getframe()
+    1:         gc.collect()
+    1:         f()
+    1:         self.assertEqual(gc.collect(), 1)
+       
+    1:     def test_saveall(self):
+               # Verify that cyclic garbage like lists show up in gc.garbage if the
+               # SAVEALL option is enabled.
+       
+               # First make sure we don't save away other stuff that just happens to
+               # be waiting for collection.
+    1:         gc.collect()
+               # if this fails, someone else created immortal trash
+    1:         self.assertEqual(gc.garbage, [])
+       
+    1:         L = []
+    1:         L.append(L)
+    1:         id_L = id(L)
+       
+    1:         debug = gc.get_debug()
+    1:         gc.set_debug(debug | gc.DEBUG_SAVEALL)
+    1:         del L
+    1:         gc.collect()
+    1:         gc.set_debug(debug)
+       
+    1:         self.assertEqual(len(gc.garbage), 1)
+    1:         obj = gc.garbage.pop()
+    1:         self.assertEqual(id(obj), id_L)
+       
+    1:     def test_del(self):
+               # __del__ methods can trigger collection, make this to happen
+    1:         thresholds = gc.get_threshold()
+    1:         gc.enable()
+    1:         gc.set_threshold(1)
+       
+    2:         class A:
+    1:             def __del__(self):
+>>>>>>                 dir(self)
+    1:         a = A()
+    1:         del a
+       
+    1:         gc.disable()
+    1:         gc.set_threshold(*thresholds)
+       
+    1:     def test_del_newclass(self):
+               # __del__ methods can trigger collection, make this to happen
+    1:         thresholds = gc.get_threshold()
+    1:         gc.enable()
+    1:         gc.set_threshold(1)
+       
+    2:         class A(object):
+    1:             def __del__(self):
+>>>>>>                 dir(self)
+    1:         a = A()
+    1:         del a
+       
+    1:         gc.disable()
+    1:         gc.set_threshold(*thresholds)
+       
+           # The following two tests are fragile:
+           # They precisely count the number of allocations,
+           # which is highly implementation-dependent.
+           # For example:
+           # - disposed tuples are not freed, but reused
+           # - the call to assertEqual somehow avoids building its args tuple
+    1:     def test_get_count(self):
+               # Avoid future allocation of method object
+    1:         assertEqual = self._baseAssertEqual
+    1:         gc.collect()
+    1:         assertEqual(gc.get_count(), (0, 0, 0))
+>>>>>>         a = dict()
+               # since gc.collect(), we created two objects:
+               # the dict, and the tuple returned by get_count()
+>>>>>>         assertEqual(gc.get_count(), (2, 0, 0))
+       
+    1:     def test_collect_generations(self):
+               # Avoid future allocation of method object
+    1:         assertEqual = self.assertEqual
+    1:         gc.collect()
+    1:         a = dict()
+    1:         gc.collect(0)
+    1:         assertEqual(gc.get_count(), (0, 1, 0))
+>>>>>>         gc.collect(1)
+>>>>>>         assertEqual(gc.get_count(), (0, 0, 1))
+>>>>>>         gc.collect(2)
+>>>>>>         assertEqual(gc.get_count(), (0, 0, 0))
+       
+    1:     def test_trashcan(self):
+    2:         class Ouch:
+    1:             n = 0
+    1:             def __del__(self):
+  468:                 Ouch.n = Ouch.n + 1
+  468:                 if Ouch.n % 17 == 0:
+   27:                     gc.collect()
+       
+               # "trashcan" is a hack to prevent stack overflow when deallocating
+               # very deeply nested tuples etc.  It works in part by abusing the
+               # type pointer and refcount fields, and that can yield horrible
+               # problems when gc tries to traverse the structures.
+               # If this test fails (as it does in 2.0, 2.1 and 2.2), it will
+               # most likely die via segfault.
+       
+               # Note:  In 2.3 the possibility for compiling without cyclic gc was
+               # removed, and that in turn allows the trashcan mechanism to work
+               # via much simpler means (e.g., it never abuses the type pointer or
+               # refcount fields anymore).  Since it's much less likely to cause a
+               # problem now, the various constants in this expensive (we force a lot
+               # of full collections) test are cut back from the 2.2 version.
+    1:         gc.enable()
+    1:         N = 150
+    3:         for count in range(2):
+    2:             t = []
+  302:             for i in range(N):
+  300:                 t = [t, Ouch()]
+    2:             u = []
+  302:             for i in range(N):
+  300:                 u = [u, Ouch()]
+    2:             v = {}
+  302:             for i in range(N):
+  300:                 v = {1: v, 2: Ouch()}
+    1:         gc.disable()
+       
+    1:     @unittest.skipUnless(threading, "test meaningless on builds without threads")
+           def test_trashcan_threads(self):
+               # Issue #13992: trashcan mechanism should be thread-safe
+    1:         NESTING = 60
+    1:         N_THREADS = 2
+       
+    1:         def sleeper_gen():
+                   """A generator that releases the GIL when closed or dealloc'ed."""
+>>>>>>             try:
+>>>>>>                 yield
+                   finally:
+>>>>>>                 time.sleep(0.000001)
+       
+    2:         class C(list):
+                   # Appending to a list is atomic, which avoids the use of a lock.
+    1:             inits = []
+    1:             dels = []
+    1:             def __init__(self, alist):
+18234:                 self[:] = alist
+18278:                 C.inits.append(None)
+    1:             def __del__(self):
+                       # This __del__ is called by subtype_dealloc().
+>>>>>>                 C.dels.append(None)
+                       # `g` will release the GIL when garbage-collected.  This
+                       # helps assert subtype_dealloc's behaviour when threads
+                       # switch in the middle of it.
+>>>>>>                 g = sleeper_gen()
+>>>>>>                 next(g)
+                       # Now that __del__ is finished, subtype_dealloc will proceed
+                       # to call list_dealloc, which also uses the trashcan mechanism.
+       
+    1:         def make_nested():
+                   """Create a sufficiently nested container object so that the
+                   trashcan mechanism is invoked when deallocating it."""
+  300:             x = C([])
+18185:             for i in range(NESTING):
+17962:                 x = [C([x])]
+  300:             del x
+       
+    1:         def run_thread():
+                   """Exercise make_nested() in a loop."""
+  302:             while not exit:
+  300:                 make_nested()
+       
+    1:         old_checkinterval = sys.getcheckinterval()
+    1:         sys.setcheckinterval(3)
+    1:         try:
+    1:             exit = []
+    1:             threads = []
+    3:             for i in range(N_THREADS):
+    2:                 t = threading.Thread(target=run_thread)
+    2:                 threads.append(t)
+    2:             with start_threads(threads, lambda: exit.append(1)):
+    1:                 time.sleep(1.0)
+               finally:
+    1:             sys.setcheckinterval(old_checkinterval)
+    1:         gc.collect()
+    1:         self.assertEqual(len(C.inits), len(C.dels))
+       
+    1:     def test_boom(self):
+    2:         class Boom:
+    1:             def __getattr__(self, someattribute):
+>>>>>>                 del self.attr
+>>>>>>                 raise AttributeError
+       
+    1:         a = Boom()
+    1:         b = Boom()
+    1:         a.attr = b
+    1:         b.attr = a
+       
+    1:         gc.collect()
+    1:         garbagelen = len(gc.garbage)
+    1:         del a, b
+               # a<->b are in a trash cycle now.  Collection will invoke
+               # Boom.__getattr__ (to see whether a and b have __del__ methods), and
+               # __getattr__ deletes the internal "attr" attributes as a side effect.
+               # That causes the trash cycle to get reclaimed via refcounts falling to
+               # 0, thus mutating the trash graph as a side effect of merely asking
+               # whether __del__ exists.  This used to (before 2.3b1) crash Python.
+               # Now __getattr__ isn't called.
+    1:         self.assertEqual(gc.collect(), 4)
+    1:         self.assertEqual(len(gc.garbage), garbagelen)
+       
+    1:     def test_boom2(self):
+    2:         class Boom2:
+    1:             def __init__(self):
+    2:                 self.x = 0
+       
+    1:             def __getattr__(self, someattribute):
+>>>>>>                 self.x += 1
+>>>>>>                 if self.x > 1:
+>>>>>>                     del self.attr
+>>>>>>                 raise AttributeError
+       
+    1:         a = Boom2()
+    1:         b = Boom2()
+    1:         a.attr = b
+    1:         b.attr = a
+       
+    1:         gc.collect()
+    1:         garbagelen = len(gc.garbage)
+    1:         del a, b
+               # Much like test_boom(), except that __getattr__ doesn't break the
+               # cycle until the second time gc checks for __del__.  As of 2.3b1,
+               # there isn't a second time, so this simply cleans up the trash cycle.
+               # We expect a, b, a.__dict__ and b.__dict__ (4 objects) to get
+               # reclaimed this way.
+    1:         self.assertEqual(gc.collect(), 4)
+    1:         self.assertEqual(len(gc.garbage), garbagelen)
+       
+    1:     def test_boom_new(self):
+               # boom__new and boom2_new are exactly like boom and boom2, except use
+               # new-style classes.
+       
+    2:         class Boom_New(object):
+    1:             def __getattr__(self, someattribute):
+>>>>>>                 del self.attr
+>>>>>>                 raise AttributeError
+       
+    1:         a = Boom_New()
+    1:         b = Boom_New()
+    1:         a.attr = b
+    1:         b.attr = a
+       
+    1:         gc.collect()
+    1:         garbagelen = len(gc.garbage)
+    1:         del a, b
+    1:         self.assertEqual(gc.collect(), 4)
+    1:         self.assertEqual(len(gc.garbage), garbagelen)
+       
+    1:     def test_boom2_new(self):
+    2:         class Boom2_New(object):
+    1:             def __init__(self):
+    2:                 self.x = 0
+       
+    1:             def __getattr__(self, someattribute):
+>>>>>>                 self.x += 1
+>>>>>>                 if self.x > 1:
+>>>>>>                     del self.attr
+>>>>>>                 raise AttributeError
+       
+    1:         a = Boom2_New()
+    1:         b = Boom2_New()
+    1:         a.attr = b
+    1:         b.attr = a
+       
+    1:         gc.collect()
+    1:         garbagelen = len(gc.garbage)
+    1:         del a, b
+    1:         self.assertEqual(gc.collect(), 4)
+    1:         self.assertEqual(len(gc.garbage), garbagelen)
+       
+    1:     def test_get_referents(self):
+    1:         alist = [1, 3, 5]
+    1:         got = gc.get_referents(alist)
+    1:         got.sort()
+    1:         self.assertEqual(got, alist)
+       
+    1:         atuple = tuple(alist)
+    1:         got = gc.get_referents(atuple)
+    1:         got.sort()
+    1:         self.assertEqual(got, alist)
+       
+    1:         adict = {1: 3, 5: 7}
+    1:         expected = [1, 3, 5, 7]
+    1:         got = gc.get_referents(adict)
+    1:         got.sort()
+    1:         self.assertEqual(got, expected)
+       
+    1:         got = gc.get_referents([1, 2], {3: 4}, (0, 0, 0))
+    1:         got.sort()
+    1:         self.assertEqual(got, [0, 0] + range(5))
+       
+    1:         self.assertEqual(gc.get_referents(1, 'a', 4j), [])
+       
+    1:     def test_is_tracked(self):
+               # Atomic built-in types are not tracked, user-defined objects and
+               # mutable containers are.
+               # NOTE: types with special optimizations (e.g. tuple) have tests
+               # in their own test files instead.
+    1:         self.assertFalse(gc.is_tracked(None))
+    1:         self.assertFalse(gc.is_tracked(1))
+    1:         self.assertFalse(gc.is_tracked(1.0))
+    1:         self.assertFalse(gc.is_tracked(1.0 + 5.0j))
+    1:         self.assertFalse(gc.is_tracked(True))
+    1:         self.assertFalse(gc.is_tracked(False))
+    1:         self.assertFalse(gc.is_tracked("a"))
+    1:         self.assertFalse(gc.is_tracked(u"a"))
+    1:         self.assertFalse(gc.is_tracked(bytearray("a")))
+    1:         self.assertFalse(gc.is_tracked(type))
+    1:         self.assertFalse(gc.is_tracked(int))
+    1:         self.assertFalse(gc.is_tracked(object))
+    1:         self.assertFalse(gc.is_tracked(object()))
+       
+    2:         class OldStyle:
+    1:             pass
+    2:         class NewStyle(object):
+    1:             pass
+    1:         self.assertTrue(gc.is_tracked(gc))
+    1:         self.assertTrue(gc.is_tracked(OldStyle))
+    1:         self.assertTrue(gc.is_tracked(OldStyle()))
+    1:         self.assertTrue(gc.is_tracked(NewStyle))
+    1:         self.assertTrue(gc.is_tracked(NewStyle()))
+    1:         self.assertTrue(gc.is_tracked([]))
+    1:         self.assertTrue(gc.is_tracked(set()))
+       
+    1:     def test_bug1055820b(self):
+               # Corresponds to temp2b.py in the bug report.
+       
+    1:         ouch = []
+    1:         def callback(ignored):
+    6:             ouch[:] = [wr() for wr in WRs]
+       
+    3:         Cs = [C1055820(i) for i in range(2)]
+    3:         WRs = [weakref.ref(c, callback) for c in Cs]
+    1:         c = None
+       
+    1:         gc.collect()
+    1:         self.assertEqual(len(ouch), 0)
+               # Make the two instances trash, and collect again.  The bug was that
+               # the callback materialized a strong reference to an instance, but gc
+               # cleared the instance's dict anyway.
+    1:         Cs = None
+    1:         gc.collect()
+    1:         self.assertEqual(len(ouch), 2)  # else the callbacks didn't run
+    3:         for x in ouch:
+                   # If the callback resurrected one of these guys, the instance
+                   # would be damaged, with an empty __dict__.
+    2:             self.assertEqual(x, None)
+       
+    2: class GCTogglingTests(unittest.TestCase):
+    1:     def setUp(self):
+    2:         gc.enable()
+       
+    1:     def tearDown(self):
+    2:         gc.disable()
+       
+    1:     def test_bug1055820c(self):
+               # Corresponds to temp2c.py in the bug report.  This is pretty
+               # elaborate.
+       
+    1:         c0 = C1055820(0)
+               # Move c0 into generation 2.
+    1:         gc.collect()
+       
+    1:         c1 = C1055820(1)
+    1:         c1.keep_c0_alive = c0
+    1:         del c0.loop # now only c1 keeps c0 alive
+       
+    1:         c2 = C1055820(2)
+    1:         c2wr = weakref.ref(c2) # no callback!
+       
+    1:         ouch = []
+    1:         def callback(ignored):
+    1:             ouch[:] = [c2wr()]
+       
+               # The callback gets associated with a wr on an object in generation 2.
+    1:         c0wr = weakref.ref(c0, callback)
+       
+    1:         c0 = c1 = c2 = None
+       
+               # What we've set up:  c0, c1, and c2 are all trash now.  c0 is in
+               # generation 2.  The only thing keeping it alive is that c1 points to
+               # it. c1 and c2 are in generation 0, and are in self-loops.  There's a
+               # global weakref to c2 (c2wr), but that weakref has no callback.
+               # There's also a global weakref to c0 (c0wr), and that does have a
+               # callback, and that callback references c2 via c2wr().
+               #
+               #               c0 has a wr with callback, which references c2wr
+               #               ^
+               #               |
+               #               |     Generation 2 above dots
+               #. . . . . . . .|. . . . . . . . . . . . . . . . . . . . . . . .
+               #               |     Generation 0 below dots
+               #               |
+               #               |
+               #            ^->c1   ^->c2 has a wr but no callback
+               #            |  |    |  |
+               #            <--v    <--v
+               #
+               # So this is the nightmare:  when generation 0 gets collected, we see
+               # that c2 has a callback-free weakref, and c1 doesn't even have a
+               # weakref.  Collecting generation 0 doesn't see c0 at all, and c0 is
+               # the only object that has a weakref with a callback.  gc clears c1
+               # and c2.  Clearing c1 has the side effect of dropping the refcount on
+               # c0 to 0, so c0 goes away (despite that it's in an older generation)
+               # and c0's wr callback triggers.  That in turn materializes a reference
+               # to c2 via c2wr(), but c2 gets cleared anyway by gc.
+       
+               # We want to let gc happen "naturally", to preserve the distinction
+               # between generations.
+    1:         junk = []
+    1:         i = 0
+    1:         detector = GC_Detector()
+  736:         while not detector.gc_happened:
+  735:             i += 1
+  735:             if i > 10000:
+>>>>>>                 self.fail("gc didn't happen after 10000 iterations")
+  735:             self.assertEqual(len(ouch), 0)
+  735:             junk.append([])  # this will eventually trigger gc
+       
+    1:         self.assertEqual(len(ouch), 1)  # else the callback wasn't invoked
+    2:         for x in ouch:
+                   # If the callback resurrected c2, the instance would be damaged,
+                   # with an empty __dict__.
+    1:             self.assertEqual(x, None)
+       
+    1:     def test_bug1055820d(self):
+               # Corresponds to temp2d.py in the bug report.  This is very much like
+               # test_bug1055820c, but uses a __del__ method instead of a weakref
+               # callback to sneak in a resurrection of cyclic trash.
+       
+    1:         ouch = []
+    2:         class D(C1055820):
+    1:             def __del__(self):
+    1:                 ouch[:] = [c2wr()]
+       
+    1:         d0 = D(0)
+               # Move all the above into generation 2.
+    1:         gc.collect()
+       
+    1:         c1 = C1055820(1)
+    1:         c1.keep_d0_alive = d0
+    1:         del d0.loop # now only c1 keeps d0 alive
+       
+    1:         c2 = C1055820(2)
+    1:         c2wr = weakref.ref(c2) # no callback!
+       
+    1:         d0 = c1 = c2 = None
+       
+               # What we've set up:  d0, c1, and c2 are all trash now.  d0 is in
+               # generation 2.  The only thing keeping it alive is that c1 points to
+               # it.  c1 and c2 are in generation 0, and are in self-loops.  There's
+               # a global weakref to c2 (c2wr), but that weakref has no callback.
+               # There are no other weakrefs.
+               #
+               #               d0 has a __del__ method that references c2wr
+               #               ^
+               #               |
+               #               |     Generation 2 above dots
+               #. . . . . . . .|. . . . . . . . . . . . . . . . . . . . . . . .
+               #               |     Generation 0 below dots
+               #               |
+               #               |
+               #            ^->c1   ^->c2 has a wr but no callback
+               #            |  |    |  |
+               #            <--v    <--v
+               #
+               # So this is the nightmare:  when generation 0 gets collected, we see
+               # that c2 has a callback-free weakref, and c1 doesn't even have a
+               # weakref.  Collecting generation 0 doesn't see d0 at all.  gc clears
+               # c1 and c2.  Clearing c1 has the side effect of dropping the refcount
+               # on d0 to 0, so d0 goes away (despite that it's in an older
+               # generation) and d0's __del__ triggers.  That in turn materializes
+               # a reference to c2 via c2wr(), but c2 gets cleared anyway by gc.
+       
+               # We want to let gc happen "naturally", to preserve the distinction
+               # between generations.
+    1:         detector = GC_Detector()
+    1:         junk = []
+    1:         i = 0
+  745:         while not detector.gc_happened:
+  744:             i += 1
+  744:             if i > 10000:
+>>>>>>                 self.fail("gc didn't happen after 10000 iterations")
+  744:             self.assertEqual(len(ouch), 0)
+  744:             junk.append([])  # this will eventually trigger gc
+       
+    1:         self.assertEqual(len(ouch), 1)  # else __del__ wasn't invoked
+    2:         for x in ouch:
+                   # If __del__ resurrected c2, the instance would be damaged, with an
+                   # empty __dict__.
+    1:             self.assertEqual(x, None)
+       
+    1: def test_main():
+    1:     enabled = gc.isenabled()
+    1:     gc.disable()
+    1:     assert not gc.isenabled()
+    1:     debug = gc.get_debug()
+    1:     gc.set_debug(debug & ~gc.DEBUG_LEAK) # this test is supposed to leak
+       
+    1:     try:
+    1:         gc.collect() # Delete 2nd generation garbage
+    1:         run_unittest(GCTests, GCTogglingTests)
+           finally:
+    1:         gc.set_debug(debug)
+               # test gc.enable() even if GC is disabled by default
+    1:         if verbose:
+>>>>>>             print "restoring automatic collection"
+               # make sure to always test gc.enable()
+    1:         gc.enable()
+    1:         assert gc.isenabled()
+    1:         if not enabled:
+>>>>>>             gc.disable()
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

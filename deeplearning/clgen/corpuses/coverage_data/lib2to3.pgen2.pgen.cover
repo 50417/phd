@@ -1,0 +1,386 @@
+       # Copyright 2004-2005 Elemental Security, Inc. All Rights Reserved.
+       # Licensed to PSF under a Contributor Agreement.
+       
+       # Pgen imports
+    1: from . import grammar, token, tokenize
+       
+    2: class PgenGrammar(grammar.Grammar):
+    1:     pass
+       
+    2: class ParserGenerator(object):
+       
+    1:     def __init__(self, filename, stream=None):
+    3:         close_stream = None
+    3:         if stream is None:
+    3:             stream = open(filename)
+    3:             close_stream = stream.close
+    3:         self.filename = filename
+    3:         self.stream = stream
+    3:         self.generator = tokenize.generate_tokens(stream.readline)
+    3:         self.gettoken() # Initialize lookahead
+    3:         self.dfas, self.startsymbol = self.parse()
+    3:         if close_stream is not None:
+    3:             close_stream()
+    3:         self.first = {} # map from symbol name to set of tokens
+    3:         self.addfirstsets()
+       
+    1:     def make_grammar(self):
+    3:         c = PgenGrammar()
+    3:         names = self.dfas.keys()
+    3:         names.sort()
+    3:         names.remove(self.startsymbol)
+    3:         names.insert(0, self.startsymbol)
+  276:         for name in names:
+  273:             i = 256 + len(c.symbol2number)
+  273:             c.symbol2number[name] = i
+  273:             c.number2symbol[i] = name
+  276:         for name in names:
+  273:             dfa = self.dfas[name]
+  273:             states = []
+ 1443:             for state in dfa:
+ 1170:                 arcs = []
+ 2580:                 for label, next in sorted(state.arcs.iteritems()):
+ 1410:                     arcs.append((self.make_label(c, label), dfa.index(next)))
+ 1170:                 if state.isfinal:
+  489:                     arcs.append((0, dfa.index(state)))
+ 1170:                 states.append(arcs)
+  273:             c.states.append(states)
+  273:             c.dfas[c.symbol2number[name]] = (states, self.make_first(c, name))
+    3:         c.start = c.symbol2number[self.startsymbol]
+    3:         return c
+       
+    1:     def make_first(self, c, name):
+  273:         rawfirst = self.first[name]
+  273:         first = {}
+ 2322:         for label in sorted(rawfirst):
+ 2049:             ilabel = self.make_label(c, label)
+                   ##assert ilabel not in first # XXX failed on <> ... !=
+ 2049:             first[ilabel] = 1
+  273:         return first
+       
+    1:     def make_label(self, c, label):
+               # XXX Maybe this should be a method on a subclass of converter?
+ 3459:         ilabel = len(c.labels)
+ 3459:         if label[0].isalpha():
+                   # Either a symbol name or a named token
+ 1131:             if label in c.symbol2number:
+                       # A symbol name (a non-terminal)
+  660:                 if label in c.symbol2label:
+  402:                     return c.symbol2label[label]
+                       else:
+  258:                     c.labels.append((c.symbol2number[label], None))
+  258:                     c.symbol2label[label] = ilabel
+  258:                     return ilabel
+                   else:
+                       # A named token (NAME, NUMBER, STRING)
+  471:                 itoken = getattr(token, label, None)
+  471:                 assert isinstance(itoken, (int, long)), label
+  471:                 assert itoken in token.tok_name, label
+  471:                 if itoken in c.tokens:
+  450:                     return c.tokens[itoken]
+                       else:
+   21:                     c.labels.append((itoken, None))
+   21:                     c.tokens[itoken] = ilabel
+   21:                     return ilabel
+               else:
+                   # Either a keyword or an operator
+ 2328:             assert label[0] in ('"', "'"), label
+ 2328:             value = eval(label)
+ 2328:             if value[0].isalpha():
+                       # A keyword
+  774:                 if value in c.keywords:
+  678:                     return c.keywords[value]
+                       else:
+   96:                     c.labels.append((token.NAME, value))
+   96:                     c.keywords[value] = ilabel
+   96:                     return ilabel
+                   else:
+                       # An operator (any non-numeric token)
+ 1554:                 itoken = grammar.opmap[value] # Fails if unknown token
+ 1554:                 if itoken in c.tokens:
+ 1416:                     return c.tokens[itoken]
+                       else:
+  138:                     c.labels.append((itoken, None))
+  138:                     c.tokens[itoken] = ilabel
+  138:                     return ilabel
+       
+    1:     def addfirstsets(self):
+    3:         names = self.dfas.keys()
+    3:         names.sort()
+  276:         for name in names:
+  273:             if name not in self.first:
+  141:                 self.calcfirst(name)
+                   #print name, self.first[name].keys()
+       
+    1:     def calcfirst(self, name):
+  273:         dfa = self.dfas[name]
+  273:         self.first[name] = None # dummy to detect left recursion
+  273:         state = dfa[0]
+  273:         totalset = {}
+  273:         overlapcheck = {}
+  786:         for label, next in state.arcs.iteritems():
+  513:             if label in self.dfas:
+  249:                 if label in self.first:
+  117:                     fset = self.first[label]
+  117:                     if fset is None:
+>>>>>>                         raise ValueError("recursion for rule %r" % name)
+                       else:
+  132:                     self.calcfirst(label)
+  132:                     fset = self.first[label]
+  249:                 totalset.update(fset)
+  249:                 overlapcheck[label] = fset
+                   else:
+  264:                 totalset[label] = 1
+  264:                 overlapcheck[label] = {label: 1}
+  273:         inverse = {}
+  786:         for label, itsfirst in overlapcheck.iteritems():
+ 2562:             for symbol in itsfirst:
+ 2049:                 if symbol in inverse:
+>>>>>>                     raise ValueError("rule %s is ambiguous; %s is in the"
+                                            " first sets of %s as well as %s" %
+>>>>>>                                      (name, symbol, label, inverse[symbol]))
+ 2049:                 inverse[symbol] = label
+  273:         self.first[name] = totalset
+       
+    1:     def parse(self):
+    3:         dfas = {}
+    3:         startsymbol = None
+               # MSTART: (NEWLINE | RULE)* ENDMARKER
+  276:         while self.type != token.ENDMARKER:
+  273:             while self.type == token.NEWLINE:
+>>>>>>                 self.gettoken()
+                   # RULE: NAME ':' RHS NEWLINE
+  273:             name = self.expect(token.NAME)
+  273:             self.expect(token.OP, ":")
+  273:             a, z = self.parse_rhs()
+  273:             self.expect(token.NEWLINE)
+                   #self.dump_nfa(name, a, z)
+  273:             dfa = self.make_dfa(a, z)
+                   #self.dump_dfa(name, dfa)
+  273:             oldlen = len(dfa)
+  273:             self.simplify_dfa(dfa)
+  273:             newlen = len(dfa)
+  273:             dfas[name] = dfa
+                   #print name, oldlen, newlen
+  273:             if startsymbol is None:
+    3:                 startsymbol = name
+    3:         return dfas, startsymbol
+       
+    1:     def make_dfa(self, start, finish):
+               # To turn an NFA into a DFA, we define the states of the DFA
+               # to correspond to *sets* of states of the NFA.  Then do some
+               # state reduction.  Let's represent sets as dicts with 1 for
+               # values.
+  273:         assert isinstance(start, NFAState)
+  273:         assert isinstance(finish, NFAState)
+  273:         def closure(state):
+  273:             base = {}
+  273:             addclosure(state, base)
+  273:             return base
+  273:         def addclosure(state, base):
+ 6090:             assert isinstance(state, NFAState)
+ 6090:             if state in base:
+   12:                 return
+ 6078:             base[state] = 1
+12447:             for label, next in state.arcs:
+ 6369:                 if label is None:
+ 3849:                     addclosure(next, base)
+  273:         states = [DFAState(closure(start), finish)]
+ 1908:         for state in states: # NB states grows while we're iterating
+ 1635:             arcs = {}
+ 6351:             for nfastate in state.nfaset:
+ 9654:                 for label, next in nfastate.arcs:
+ 4938:                     if label is not None:
+ 1968:                         addclosure(next, arcs.setdefault(label, {}))
+ 3351:             for label, nfaset in sorted(arcs.iteritems()):
+ 9216:                 for st in states:
+ 7854:                     if st.nfaset == nfaset:
+  354:                         break
+                       else:
+ 1362:                     st = DFAState(nfaset, finish)
+ 1362:                     states.append(st)
+ 1716:                 state.addarc(st, label)
+  273:         return states # List of DFAState instances; first one is start
+       
+    1:     def dump_nfa(self, name, start, finish):
+>>>>>>         print "Dump of NFA for", name
+>>>>>>         todo = [start]
+>>>>>>         for i, state in enumerate(todo):
+>>>>>>             print "  State", i, state is finish and "(final)" or ""
+>>>>>>             for label, next in state.arcs:
+>>>>>>                 if next in todo:
+>>>>>>                     j = todo.index(next)
+                       else:
+>>>>>>                     j = len(todo)
+>>>>>>                     todo.append(next)
+>>>>>>                 if label is None:
+>>>>>>                     print "    -> %d" % j
+                       else:
+>>>>>>                     print "    %s -> %d" % (label, j)
+       
+    1:     def dump_dfa(self, name, dfa):
+>>>>>>         print "Dump of DFA for", name
+>>>>>>         for i, state in enumerate(dfa):
+>>>>>>             print "  State", i, state.isfinal and "(final)" or ""
+>>>>>>             for label, next in sorted(state.arcs.iteritems()):
+>>>>>>                 print "    %s -> %d" % (label, dfa.index(next))
+       
+    1:     def simplify_dfa(self, dfa):
+               # This is not theoretically optimal, but works well enough.
+               # Algorithm: repeatedly look for two states that have the same
+               # set of arcs (same labels pointing to the same nodes) and
+               # unify them, until things stop changing.
+       
+               # dfa is a list of DFAState instances
+  273:         changes = True
+  867:         while changes:
+  594:             changes = False
+ 3447:             for i, state_i in enumerate(dfa):
+12183:                 for j in range(i+1, len(dfa)):
+ 9795:                     state_j = dfa[j]
+ 9795:                     if state_i == state_j:
+                               #print "  unify", i, j
+  465:                         del dfa[j]
+ 3534:                         for state in dfa:
+ 3069:                             state.unifystate(state_j, state_i)
+  465:                         changes = True
+  465:                         break
+       
+    1:     def parse_rhs(self):
+               # RHS: ALT ('|' ALT)*
+  741:         a, z = self.parse_alt()
+  741:         if self.value != "|":
+  564:             return a, z
+               else:
+  177:             aa = NFAState()
+  177:             zz = NFAState()
+  177:             aa.addarc(a)
+  177:             z.addarc(zz)
+  507:             while self.value == "|":
+  330:                 self.gettoken()
+  330:                 a, z = self.parse_alt()
+  330:                 aa.addarc(a)
+  330:                 z.addarc(zz)
+  177:             return aa, zz
+       
+    1:     def parse_alt(self):
+               # ALT: ITEM+
+ 1071:         a, b = self.parse_item()
+ 1923:         while (self.value in ("(", "[") or
+ 1563:                self.type in (token.NAME, token.STRING)):
+  852:             c, d = self.parse_item()
+  852:             b.addarc(c)
+  852:             b = d
+ 1071:         return a, b
+       
+    1:     def parse_item(self):
+               # ITEM: '[' RHS ']' | ATOM ['+' | '*']
+ 1923:         if self.value == "[":
+  219:             self.gettoken()
+  219:             a, z = self.parse_rhs()
+  219:             self.expect(token.OP, "]")
+  219:             a.addarc(z)
+  219:             return a, z
+               else:
+ 1704:             a, z = self.parse_atom()
+ 1704:             value = self.value
+ 1704:             if value not in ("+", "*"):
+ 1563:                 return a, z
+  141:             self.gettoken()
+  141:             z.addarc(a)
+  141:             if value == "+":
+   21:                 return a, z
+                   else:
+  120:                 return a, a
+       
+    1:     def parse_atom(self):
+               # ATOM: '(' RHS ')' | NAME | STRING
+ 1704:         if self.value == "(":
+  249:             self.gettoken()
+  249:             a, z = self.parse_rhs()
+  249:             self.expect(token.OP, ")")
+  249:             return a, z
+ 1455:         elif self.type in (token.NAME, token.STRING):
+ 1455:             a = NFAState()
+ 1455:             z = NFAState()
+ 1455:             a.addarc(z, self.value)
+ 1455:             self.gettoken()
+ 1455:             return a, z
+               else:
+>>>>>>             self.raise_error("expected (...) or NAME or STRING, got %s/%s",
+>>>>>>                              self.type, self.value)
+       
+    1:     def expect(self, type, value=None):
+ 1287:         if self.type != type or (value is not None and self.value != value):
+>>>>>>             self.raise_error("expected %s/%s, got %s/%s",
+>>>>>>                              type, value, self.type, self.value)
+ 1287:         value = self.value
+ 1287:         self.gettoken()
+ 1287:         return value
+       
+    1:     def gettoken(self):
+ 3684:         tup = self.generator.next()
+ 4041:         while tup[0] in (tokenize.COMMENT, tokenize.NL):
+  357:             tup = self.generator.next()
+ 3684:         self.type, self.value, self.begin, self.end, self.line = tup
+               #print token.tok_name[self.type], repr(self.value)
+       
+    1:     def raise_error(self, msg, *args):
+>>>>>>         if args:
+>>>>>>             try:
+>>>>>>                 msg = msg % args
+>>>>>>             except:
+>>>>>>                 msg = " ".join([msg] + map(str, args))
+>>>>>>         raise SyntaxError(msg, (self.filename, self.end[0],
+>>>>>>                                 self.end[1], self.line))
+       
+    2: class NFAState(object):
+       
+    1:     def __init__(self):
+ 3264:         self.arcs = [] # list of (label, NFAState) pairs
+       
+    1:     def addarc(self, next, label=None):
+ 3681:         assert label is None or isinstance(label, str)
+ 3681:         assert isinstance(next, NFAState)
+ 3681:         self.arcs.append((label, next))
+       
+    2: class DFAState(object):
+       
+    1:     def __init__(self, nfaset, final):
+ 1635:         assert isinstance(nfaset, dict)
+ 1635:         assert isinstance(iter(nfaset).next(), NFAState)
+ 1635:         assert isinstance(final, NFAState)
+ 1635:         self.nfaset = nfaset
+ 1635:         self.isfinal = final in nfaset
+ 1635:         self.arcs = {} # map from label to DFAState
+       
+    1:     def addarc(self, next, label):
+ 1716:         assert isinstance(label, str)
+ 1716:         assert label not in self.arcs
+ 1716:         assert isinstance(next, DFAState)
+ 1716:         self.arcs[label] = next
+       
+    1:     def unifystate(self, old, new):
+ 7383:         for label, next in self.arcs.iteritems():
+ 4314:             if next is old:
+  618:                 self.arcs[label] = new
+       
+    1:     def __eq__(self, other):
+               # Equality test -- ignore the nfaset instance variable
+15501:         assert isinstance(other, DFAState)
+15501:         if self.isfinal != other.isfinal:
+ 7923:             return False
+               # Can't just return self.arcs == other.arcs, because that
+               # would invoke this method recursively, with cycles...
+ 7578:         if len(self.arcs) != len(other.arcs):
+ 3750:             return False
+ 4155:         for label, next in self.arcs.iteritems():
+ 3690:             if next is not other.arcs.get(label):
+ 3363:                 return False
+  465:         return True
+       
+    1:     __hash__ = None # For Py3 compatibility.
+       
+    1: def generate_grammar(filename="Grammar.txt"):
+    3:     p = ParserGenerator(filename)
+    3:     return p.make_grammar()

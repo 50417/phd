@@ -1,0 +1,1535 @@
+       """Parse tree transformation module.
+       
+       Transforms Python source code into an abstract syntax tree (AST)
+       defined in the ast module.
+       
+       The simplest ways to invoke this module are via parse and parseFile.
+       parse(buf) -> AST
+       parseFile(path) -> AST
+    2: """
+       
+       # Original version written by Greg Stein (gstein@lyra.org)
+       #                         and Bill Tutt (rassilon@lima.mudlib.org)
+       # February 1997.
+       #
+       # Modifications and improvements for Python 2.0 by Jeremy Hylton and
+       # Mark Hammond
+       #
+       # Some fixes to try to have correct line number on almost all nodes
+       # (except Module, Discard and Stmt) added by Sylvain Thenault
+       #
+       # Portions of this file are:
+       # Copyright (C) 1997-1998 Greg Stein. All Rights Reserved.
+       #
+       # This module is provided under a BSD-ish license. See
+       #   http://www.opensource.org/licenses/bsd-license.html
+       # and replace OWNER, ORGANIZATION, and YEAR as appropriate.
+       
+    2: from compiler.ast import *
+    2: import parser
+    2: import symbol
+    2: import token
+       
+    4: class WalkerError(StandardError):
+    2:     pass
+       
+    2: from compiler.consts import CO_VARARGS, CO_VARKEYWORDS
+    2: from compiler.consts import OP_ASSIGN, OP_DELETE, OP_APPLY
+       
+    2: def parseFile(path):
+    1:     f = open(path, "U")
+           # XXX The parser API tolerates files without a trailing newline,
+           # but not strings without a trailing newline.  Always add an extra
+           # newline to the file contents, since we're going through the string
+           # version of the API.
+    1:     src = f.read() + "\n"
+    1:     f.close()
+    1:     return parse(src)
+       
+    2: def parse(buf, mode="exec"):
+   31:     if mode == "exec" or mode == "single":
+   22:         return Transformer().parsesuite(buf)
+    9:     elif mode == "eval":
+    9:         return Transformer().parseexpr(buf)
+           else:
+>>>>>>         raise ValueError("compile() arg 3 must be"
+                                " 'exec' or 'eval' or 'single'")
+       
+    2: def asList(nodes):
+>>>>>>     l = []
+>>>>>>     for item in nodes:
+>>>>>>         if hasattr(item, "asList"):
+>>>>>>             l.append(item.asList())
+               else:
+>>>>>>             if type(item) is type( (None, None) ):
+>>>>>>                 l.append(tuple(asList(item)))
+>>>>>>             elif type(item) is type( [] ):
+>>>>>>                 l.append(asList(item))
+                   else:
+>>>>>>                 l.append(item)
+>>>>>>     return l
+       
+    2: def extractLineNo(ast):
+ 2255:     if not isinstance(ast[1], tuple):
+               # get a terminal node
+  181:         return ast[2]
+ 2074:     for child in ast[1:]:
+ 2074:         if isinstance(child, tuple):
+ 2074:             lineno = extractLineNo(child)
+ 2074:             if lineno is not None:
+ 2074:                 return lineno
+       
+    2: def Node(*args):
+>>>>>>     kind = args[0]
+>>>>>>     if kind in nodes:
+>>>>>>         try:
+>>>>>>             return nodes[kind](*args[1:])
+>>>>>>         except TypeError:
+>>>>>>             print nodes[kind], len(args), args
+>>>>>>             raise
+           else:
+>>>>>>         raise WalkerError, "Can't find appropriate Node type: %s" % str(args)
+               #return apply(ast.Node, args)
+       
+    4: class Transformer:
+           """Utility object for transforming Python parse trees.
+       
+           Exposes the following methods:
+               tree = transform(ast_tree)
+               tree = parsesuite(text)
+               tree = parseexpr(text)
+               tree = parsefile(fileob | filename)
+    2:     """
+       
+    2:     def __init__(self):
+   31:         self._dispatch = {}
+ 2666:         for value, name in symbol.sym_name.items():
+ 2635:             if hasattr(self, name):
+ 2046:                 self._dispatch[value] = getattr(self, name)
+   31:         self._dispatch[token.NEWLINE] = self.com_NEWLINE
+   31:         self._atom_dispatch = {token.LPAR: self.atom_lpar,
+   31:                                token.LSQB: self.atom_lsqb,
+   31:                                token.LBRACE: self.atom_lbrace,
+   31:                                token.BACKQUOTE: self.atom_backquote,
+   31:                                token.NUMBER: self.atom_number,
+   31:                                token.STRING: self.atom_string,
+   31:                                token.NAME: self.atom_name,
+                                      }
+   31:         self.encoding = None
+       
+    2:     def transform(self, tree):
+               """Transform an AST into a modified parse tree."""
+   31:         if not (isinstance(tree, tuple) or isinstance(tree, list)):
+   31:             tree = parser.st2tuple(tree, line_info=1)
+   31:         return self.compile_node(tree)
+       
+    2:     def parsesuite(self, text):
+               """Return a modified parse tree for the given suite text."""
+   22:         return self.transform(parser.suite(text))
+       
+    2:     def parseexpr(self, text):
+               """Return a modified parse tree for the given expression text."""
+    9:         return self.transform(parser.expr(text))
+       
+    2:     def parsefile(self, file):
+               """Return a modified parse tree for the contents of the given file."""
+>>>>>>         if type(file) == type(''):
+>>>>>>             file = open(file)
+>>>>>>         return self.parsesuite(file.read())
+       
+           # --------------------------------------------------------------
+           #
+           # PRIVATE METHODS
+           #
+       
+    2:     def compile_node(self, node):
+               ### emit a line-number node?
+   31:         n = node[0]
+       
+   31:         if n == symbol.encoding_decl:
+>>>>>>             self.encoding = node[2]
+>>>>>>             node = node[1]
+>>>>>>             n = node[0]
+       
+   31:         if n == symbol.single_input:
+>>>>>>             return self.single_input(node[1:])
+   31:         if n == symbol.file_input:
+   22:             return self.file_input(node[1:])
+    9:         if n == symbol.eval_input:
+    9:             return self.eval_input(node[1:])
+>>>>>>         if n == symbol.lambdef:
+>>>>>>             return self.lambdef(node[1:])
+>>>>>>         if n == symbol.funcdef:
+>>>>>>             return self.funcdef(node[1:])
+>>>>>>         if n == symbol.classdef:
+>>>>>>             return self.classdef(node[1:])
+       
+>>>>>>         raise WalkerError, ('unexpected node type', n)
+       
+    2:     def single_input(self, node):
+               ### do we want to do anything about being "interactive" ?
+       
+               # NEWLINE | simple_stmt | compound_stmt NEWLINE
+>>>>>>         n = node[0][0]
+>>>>>>         if n != token.NEWLINE:
+>>>>>>             return self.com_stmt(node[0])
+       
+>>>>>>         return Pass()
+       
+    2:     def file_input(self, nodelist):
+   22:         doc = self.get_docstring(nodelist, symbol.file_input)
+   22:         if doc is not None:
+    1:             i = 1
+               else:
+   21:             i = 0
+   22:         stmts = []
+  117:         for node in nodelist[i:]:
+   98:             if node[0] != token.ENDMARKER and node[0] != token.NEWLINE:
+   60:                 self.com_append_stmt(stmts, node)
+   19:         return Module(doc, Stmt(stmts))
+       
+    2:     def eval_input(self, nodelist):
+               # from the built-in function input()
+               ### is this sufficient?
+    9:         return Expression(self.com_node(nodelist[0]))
+       
+    2:     def decorator_name(self, nodelist):
+>>>>>>         listlen = len(nodelist)
+>>>>>>         assert listlen >= 1 and listlen % 2 == 1
+       
+>>>>>>         item = self.atom_name(nodelist)
+>>>>>>         i = 1
+>>>>>>         while i < listlen:
+>>>>>>             assert nodelist[i][0] == token.DOT
+>>>>>>             assert nodelist[i + 1][0] == token.NAME
+>>>>>>             item = Getattr(item, nodelist[i + 1][1])
+>>>>>>             i += 2
+       
+>>>>>>         return item
+       
+    2:     def decorator(self, nodelist):
+               # '@' dotted_name [ '(' [arglist] ')' ]
+>>>>>>         assert len(nodelist) in (3, 5, 6)
+>>>>>>         assert nodelist[0][0] == token.AT
+>>>>>>         assert nodelist[-1][0] == token.NEWLINE
+       
+>>>>>>         assert nodelist[1][0] == symbol.dotted_name
+>>>>>>         funcname = self.decorator_name(nodelist[1][1:])
+       
+>>>>>>         if len(nodelist) > 3:
+>>>>>>             assert nodelist[2][0] == token.LPAR
+>>>>>>             expr = self.com_call_function(funcname, nodelist[3])
+               else:
+>>>>>>             expr = funcname
+       
+>>>>>>         return expr
+       
+    2:     def decorators(self, nodelist):
+               # decorators: decorator ([NEWLINE] decorator)* NEWLINE
+>>>>>>         items = []
+>>>>>>         for dec_nodelist in nodelist:
+>>>>>>             assert dec_nodelist[0] == symbol.decorator
+>>>>>>             items.append(self.decorator(dec_nodelist[1:]))
+>>>>>>         return Decorators(items)
+       
+    2:     def decorated(self, nodelist):
+>>>>>>         assert nodelist[0][0] == symbol.decorators
+>>>>>>         if nodelist[1][0] == symbol.funcdef:
+>>>>>>             n = [nodelist[0]] + list(nodelist[1][1:])
+>>>>>>             return self.funcdef(n)
+>>>>>>         elif nodelist[1][0] == symbol.classdef:
+>>>>>>             decorators = self.decorators(nodelist[0][1:])
+>>>>>>             cls = self.classdef(nodelist[1][1:])
+>>>>>>             cls.decorators = decorators
+>>>>>>             return cls
+>>>>>>         raise WalkerError()
+       
+    2:     def funcdef(self, nodelist):
+               #                    -6   -5    -4         -3  -2    -1
+               # funcdef: [decorators] 'def' NAME parameters ':' suite
+               # parameters: '(' [varargslist] ')'
+       
+   39:         if len(nodelist) == 6:
+>>>>>>             assert nodelist[0][0] == symbol.decorators
+>>>>>>             decorators = self.decorators(nodelist[0][1:])
+               else:
+   39:             assert len(nodelist) == 5
+   39:             decorators = None
+       
+   39:         lineno = nodelist[-4][2]
+   39:         name = nodelist[-4][1]
+   39:         args = nodelist[-3][2]
+       
+   39:         if args[0] == symbol.varargslist:
+   31:             names, defaults, flags = self.com_arglist(args[1:])
+               else:
+    8:             names = defaults = ()
+    8:             flags = 0
+   38:         doc = self.get_docstring(nodelist[-1])
+       
+               # code for function
+   38:         code = self.com_node(nodelist[-1])
+       
+   38:         if doc is not None:
+    1:             assert isinstance(code, Stmt)
+    1:             assert isinstance(code.nodes[0], Discard)
+    1:             del code.nodes[0]
+   38:         return Function(decorators, name, names, defaults, flags, doc, code,
+   38:                      lineno=lineno)
+       
+    2:     def lambdef(self, nodelist):
+               # lambdef: 'lambda' [varargslist] ':' test
+>>>>>>         if nodelist[2][0] == symbol.varargslist:
+>>>>>>             names, defaults, flags = self.com_arglist(nodelist[2][1:])
+               else:
+>>>>>>             names = defaults = ()
+>>>>>>             flags = 0
+       
+               # code for lambda
+>>>>>>         code = self.com_node(nodelist[-1])
+       
+>>>>>>         return Lambda(names, defaults, flags, code, lineno=nodelist[1][2])
+    2:     old_lambdef = lambdef
+       
+    2:     def classdef(self, nodelist):
+               # classdef: 'class' NAME ['(' [testlist] ')'] ':' suite
+       
+    5:         name = nodelist[1][1]
+    5:         doc = self.get_docstring(nodelist[-1])
+    5:         if nodelist[2][0] == token.COLON:
+    2:             bases = []
+    3:         elif nodelist[3][0] == token.RPAR:
+    1:             bases = []
+               else:
+    2:             bases = self.com_bases(nodelist[3])
+       
+               # code for class
+    5:         code = self.com_node(nodelist[-1])
+       
+    5:         if doc is not None:
+    1:             assert isinstance(code, Stmt)
+    1:             assert isinstance(code.nodes[0], Discard)
+    1:             del code.nodes[0]
+       
+    5:         return Class(name, bases, doc, code, lineno=nodelist[1][2])
+       
+    2:     def stmt(self, nodelist):
+  494:         return self.com_stmt(nodelist[0])
+       
+    2:     small_stmt = stmt
+    2:     flow_stmt = stmt
+    2:     compound_stmt = stmt
+       
+    2:     def simple_stmt(self, nodelist):
+               # small_stmt (';' small_stmt)* [';'] NEWLINE
+  178:         stmts = []
+  354:         for i in range(0, len(nodelist), 2):
+  178:             self.com_append_stmt(stmts, nodelist[i])
+  176:         return Stmt(stmts)
+       
+    2:     def parameters(self, nodelist):
+>>>>>>         raise WalkerError
+       
+    2:     def varargslist(self, nodelist):
+>>>>>>         raise WalkerError
+       
+    2:     def fpdef(self, nodelist):
+>>>>>>         raise WalkerError
+       
+    2:     def fplist(self, nodelist):
+>>>>>>         raise WalkerError
+       
+    2:     def dotted_name(self, nodelist):
+>>>>>>         raise WalkerError
+       
+    2:     def comp_op(self, nodelist):
+>>>>>>         raise WalkerError
+       
+    2:     def trailer(self, nodelist):
+>>>>>>         raise WalkerError
+       
+    2:     def sliceop(self, nodelist):
+>>>>>>         raise WalkerError
+       
+    2:     def argument(self, nodelist):
+>>>>>>         raise WalkerError
+       
+           # --------------------------------------------------------------
+           #
+           # STATEMENT NODES  (invoked by com_node())
+           #
+       
+    2:     def expr_stmt(self, nodelist):
+               # augassign testlist | testlist ('=' testlist)*
+  137:         en = nodelist[-1]
+  137:         exprNode = self.lookup_node(en)(en[1:])
+  135:         if len(nodelist) == 1:
+   55:             return Discard(exprNode, lineno=exprNode.lineno)
+   80:         if nodelist[1][0] == token.EQUAL:
+   78:             nodesl = []
+  156:             for i in range(0, len(nodelist) - 2, 2):
+   78:                 nodesl.append(self.com_assign(nodelist[i], OP_ASSIGN))
+   78:             return Assign(nodesl, exprNode, lineno=nodelist[1][2])
+               else:
+    2:             lval = self.com_augassign(nodelist[0])
+    2:             op = self.com_augassign_op(nodelist[1])
+    2:             return AugAssign(lval, op[1], exprNode, lineno=op[2])
+>>>>>>         raise WalkerError, "can't get here"
+       
+    2:     def print_stmt(self, nodelist):
+               # print ([ test (',' test)* [','] ] | '>>' test [ (',' test)+ [','] ])
+    4:         items = []
+    4:         if len(nodelist) == 1:
+>>>>>>             start = 1
+>>>>>>             dest = None
+    4:         elif nodelist[1][0] == token.RIGHTSHIFT:
+    1:             assert len(nodelist) == 3 \
+    1:                    or nodelist[3][0] == token.COMMA
+    1:             dest = self.com_node(nodelist[2])
+    1:             start = 4
+               else:
+    3:             dest = None
+    3:             start = 1
+   10:         for i in range(start, len(nodelist), 2):
+    6:             items.append(self.com_node(nodelist[i]))
+    4:         if nodelist[-1][0] == token.COMMA:
+>>>>>>             return Print(items, dest, lineno=nodelist[0][2])
+    4:         return Printnl(items, dest, lineno=nodelist[0][2])
+       
+    2:     def del_stmt(self, nodelist):
+>>>>>>         return self.com_assign(nodelist[1], OP_DELETE)
+       
+    2:     def pass_stmt(self, nodelist):
+    5:         return Pass(lineno=nodelist[0][2])
+       
+    2:     def break_stmt(self, nodelist):
+>>>>>>         return Break(lineno=nodelist[0][2])
+       
+    2:     def continue_stmt(self, nodelist):
+    2:         return Continue(lineno=nodelist[0][2])
+       
+    2:     def return_stmt(self, nodelist):
+               # return: [testlist]
+    6:         if len(nodelist) < 2:
+>>>>>>             return Return(Const(None), lineno=nodelist[0][2])
+    6:         return Return(self.com_node(nodelist[1]), lineno=nodelist[0][2])
+       
+    2:     def yield_stmt(self, nodelist):
+    1:         expr = self.com_node(nodelist[0])
+    1:         return Discard(expr, lineno=expr.lineno)
+       
+    2:     def yield_expr(self, nodelist):
+    1:         if len(nodelist) > 1:
+>>>>>>             value = self.com_node(nodelist[1])
+               else:
+    1:             value = Const(None)
+    1:         return Yield(value, lineno=nodelist[0][2])
+       
+    2:     def raise_stmt(self, nodelist):
+               # raise: [test [',' test [',' test]]]
+    2:         if len(nodelist) > 5:
+>>>>>>             expr3 = self.com_node(nodelist[5])
+               else:
+    2:             expr3 = None
+    2:         if len(nodelist) > 3:
+>>>>>>             expr2 = self.com_node(nodelist[3])
+               else:
+    2:             expr2 = None
+    2:         if len(nodelist) > 1:
+>>>>>>             expr1 = self.com_node(nodelist[1])
+               else:
+    2:             expr1 = None
+    2:         return Raise(expr1, expr2, expr3, lineno=nodelist[0][2])
+       
+    2:     def import_stmt(self, nodelist):
+               # import_stmt: import_name | import_from
+   10:         assert len(nodelist) == 1
+   10:         return self.com_node(nodelist[0])
+       
+    2:     def import_name(self, nodelist):
+               # import_name: 'import' dotted_as_names
+    2:         return Import(self.com_dotted_as_names(nodelist[1]),
+    2:                       lineno=nodelist[0][2])
+       
+    2:     def import_from(self, nodelist):
+               # import_from: 'from' ('.'* dotted_name | '.') 'import' ('*' |
+               #    '(' import_as_names ')' | import_as_names)
+    8:         assert nodelist[0][1] == 'from'
+    8:         idx = 1
+    8:         while nodelist[idx][1] == '.':
+>>>>>>             idx += 1
+    8:         level = idx - 1
+    8:         if nodelist[idx][0] == symbol.dotted_name:
+    8:             fromname = self.com_dotted_name(nodelist[idx])
+    8:             idx += 1
+               else:
+>>>>>>             fromname = ""
+    8:         assert nodelist[idx][1] == 'import'
+    8:         if nodelist[idx + 1][0] == token.STAR:
+    1:             return From(fromname, [('*', None)], level,
+    1:                         lineno=nodelist[0][2])
+               else:
+    7:             node = nodelist[idx + 1 + (nodelist[idx + 1][0] == token.LPAR)]
+    7:             return From(fromname, self.com_import_as_names(node), level,
+    7:                         lineno=nodelist[0][2])
+       
+    2:     def global_stmt(self, nodelist):
+               # global: NAME (',' NAME)*
+    2:         names = []
+    4:         for i in range(1, len(nodelist), 2):
+    2:             names.append(nodelist[i][1])
+    2:         return Global(names, lineno=nodelist[0][2])
+       
+    2:     def exec_stmt(self, nodelist):
+               # exec_stmt: 'exec' expr ['in' expr [',' expr]]
+    9:         expr1 = self.com_node(nodelist[1])
+    9:         if len(nodelist) >= 4:
+    9:             expr2 = self.com_node(nodelist[3])
+    9:             if len(nodelist) >= 6:
+    1:                 expr3 = self.com_node(nodelist[5])
+                   else:
+    8:                 expr3 = None
+               else:
+>>>>>>             expr2 = expr3 = None
+       
+    9:         return Exec(expr1, expr2, expr3, lineno=nodelist[0][2])
+       
+    2:     def assert_stmt(self, nodelist):
+               # 'assert': test, [',' test]
+>>>>>>         expr1 = self.com_node(nodelist[1])
+>>>>>>         if (len(nodelist) == 4):
+>>>>>>             expr2 = self.com_node(nodelist[3])
+               else:
+>>>>>>             expr2 = None
+>>>>>>         return Assert(expr1, expr2, lineno=nodelist[0][2])
+       
+    2:     def if_stmt(self, nodelist):
+               # if: test ':' suite ('elif' test ':' suite)* ['else' ':' suite]
+    9:         tests = []
+   18:         for i in range(0, len(nodelist) - 3, 4):
+    9:             testNode = self.com_node(nodelist[i + 1])
+    9:             suiteNode = self.com_node(nodelist[i + 3])
+    9:             tests.append((testNode, suiteNode))
+       
+    9:         if len(nodelist) % 4 == 3:
+    2:             elseNode = self.com_node(nodelist[-1])
+       ##      elseNode.lineno = nodelist[-1][1][2]
+               else:
+    7:             elseNode = None
+    9:         return If(tests, elseNode, lineno=nodelist[0][2])
+       
+    2:     def while_stmt(self, nodelist):
+               # 'while' test ':' suite ['else' ':' suite]
+       
+>>>>>>         testNode = self.com_node(nodelist[1])
+>>>>>>         bodyNode = self.com_node(nodelist[3])
+       
+>>>>>>         if len(nodelist) > 4:
+>>>>>>             elseNode = self.com_node(nodelist[6])
+               else:
+>>>>>>             elseNode = None
+       
+>>>>>>         return While(testNode, bodyNode, elseNode, lineno=nodelist[0][2])
+       
+    2:     def for_stmt(self, nodelist):
+               # 'for' exprlist 'in' exprlist ':' suite ['else' ':' suite]
+       
+    3:         assignNode = self.com_assign(nodelist[1], OP_ASSIGN)
+    3:         listNode = self.com_node(nodelist[3])
+    3:         bodyNode = self.com_node(nodelist[5])
+       
+    3:         if len(nodelist) > 8:
+>>>>>>             elseNode = self.com_node(nodelist[8])
+               else:
+    3:             elseNode = None
+       
+    3:         return For(assignNode, listNode, bodyNode, elseNode,
+    3:                    lineno=nodelist[0][2])
+       
+    2:     def try_stmt(self, nodelist):
+    6:         return self.com_try_except_finally(nodelist)
+       
+    2:     def with_stmt(self, nodelist):
+    3:         return self.com_with(nodelist)
+       
+    2:     def with_var(self, nodelist):
+>>>>>>         return self.com_with_var(nodelist)
+       
+    2:     def suite(self, nodelist):
+               # simple_stmt | NEWLINE INDENT NEWLINE* (stmt NEWLINE*)+ DEDENT
+   74:         if len(nodelist) == 1:
+    3:             return self.com_stmt(nodelist[0])
+       
+   71:         stmts = []
+  464:         for node in nodelist:
+  393:             if node[0] == symbol.stmt:
+  180:                 self.com_append_stmt(stmts, node)
+   71:         return Stmt(stmts)
+       
+           # --------------------------------------------------------------
+           #
+           # EXPRESSION NODES  (invoked by com_node())
+           #
+       
+    2:     def testlist(self, nodelist):
+               # testlist: expr (',' expr)* [',']
+               # testlist_safe: test [(',' test)+ [',']]
+               # exprlist: expr (',' expr)* [',']
+  179:         return self.com_binary(Tuple, nodelist)
+       
+    2:     testlist_safe = testlist # XXX
+    2:     testlist1 = testlist
+    2:     exprlist = testlist
+       
+    2:     def testlist_comp(self, nodelist):
+               # test ( comp_for | (',' test)* [','] )
+   21:         assert nodelist[0][0] == symbol.test
+   21:         if len(nodelist) == 2 and nodelist[1][0] == symbol.comp_for:
+>>>>>>             test = self.com_node(nodelist[0])
+>>>>>>             return self.com_generator_expression(test, nodelist[1])
+   21:         return self.testlist(nodelist)
+       
+    2:     def test(self, nodelist):
+               # or_test ['if' or_test 'else' test] | lambdef
+  570:         if len(nodelist) == 1 and nodelist[0][0] == symbol.lambdef:
+>>>>>>             return self.lambdef(nodelist[0])
+  570:         then = self.com_node(nodelist[0])
+  568:         if len(nodelist) > 1:
+>>>>>>             assert len(nodelist) == 5
+>>>>>>             assert nodelist[1][1] == 'if'
+>>>>>>             assert nodelist[3][1] == 'else'
+>>>>>>             test = self.com_node(nodelist[2])
+>>>>>>             else_ = self.com_node(nodelist[4])
+>>>>>>             return IfExp(test, then, else_, lineno=nodelist[1][2])
+  568:         return then
+       
+    2:     def or_test(self, nodelist):
+               # and_test ('or' and_test)* | lambdef
+  594:         if len(nodelist) == 1 and nodelist[0][0] == symbol.lambdef:
+>>>>>>             return self.lambdef(nodelist[0])
+  594:         return self.com_binary(Or, nodelist)
+    2:     old_test = or_test
+       
+    2:     def and_test(self, nodelist):
+               # not_test ('and' not_test)*
+  588:         return self.com_binary(And, nodelist)
+       
+    2:     def not_test(self, nodelist):
+               # 'not' not_test | comparison
+  592:         result = self.com_node(nodelist[-1])
+  590:         if len(nodelist) == 2:
+    3:             return Not(result, lineno=nodelist[0][2])
+  587:         return result
+       
+    2:     def comparison(self, nodelist):
+               # comparison: expr (comp_op expr)*
+  589:         node = self.com_node(nodelist[0])
+  587:         if len(nodelist) == 1:
+  574:             return node
+       
+   13:         results = []
+   26:         for i in range(2, len(nodelist), 2):
+   13:             nl = nodelist[i-1]
+       
+                   # comp_op: '<' | '>' | '=' | '>=' | '<=' | '<>' | '!=' | '=='
+                   #          | 'in' | 'not' 'in' | 'is' | 'is' 'not'
+   13:             n = nl[1]
+   13:             if n[0] == token.NAME:
+    3:                 type = n[1]
+    3:                 if len(nl) == 3:
+>>>>>>                     if type == 'not':
+>>>>>>                         type = 'not in'
+                           else:
+>>>>>>                         type = 'is not'
+                   else:
+   10:                 type = _cmp_types[n[0]]
+       
+   13:             lineno = nl[1][2]
+   13:             results.append((type, self.com_node(nodelist[i])))
+       
+               # we need a special "compare" node so that we can distinguish
+               #   3 < x < 5   from    (3 < x) < 5
+               # the two have very different semantics and results (note that the
+               # latter form is always true)
+       
+   13:         return Compare(node, results, lineno=lineno)
+       
+    2:     def expr(self, nodelist):
+               # xor_expr ('|' xor_expr)*
+  611:         return self.com_binary(Bitor, nodelist)
+       
+    2:     def xor_expr(self, nodelist):
+               # xor_expr ('^' xor_expr)*
+  611:         return self.com_binary(Bitxor, nodelist)
+       
+    2:     def and_expr(self, nodelist):
+               # xor_expr ('&' xor_expr)*
+  611:         return self.com_binary(Bitand, nodelist)
+       
+    2:     def shift_expr(self, nodelist):
+               # shift_expr ('<<'|'>>' shift_expr)*
+  611:         node = self.com_node(nodelist[0])
+  609:         for i in range(2, len(nodelist), 2):
+>>>>>>             right = self.com_node(nodelist[i])
+>>>>>>             if nodelist[i-1][0] == token.LEFTSHIFT:
+>>>>>>                 node = LeftShift([node, right], lineno=nodelist[1][2])
+>>>>>>             elif nodelist[i-1][0] == token.RIGHTSHIFT:
+>>>>>>                 node = RightShift([node, right], lineno=nodelist[1][2])
+                   else:
+>>>>>>                 raise ValueError, "unexpected token: %s" % nodelist[i-1][0]
+  609:         return node
+       
+    2:     def arith_expr(self, nodelist):
+  611:         node = self.com_node(nodelist[0])
+  615:         for i in range(2, len(nodelist), 2):
+    6:             right = self.com_node(nodelist[i])
+    6:             if nodelist[i-1][0] == token.PLUS:
+    6:                 node = Add([node, right], lineno=nodelist[1][2])
+>>>>>>             elif nodelist[i-1][0] == token.MINUS:
+>>>>>>                 node = Sub([node, right], lineno=nodelist[1][2])
+                   else:
+>>>>>>                 raise ValueError, "unexpected token: %s" % nodelist[i-1][0]
+  609:         return node
+       
+    2:     def term(self, nodelist):
+  617:         node = self.com_node(nodelist[0])
+  621:         for i in range(2, len(nodelist), 2):
+    6:             right = self.com_node(nodelist[i])
+    6:             t = nodelist[i-1][0]
+    6:             if t == token.STAR:
+    2:                 node = Mul([node, right])
+    4:             elif t == token.SLASH:
+>>>>>>                 node = Div([node, right])
+    4:             elif t == token.PERCENT:
+    3:                 node = Mod([node, right])
+    1:             elif t == token.DOUBLESLASH:
+    1:                 node = FloorDiv([node, right])
+                   else:
+>>>>>>                 raise ValueError, "unexpected token: %s" % t
+    6:             node.lineno = nodelist[1][2]
+  615:         return node
+       
+    2:     def factor(self, nodelist):
+  624:         elt = nodelist[0]
+  624:         t = elt[0]
+  624:         node = self.lookup_node(nodelist[-1])(nodelist[-1][1:])
+               # need to handle (unary op)constant here...
+  622:         if t == token.PLUS:
+>>>>>>             return UnaryAdd(node, lineno=elt[2])
+  622:         elif t == token.MINUS:
+    1:             return UnarySub(node, lineno=elt[2])
+  621:         elif t == token.TILDE:
+>>>>>>             node = Invert(node, lineno=elt[2])
+  621:         return node
+       
+    2:     def power(self, nodelist):
+               # power: atom trailer* ('**' factor)*
+  623:         node = self.com_node(nodelist[0])
+  881:         for i in range(1, len(nodelist)):
+  260:             elt = nodelist[i]
+  260:             if elt[0] == token.DOUBLESTAR:
+>>>>>>                 return Power([node, self.com_node(nodelist[i+1])],
+>>>>>>                              lineno=elt[2])
+       
+  260:             node = self.com_apply_trailer(node, elt)
+       
+  621:         return node
+       
+    2:     def atom(self, nodelist):
+  625:         return self._atom_dispatch[nodelist[0][0]](nodelist)
+       
+    2:     def atom_lpar(self, nodelist):
+   22:         if nodelist[1][0] == token.RPAR:
+    1:             return Tuple((), lineno=nodelist[0][2])
+   21:         return self.com_node(nodelist[1])
+       
+    2:     def atom_lsqb(self, nodelist):
+   11:         if nodelist[1][0] == token.RSQB:
+    2:             return List((), lineno=nodelist[0][2])
+    9:         return self.com_list_constructor(nodelist[1])
+       
+    2:     def atom_lbrace(self, nodelist):
+   33:         if nodelist[1][0] == token.RBRACE:
+    6:             return Dict((), lineno=nodelist[0][2])
+   27:         return self.com_dictorsetmaker(nodelist[1])
+       
+    2:     def atom_backquote(self, nodelist):
+>>>>>>         return Backquote(self.com_node(nodelist[1]))
+       
+    2:     def atom_number(self, nodelist):
+               ### need to verify this matches compile.c
+  165:         k = eval(nodelist[0][1])
+  165:         return Const(k, lineno=nodelist[0][2])
+       
+    2:     def decode_literal(self, lit):
+  136:         if self.encoding:
+                   # this is particularly fragile & a bit of a
+                   # hack... changes in compile.c:parsestr and
+                   # tokenizer.c must be reflected here.
+>>>>>>             if self.encoding not in ['utf-8', 'iso-8859-1']:
+>>>>>>                 lit = unicode(lit, 'utf-8').encode(self.encoding)
+>>>>>>             return eval("# coding: %s\n%s" % (self.encoding, lit))
+               else:
+  136:             return eval(lit)
+       
+    2:     def atom_string(self, nodelist):
+  115:         k = ''
+  251:         for node in nodelist:
+  136:             k += self.decode_literal(node[1])
+  115:         return Const(k, lineno=nodelist[0][2])
+       
+    2:     def atom_name(self, nodelist):
+  279:         return Name(nodelist[0][1], lineno=nodelist[0][2])
+       
+           # --------------------------------------------------------------
+           #
+           # INTERNAL PARSING UTILITIES
+           #
+       
+           # The use of com_node() introduces a lot of extra stack frames,
+           # enough to cause a stack overflow compiling test.test_parser with
+           # the standard interpreter recursionlimit.  The com_node() is a
+           # convenience function that hides the dispatch details, but comes
+           # at a very high cost.  It is more efficient to dispatch directly
+           # in the callers.  In these cases, use lookup_node() and call the
+           # dispatched node directly.
+       
+    2:     def lookup_node(self, node):
+ 4902:         return self._dispatch[node[0]]
+       
+    2:     def com_node(self, node):
+               # Note: compile.c has handling in com_node for del_stmt, pass_stmt,
+               #       break_stmt, stmt, small_stmt, flow_stmt, simple_stmt,
+               #       and compound_stmt.
+               #       We'll just dispatch them.
+ 4754:         return self._dispatch[node[0]](node[1:])
+       
+    2:     def com_NEWLINE(self, *args):
+               # A ';' at the end of a line can make a NEWLINE token appear
+               # here, Render it harmless. (genc discards ('discard',
+               # ('const', xxxx)) Nodes)
+>>>>>>         return Discard(Const(None))
+       
+    2:     def com_arglist(self, nodelist):
+               # varargslist:
+               #     (fpdef ['=' test] ',')* ('*' NAME [',' '**' NAME] | '**' NAME)
+               #   | fpdef ['=' test] (',' fpdef ['=' test])* [',']
+               # fpdef: NAME | '(' fplist ')'
+               # fplist: fpdef (',' fpdef)* [',']
+   31:         names = []
+   31:         defaults = []
+   31:         flags = 0
+       
+   31:         i = 0
+   67:         while i < len(nodelist):
+   40:             node = nodelist[i]
+   40:             if node[0] == token.STAR or node[0] == token.DOUBLESTAR:
+    3:                 if node[0] == token.STAR:
+    3:                     node = nodelist[i+1]
+    3:                     if node[0] == token.NAME:
+    3:                         names.append(node[1])
+    3:                         flags = flags | CO_VARARGS
+    3:                         i = i + 3
+       
+    3:                 if i < len(nodelist):
+                           # should be DOUBLESTAR
+    1:                     t = nodelist[i][0]
+    1:                     if t == token.DOUBLESTAR:
+    1:                         node = nodelist[i+1]
+                           else:
+>>>>>>                         raise ValueError, "unexpected token: %s" % t
+    1:                     names.append(node[1])
+    1:                     flags = flags | CO_VARKEYWORDS
+       
+    3:                 break
+       
+                   # fpdef: NAME | '(' fplist ')'
+   37:             names.append(self.com_fpdef(node))
+       
+   37:             i = i + 1
+   37:             if i < len(nodelist) and nodelist[i][0] == token.EQUAL:
+    1:                 defaults.append(self.com_node(nodelist[i + 1]))
+    1:                 i = i + 2
+   36:             elif len(defaults):
+                       # we have already seen an argument with default, but here
+                       # came one without
+    1:                 raise SyntaxError, "non-default argument follows default argument"
+       
+                   # skip the comma
+   36:             i = i + 1
+       
+   30:         return names, defaults, flags
+       
+    2:     def com_fpdef(self, node):
+               # fpdef: NAME | '(' fplist ')'
+   37:         if node[1][0] == token.LPAR:
+>>>>>>             return self.com_fplist(node[2])
+   37:         return node[1][1]
+       
+    2:     def com_fplist(self, node):
+               # fplist: fpdef (',' fpdef)* [',']
+>>>>>>         if len(node) == 2:
+>>>>>>             return self.com_fpdef(node[1])
+>>>>>>         list = []
+>>>>>>         for i in range(1, len(node), 2):
+>>>>>>             list.append(self.com_fpdef(node[i]))
+>>>>>>         return tuple(list)
+       
+    2:     def com_dotted_name(self, node):
+               # String together the dotted names and return the string
+   13:         name = ""
+   38:         for n in node:
+   25:             if type(n) == type(()) and n[0] == 1:
+   15:                 name = name + n[1] + '.'
+   13:         return name[:-1]
+       
+    2:     def com_dotted_as_name(self, node):
+    5:         assert node[0] == symbol.dotted_as_name
+    5:         node = node[1:]
+    5:         dot = self.com_dotted_name(node[0][1:])
+    5:         if len(node) == 1:
+    5:             return dot, None
+>>>>>>         assert node[1][1] == 'as'
+>>>>>>         assert node[2][0] == token.NAME
+>>>>>>         return dot, node[2][1]
+       
+    2:     def com_dotted_as_names(self, node):
+    2:         assert node[0] == symbol.dotted_as_names
+    2:         node = node[1:]
+    2:         names = [self.com_dotted_as_name(node[0])]
+    5:         for i in range(2, len(node), 2):
+    3:             names.append(self.com_dotted_as_name(node[i]))
+    2:         return names
+       
+    2:     def com_import_as_name(self, node):
+    7:         assert node[0] == symbol.import_as_name
+    7:         node = node[1:]
+    7:         assert node[0][0] == token.NAME
+    7:         if len(node) == 1:
+    7:             return node[0][1], None
+>>>>>>         assert node[1][1] == 'as', node
+>>>>>>         assert node[2][0] == token.NAME
+>>>>>>         return node[0][1], node[2][1]
+       
+    2:     def com_import_as_names(self, node):
+    7:         assert node[0] == symbol.import_as_names
+    7:         node = node[1:]
+    7:         names = [self.com_import_as_name(node[0])]
+    7:         for i in range(2, len(node), 2):
+>>>>>>             names.append(self.com_import_as_name(node[i]))
+    7:         return names
+       
+    2:     def com_bases(self, node):
+    2:         bases = []
+    4:         for i in range(1, len(node), 2):
+    2:             bases.append(self.com_node(node[i]))
+    2:         return bases
+       
+    2:     def com_try_except_finally(self, nodelist):
+               # ('try' ':' suite
+               #  ((except_clause ':' suite)+ ['else' ':' suite] ['finally' ':' suite]
+               #   | 'finally' ':' suite))
+       
+    6:         if nodelist[3][0] == token.NAME:
+                   # first clause is a finally clause: only try-finally
+    1:             return TryFinally(self.com_node(nodelist[2]),
+    1:                               self.com_node(nodelist[5]),
+    1:                               lineno=nodelist[0][2])
+       
+               #tryexcept:  [TryNode, [except_clauses], elseNode)]
+    5:         clauses = []
+    5:         elseNode = None
+    5:         finallyNode = None
+   12:         for i in range(3, len(nodelist), 3):
+    7:             node = nodelist[i]
+    7:             if node[0] == symbol.except_clause:
+                       # except_clause: 'except' [expr [(',' | 'as') expr]] */
+    5:                 if len(node) > 2:
+    3:                     expr1 = self.com_node(node[2])
+    3:                     if len(node) > 4:
+    2:                         expr2 = self.com_assign(node[4], OP_ASSIGN)
+                           else:
+    1:                         expr2 = None
+                       else:
+    2:                     expr1 = expr2 = None
+    5:                 clauses.append((expr1, expr2, self.com_node(nodelist[i+2])))
+       
+    7:             if node[0] == token.NAME:
+    2:                 if node[1] == 'else':
+    1:                     elseNode = self.com_node(nodelist[i+2])
+    1:                 elif node[1] == 'finally':
+    1:                     finallyNode = self.com_node(nodelist[i+2])
+    5:         try_except = TryExcept(self.com_node(nodelist[2]), clauses, elseNode,
+    5:                                lineno=nodelist[0][2])
+    5:         if finallyNode:
+    1:             return TryFinally(try_except, finallyNode, lineno=nodelist[0][2])
+               else:
+    4:             return try_except
+       
+    2:     def com_with(self, nodelist):
+               # with_stmt: 'with' with_item (',' with_item)* ':' suite
+    3:         body = self.com_node(nodelist[-1])
+    4:         for i in range(len(nodelist) - 3, 0, -2):
+    4:             ret = self.com_with_item(nodelist[i], body, nodelist[0][2])
+    4:             if i == 1:
+    3:                 return ret
+    1:             body = ret
+       
+    2:     def com_with_item(self, nodelist, body, lineno):
+               # with_item: test ['as' expr]
+    4:         if len(nodelist) == 4:
+    3:             var = self.com_assign(nodelist[3], OP_ASSIGN)
+               else:
+    1:             var = None
+    4:         expr = self.com_node(nodelist[1])
+    4:         return With(expr, var, body, lineno=lineno)
+       
+    2:     def com_augassign_op(self, node):
+    2:         assert node[0] == symbol.augassign
+    2:         return node[1]
+       
+    2:     def com_augassign(self, node):
+               """Return node suitable for lvalue of augmented assignment
+       
+               Names, slices, and attributes are the only allowable nodes.
+               """
+    2:         l = self.com_node(node)
+    2:         if l.__class__ in (Name, Slice, Subscript, Getattr):
+    2:             return l
+>>>>>>         raise SyntaxError, "can't assign to %s" % l.__class__.__name__
+       
+    2:     def com_assign(self, node, assigning):
+               # return a node suitable for use as an "lvalue"
+               # loop to avoid trivial recursion
+  123:         while 1:
+ 1639:             t = node[0]
+ 1639:             if t in (symbol.exprlist, symbol.testlist, symbol.testlist_safe, symbol.testlist_comp):
+   98:                 if len(node) > 2:
+   12:                     return self.com_assign_tuple(node, assigning)
+   86:                 node = node[1]
+ 1541:             elif t in _assign_types:
+ 1309:                 if len(node) > 2:
+>>>>>>                     raise SyntaxError, "can't assign to operator"
+ 1309:                 node = node[1]
+  232:             elif t == symbol.power:
+  117:                 if node[1][0] != symbol.atom:
+>>>>>>                     raise SyntaxError, "can't assign to operator"
+  117:                 if len(node) > 2:
+    2:                     primary = self.com_node(node[1])
+    2:                     for i in range(2, len(node)-1):
+>>>>>>                         ch = node[i]
+>>>>>>                         if ch[0] == token.DOUBLESTAR:
+>>>>>>                             raise SyntaxError, "can't assign to operator"
+>>>>>>                         primary = self.com_apply_trailer(primary, ch)
+    2:                     return self.com_assign_trailer(primary, node[-1],
+    2:                                                    assigning)
+  115:                 node = node[1]
+  115:             elif t == symbol.atom:
+  115:                 t = node[1][0]
+  115:                 if t == token.LPAR:
+    6:                     node = node[2]
+    6:                     if node[0] == token.RPAR:
+>>>>>>                         raise SyntaxError, "can't assign to ()"
+  109:                 elif t == token.LSQB:
+    1:                     node = node[2]
+    1:                     if node[0] == token.RSQB:
+>>>>>>                         raise SyntaxError, "can't assign to []"
+    1:                     return self.com_assign_list(node, assigning)
+  108:                 elif t == token.NAME:
+  108:                     return self.com_assign_name(node[1], assigning)
+                       else:
+>>>>>>                     raise SyntaxError, "can't assign to literal"
+                   else:
+>>>>>>                 raise SyntaxError, "bad assignment (%s)" % t
+       
+    2:     def com_assign_tuple(self, node, assigning):
+   12:         assigns = []
+   36:         for i in range(1, len(node), 2):
+   24:             assigns.append(self.com_assign(node[i], assigning))
+   12:         return AssTuple(assigns, lineno=extractLineNo(node))
+       
+    2:     def com_assign_list(self, node, assigning):
+    1:         assigns = []
+    3:         for i in range(1, len(node), 2):
+    2:             if i + 1 < len(node):
+    1:                 if node[i + 1][0] == symbol.list_for:
+>>>>>>                     raise SyntaxError, "can't assign to list comprehension"
+    1:                 assert node[i + 1][0] == token.COMMA, node[i + 1]
+    2:             assigns.append(self.com_assign(node[i], assigning))
+    1:         return AssList(assigns, lineno=extractLineNo(node))
+       
+    2:     def com_assign_name(self, node, assigning):
+  108:         return AssName(node[1], assigning, lineno=node[2])
+       
+    2:     def com_assign_trailer(self, primary, node, assigning):
+    2:         t = node[1][0]
+    2:         if t == token.DOT:
+    2:             return self.com_assign_attr(primary, node[2], assigning)
+>>>>>>         if t == token.LSQB:
+>>>>>>             return self.com_subscriptlist(primary, node[2], assigning)
+>>>>>>         if t == token.LPAR:
+>>>>>>             raise SyntaxError, "can't assign to function call"
+>>>>>>         raise SyntaxError, "unknown trailer type: %s" % t
+       
+    2:     def com_assign_attr(self, primary, node, assigning):
+    2:         return AssAttr(primary, node[1], assigning, lineno=node[-1])
+       
+    2:     def com_binary(self, constructor, nodelist):
+               "Compile 'NODE (OP NODE)*' into (type, [ node1, ..., nodeN ])."
+ 3194:         l = len(nodelist)
+ 3194:         if l == 1:
+ 3161:             n = nodelist[0]
+ 3161:             return self.lookup_node(n)(n[1:])
+   33:         items = []
+   98:         for i in range(0, l, 2):
+   65:             n = nodelist[i]
+   65:             items.append(self.lookup_node(n)(n[1:]))
+   33:         return constructor(items, lineno=extractLineNo(nodelist))
+       
+    2:     def com_stmt(self, node):
+  497:         result = self.lookup_node(node)(node[1:])
+  491:         assert result is not None
+  491:         if isinstance(result, Stmt):
+  251:             return result
+  240:         return Stmt([result])
+       
+    2:     def com_append_stmt(self, stmts, node):
+  418:         result = self.lookup_node(node)(node[1:])
+  413:         assert result is not None
+  413:         if isinstance(result, Stmt):
+  413:             stmts.extend(result.nodes)
+               else:
+>>>>>>             stmts.append(result)
+       
+    2:     def com_list_constructor(self, nodelist):
+               # listmaker: test ( list_for | (',' test)* [','] )
+    9:         values = []
+   32:         for i in range(1, len(nodelist)):
+   24:             if nodelist[i][0] == symbol.list_for:
+    1:                 assert len(nodelist[i:]) == 1
+    1:                 return self.com_list_comprehension(values[0],
+    1:                                                    nodelist[i])
+   23:             elif nodelist[i][0] == token.COMMA:
+    7:                 continue
+   16:             values.append(self.com_node(nodelist[i]))
+    8:         return List(values, lineno=values[0].lineno)
+       
+    2:     def com_list_comprehension(self, expr, node):
+    1:         return self.com_comprehension(expr, None, node, 'list')
+       
+    2:     def com_comprehension(self, expr1, expr2, node, type):
+               # list_iter: list_for | list_if
+               # list_for: 'for' exprlist 'in' testlist [list_iter]
+               # list_if: 'if' test [list_iter]
+       
+               # XXX should raise SyntaxError for assignment
+               # XXX(avassalotti) Set and dict comprehensions should have generator
+               #                  semantics. In other words, they shouldn't leak
+               #                  variables outside of the comprehension's scope.
+       
+    7:         lineno = node[1][2]
+    7:         fors = []
+   20:         while node:
+   13:             t = node[1][1]
+   13:             if t == 'for':
+    9:                 assignNode = self.com_assign(node[2], OP_ASSIGN)
+    9:                 compNode = self.com_node(node[4])
+    9:                 newfor = ListCompFor(assignNode, compNode, [])
+    9:                 newfor.lineno = node[1][2]
+    9:                 fors.append(newfor)
+    9:                 if len(node) == 5:
+    5:                     node = None
+    4:                 elif type == 'list':
+>>>>>>                     node = self.com_list_iter(node[5])
+                       else:
+    4:                     node = self.com_comp_iter(node[5])
+    4:             elif t == 'if':
+    4:                 test = self.com_node(node[2])
+    4:                 newif = ListCompIf(test, lineno=node[1][2])
+    4:                 newfor.ifs.append(newif)
+    4:                 if len(node) == 3:
+    2:                     node = None
+    2:                 elif type == 'list':
+>>>>>>                     node = self.com_list_iter(node[3])
+                       else:
+    2:                     node = self.com_comp_iter(node[3])
+                   else:
+>>>>>>                 raise SyntaxError, \
+>>>>>>                       ("unexpected comprehension element: %s %d"
+>>>>>>                        % (node, lineno))
+    7:         if type == 'list':
+    1:             return ListComp(expr1, fors, lineno=lineno)
+    6:         elif type == 'set':
+    3:             return SetComp(expr1, fors, lineno=lineno)
+    3:         elif type == 'dict':
+    3:             return DictComp(expr1, expr2, fors, lineno=lineno)
+               else:
+>>>>>>             raise ValueError("unexpected comprehension type: " + repr(type))
+       
+    2:     def com_list_iter(self, node):
+>>>>>>         assert node[0] == symbol.list_iter
+>>>>>>         return node[1]
+       
+    2:     def com_comp_iter(self, node):
+    9:         assert node[0] == symbol.comp_iter
+    9:         return node[1]
+       
+    2:     def com_generator_expression(self, expr, node):
+               # comp_iter: comp_for | comp_if
+               # comp_for: 'for' exprlist 'in' test [comp_iter]
+               # comp_if: 'if' test [comp_iter]
+       
+    1:         lineno = node[1][2]
+    1:         fors = []
+    5:         while node:
+    4:             t = node[1][1]
+    4:             if t == 'for':
+    2:                 assignNode = self.com_assign(node[2], OP_ASSIGN)
+    2:                 genNode = self.com_node(node[4])
+    2:                 newfor = GenExprFor(assignNode, genNode, [],
+    2:                                     lineno=node[1][2])
+    2:                 fors.append(newfor)
+    2:                 if (len(node)) == 5:
+>>>>>>                     node = None
+                       else:
+    2:                     node = self.com_comp_iter(node[5])
+    2:             elif t == 'if':
+    2:                 test = self.com_node(node[2])
+    2:                 newif = GenExprIf(test, lineno=node[1][2])
+    2:                 newfor.ifs.append(newif)
+    2:                 if len(node) == 3:
+    1:                     node = None
+                       else:
+    1:                     node = self.com_comp_iter(node[3])
+                   else:
+>>>>>>                 raise SyntaxError, \
+>>>>>>                         ("unexpected generator expression element: %s %d"
+>>>>>>                          % (node, lineno))
+    1:         fors[0].is_outmost = True
+    1:         return GenExpr(GenExprInner(expr, fors), lineno=lineno)
+       
+    2:     def com_dictorsetmaker(self, nodelist):
+               # dictorsetmaker: ( (test ':' test (comp_for | (',' test ':' test)* [','])) |
+               #                   (test (comp_for | (',' test)* [','])) )
+   27:         assert nodelist[0] == symbol.dictorsetmaker
+   27:         nodelist = nodelist[1:]
+   27:         if len(nodelist) == 1 or nodelist[1][0] == token.COMMA:
+                   # set literal
+    7:             items = []
+   28:             for i in range(0, len(nodelist), 2):
+   21:                 items.append(self.com_node(nodelist[i]))
+    7:             return Set(items, lineno=items[0].lineno)
+   20:         elif nodelist[1][0] == symbol.comp_for:
+                   # set comprehension
+    3:             expr = self.com_node(nodelist[0])
+    3:             return self.com_comprehension(expr, None, nodelist[1], 'set')
+   17:         elif len(nodelist) > 3 and nodelist[3][0] == symbol.comp_for:
+                   # dict comprehension
+    3:             assert nodelist[1][0] == token.COLON
+    3:             key = self.com_node(nodelist[0])
+    3:             value = self.com_node(nodelist[2])
+    3:             return self.com_comprehension(key, value, nodelist[3], 'dict')
+               else:
+                   # dict literal
+   14:             items = []
+   40:             for i in range(0, len(nodelist), 4):
+   26:                 items.append((self.com_node(nodelist[i]),
+   26:                               self.com_node(nodelist[i+2])))
+   14:             return Dict(items, lineno=items[0][0].lineno)
+       
+    2:     def com_apply_trailer(self, primaryNode, nodelist):
+  260:         t = nodelist[1][0]
+  260:         if t == token.LPAR:
+  132:             return self.com_call_function(primaryNode, nodelist[2])
+  128:         if t == token.DOT:
+  123:             return self.com_select_member(primaryNode, nodelist[2])
+    5:         if t == token.LSQB:
+    5:             return self.com_subscriptlist(primaryNode, nodelist[2], OP_APPLY)
+       
+>>>>>>         raise SyntaxError, 'unknown node type: %s' % t
+       
+    2:     def com_select_member(self, primaryNode, nodelist):
+  123:         if nodelist[0] != token.NAME:
+>>>>>>             raise SyntaxError, "member must be a name"
+  123:         return Getattr(primaryNode, nodelist[1], lineno=nodelist[2])
+       
+    2:     def com_call_function(self, primaryNode, nodelist):
+  132:         if nodelist[0] == token.RPAR:
+   18:             return CallFunc(primaryNode, [], lineno=extractLineNo(nodelist))
+  114:         args = []
+  114:         kw = 0
+  114:         star_node = dstar_node = None
+  114:         len_nodelist = len(nodelist)
+  114:         i = 1
+  336:         while i < len_nodelist:
+  224:             node = nodelist[i]
+       
+  224:             if node[0]==token.STAR:
+    2:                 if star_node is not None:
+>>>>>>                     raise SyntaxError, 'already have the varargs indentifier'
+    2:                 star_node = self.com_node(nodelist[i+1])
+    2:                 i = i + 3
+    2:                 continue
+  222:             elif node[0]==token.DOUBLESTAR:
+>>>>>>                 if dstar_node is not None:
+>>>>>>                     raise SyntaxError, 'already have the kwargs indentifier'
+>>>>>>                 dstar_node = self.com_node(nodelist[i+1])
+>>>>>>                 i = i + 3
+>>>>>>                 continue
+       
+                   # positional or named parameters
+  222:             kw, result = self.com_argument(node, kw, star_node)
+       
+  220:             if len_nodelist != 2 and isinstance(result, GenExpr) \
+>>>>>>                and len(node) == 3 and node[2][0] == symbol.comp_for:
+                       # allow f(x for x in y), but reject f(x for x in y, 1)
+                       # should use f((x for x in y), 1) instead of f(x for x in y, 1)
+>>>>>>                 raise SyntaxError, 'generator expression needs parenthesis'
+       
+  220:             args.append(result)
+  220:             i = i + 2
+       
+  112:         return CallFunc(primaryNode, args, star_node, dstar_node,
+  112:                         lineno=extractLineNo(nodelist))
+       
+    2:     def com_argument(self, nodelist, kw, star_node):
+  222:         if len(nodelist) == 3 and nodelist[2][0] == symbol.comp_for:
+    1:             test = self.com_node(nodelist[1])
+    1:             return 0, self.com_generator_expression(test, nodelist[2])
+  221:         if len(nodelist) == 2:
+  214:             if kw:
+    1:                 raise SyntaxError, "non-keyword arg after keyword arg"
+  213:             if star_node:
+    1:                 raise SyntaxError, "only named arguments may follow *expression"
+  212:             return 0, self.com_node(nodelist[1])
+    7:         result = self.com_node(nodelist[3])
+    7:         n = nodelist[1]
+  105:         while len(n) == 2 and n[0] != token.NAME:
+   98:             n = n[1]
+    7:         if n[0] != token.NAME:
+>>>>>>             raise SyntaxError, "keyword can't be an expression (%s)"%n[0]
+    7:         node = Keyword(n[1], result, lineno=n[2])
+    7:         return 1, node
+       
+    2:     def com_subscriptlist(self, primary, nodelist, assigning):
+               # slicing:      simple_slicing | extended_slicing
+               # simple_slicing:   primary "[" short_slice "]"
+               # extended_slicing: primary "[" slice_list "]"
+               # slice_list:   slice_item ("," slice_item)* [","]
+       
+               # backwards compat slice for '[i:j]'
+    5:         if len(nodelist) == 2:
+    5:             sub = nodelist[1]
+    5:             if (sub[1][0] == token.COLON or \
+    4:                             (len(sub) > 2 and sub[2][0] == token.COLON)) and \
+    2:                             sub[-1][0] != symbol.sliceop:
+    2:                 return self.com_slice(primary, sub, assigning)
+       
+    3:         subscripts = []
+    6:         for i in range(1, len(nodelist), 2):
+    3:             subscripts.append(self.com_subscript(nodelist[i]))
+    3:         return Subscript(primary, assigning, subscripts,
+    3:                          lineno=extractLineNo(nodelist))
+       
+    2:     def com_subscript(self, node):
+               # slice_item: expression | proper_slice | ellipsis
+    3:         ch = node[1]
+    3:         t = ch[0]
+    3:         if t == token.DOT and node[2][0] == token.DOT:
+>>>>>>             return Ellipsis()
+    3:         if t == token.COLON or len(node) > 2:
+>>>>>>             return self.com_sliceobj(node)
+    3:         return self.com_node(ch)
+       
+    2:     def com_sliceobj(self, node):
+               # proper_slice: short_slice | long_slice
+               # short_slice:  [lower_bound] ":" [upper_bound]
+               # long_slice:   short_slice ":" [stride]
+               # lower_bound:  expression
+               # upper_bound:  expression
+               # stride:       expression
+               #
+               # Note: a stride may be further slicing...
+       
+>>>>>>         items = []
+       
+>>>>>>         if node[1][0] == token.COLON:
+>>>>>>             items.append(Const(None))
+>>>>>>             i = 2
+               else:
+>>>>>>             items.append(self.com_node(node[1]))
+                   # i == 2 is a COLON
+>>>>>>             i = 3
+       
+>>>>>>         if i < len(node) and node[i][0] == symbol.test:
+>>>>>>             items.append(self.com_node(node[i]))
+>>>>>>             i = i + 1
+               else:
+>>>>>>             items.append(Const(None))
+       
+               # a short_slice has been built. look for long_slice now by looking
+               # for strides...
+>>>>>>         for j in range(i, len(node)):
+>>>>>>             ch = node[j]
+>>>>>>             if len(ch) == 2:
+>>>>>>                 items.append(Const(None))
+                   else:
+>>>>>>                 items.append(self.com_node(ch[2]))
+>>>>>>         return Sliceobj(items, lineno=extractLineNo(node))
+       
+    2:     def com_slice(self, primary, node, assigning):
+               # short_slice:  [lower_bound] ":" [upper_bound]
+    2:         lower = upper = None
+    2:         if len(node) == 3:
+    1:             if node[1][0] == token.COLON:
+    1:                 upper = self.com_node(node[2])
+                   else:
+>>>>>>                 lower = self.com_node(node[1])
+    1:         elif len(node) == 4:
+    1:             lower = self.com_node(node[1])
+    1:             upper = self.com_node(node[3])
+    2:         return Slice(primary, assigning, lower, upper,
+    2:                      lineno=extractLineNo(node))
+       
+    2:     def get_docstring(self, node, n=None):
+  461:         if n is None:
+  439:             n = node[0]
+  439:             node = node[1:]
+  461:         if n == symbol.suite:
+   43:             if len(node) == 1:
+    3:                 return self.get_docstring(node[0])
+  120:             for sub in node:
+  120:                 if sub[0] == symbol.stmt:
+   40:                     return self.get_docstring(sub)
+>>>>>>             return None
+  418:         if n == symbol.file_input:
+   22:             for sub in node:
+   22:                 if sub[0] == symbol.stmt:
+   22:                     return self.get_docstring(sub)
+>>>>>>             return None
+  396:         if n == symbol.atom:
+    3:             if node[0][0] == token.STRING:
+    3:                 s = ''
+    6:                 for t in node:
+    3:                     s = s + eval(t[1])
+    3:                 return s
+>>>>>>             return None
+  393:         if n == symbol.stmt or n == symbol.simple_stmt \
+  282:            or n == symbol.small_stmt:
+  160:             return self.get_docstring(node[0])
+  233:         if n in _doc_nodes and len(node) == 1:
+  171:             return self.get_docstring(node[0])
+   62:         return None
+       
+       
+       _doc_nodes = [
+    2:     symbol.expr_stmt,
+    2:     symbol.testlist,
+    2:     symbol.testlist_safe,
+    2:     symbol.test,
+    2:     symbol.or_test,
+    2:     symbol.and_test,
+    2:     symbol.not_test,
+    2:     symbol.comparison,
+    2:     symbol.expr,
+    2:     symbol.xor_expr,
+    2:     symbol.and_expr,
+    2:     symbol.shift_expr,
+    2:     symbol.arith_expr,
+    2:     symbol.term,
+    2:     symbol.factor,
+    2:     symbol.power,
+           ]
+       
+       # comp_op: '<' | '>' | '=' | '>=' | '<=' | '<>' | '!=' | '=='
+       #             | 'in' | 'not' 'in' | 'is' | 'is' 'not'
+    2: _cmp_types = {
+    2:     token.LESS : '<',
+    2:     token.GREATER : '>',
+    2:     token.EQEQUAL : '==',
+    2:     token.EQUAL : '==',
+    2:     token.LESSEQUAL : '<=',
+    2:     token.GREATEREQUAL : '>=',
+    2:     token.NOTEQUAL : '!=',
+           }
+       
+       _legal_node_types = [
+    2:     symbol.funcdef,
+    2:     symbol.classdef,
+    2:     symbol.stmt,
+    2:     symbol.small_stmt,
+    2:     symbol.flow_stmt,
+    2:     symbol.simple_stmt,
+    2:     symbol.compound_stmt,
+    2:     symbol.expr_stmt,
+    2:     symbol.print_stmt,
+    2:     symbol.del_stmt,
+    2:     symbol.pass_stmt,
+    2:     symbol.break_stmt,
+    2:     symbol.continue_stmt,
+    2:     symbol.return_stmt,
+    2:     symbol.raise_stmt,
+    2:     symbol.import_stmt,
+    2:     symbol.global_stmt,
+    2:     symbol.exec_stmt,
+    2:     symbol.assert_stmt,
+    2:     symbol.if_stmt,
+    2:     symbol.while_stmt,
+    2:     symbol.for_stmt,
+    2:     symbol.try_stmt,
+    2:     symbol.with_stmt,
+    2:     symbol.suite,
+    2:     symbol.testlist,
+    2:     symbol.testlist_safe,
+    2:     symbol.test,
+    2:     symbol.and_test,
+    2:     symbol.not_test,
+    2:     symbol.comparison,
+    2:     symbol.exprlist,
+    2:     symbol.expr,
+    2:     symbol.xor_expr,
+    2:     symbol.and_expr,
+    2:     symbol.shift_expr,
+    2:     symbol.arith_expr,
+    2:     symbol.term,
+    2:     symbol.factor,
+    2:     symbol.power,
+    2:     symbol.atom,
+           ]
+       
+    2: if hasattr(symbol, 'yield_stmt'):
+    2:     _legal_node_types.append(symbol.yield_stmt)
+    2: if hasattr(symbol, 'yield_expr'):
+    2:     _legal_node_types.append(symbol.yield_expr)
+       
+       _assign_types = [
+    2:     symbol.test,
+    2:     symbol.or_test,
+    2:     symbol.and_test,
+    2:     symbol.not_test,
+    2:     symbol.comparison,
+    2:     symbol.expr,
+    2:     symbol.xor_expr,
+    2:     symbol.and_expr,
+    2:     symbol.shift_expr,
+    2:     symbol.arith_expr,
+    2:     symbol.term,
+    2:     symbol.factor,
+           ]
+       
+    2: _names = {}
+  172: for k, v in symbol.sym_name.items():
+  170:     _names[k] = v
+  114: for k, v in token.tok_name.items():
+  112:     _names[k] = v
+       
+    2: def debug_tree(tree):
+>>>>>>     l = []
+>>>>>>     for elt in tree:
+>>>>>>         if isinstance(elt, (int, long)):
+>>>>>>             l.append(_names.get(elt, elt))
+>>>>>>         elif isinstance(elt, str):
+>>>>>>             l.append(elt)
+               else:
+>>>>>>             l.append(debug_tree(elt))
+>>>>>>     return l

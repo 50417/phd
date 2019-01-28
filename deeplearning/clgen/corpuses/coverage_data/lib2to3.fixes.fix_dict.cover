@@ -1,0 +1,107 @@
+       # Copyright 2007 Google, Inc. All Rights Reserved.
+       # Licensed to PSF under a Contributor Agreement.
+       
+       """Fixer for dict methods.
+       
+       d.keys() -> list(d.keys())
+       d.items() -> list(d.items())
+       d.values() -> list(d.values())
+       
+       d.iterkeys() -> iter(d.keys())
+       d.iteritems() -> iter(d.items())
+       d.itervalues() -> iter(d.values())
+       
+       d.viewkeys() -> d.keys()
+       d.viewitems() -> d.items()
+       d.viewvalues() -> d.values()
+       
+       Except in certain very specific contexts: the iter() can be dropped
+       when the context is list(), sorted(), iter() or for...in; the list()
+       can be dropped when the context is list() or sorted() (but not iter()
+       or for...in!). Special contexts that apply to both: list(), sorted(), tuple()
+       set(), any(), all(), sum().
+       
+       Note: iter(d.keys()) could be written as iter(d) but since the
+       original d.iterkeys() was also redundant we don't fix this.  And there
+       are (rare) contexts where it makes a difference (e.g. when passing it
+       as an argument to a function that introspects the argument).
+    1: """
+       
+       # Local imports
+    1: from .. import pytree
+    1: from .. import patcomp
+    1: from ..pgen2 import token
+    1: from .. import fixer_base
+    1: from ..fixer_util import Name, Call, LParen, RParen, ArgList, Dot
+    1: from .. import fixer_util
+       
+       
+    1: iter_exempt = fixer_util.consuming_calls | set(["iter"])
+       
+       
+    2: class FixDict(fixer_base.BaseFix):
+    1:     BM_compatible = True
+       
+           PATTERN = """
+           power< head=any+
+                trailer< '.' method=('keys'|'items'|'values'|
+                                     'iterkeys'|'iteritems'|'itervalues'|
+                                     'viewkeys'|'viewitems'|'viewvalues') >
+                parens=trailer< '(' ')' >
+                tail=any*
+           >
+    1:     """
+       
+    1:     def transform(self, node, results):
+   75:         head = results["head"]
+   75:         method = results["method"][0] # Extract node for method name
+   75:         tail = results["tail"]
+   75:         syms = self.syms
+   75:         method_name = method.value
+   75:         isiter = method_name.startswith(u"iter")
+   75:         isview = method_name.startswith(u"view")
+   75:         if isiter or isview:
+   28:             method_name = method_name[4:]
+   75:         assert method_name in (u"keys", u"items", u"values"), repr(method)
+  153:         head = [n.clone() for n in head]
+   81:         tail = [n.clone() for n in tail]
+   75:         special = not tail and self.in_special_context(node, isiter)
+   75:         args = head + [pytree.Node(syms.trailer,
+   75:                                    [Dot(),
+   75:                                     Name(method_name,
+   75:                                          prefix=method.prefix)]),
+   75:                        results["parens"].clone()]
+   75:         new = pytree.Node(syms.power, args)
+   75:         if not (special or isview):
+   23:             new.prefix = u""
+   23:             new = Call(Name(u"iter" if isiter else u"list"), [new])
+   75:         if tail:
+    4:             new = pytree.Node(syms.power, [new] + tail)
+   75:         new.prefix = node.prefix
+   75:         return new
+       
+    1:     P1 = "power< func=NAME trailer< '(' node=any ')' > any* >"
+    1:     p1 = patcomp.compile_pattern(P1)
+       
+           P2 = """for_stmt< 'for' any 'in' node=any ':' any* >
+                   | comp_for< 'for' any 'in' node=any any* >
+    1:          """
+    1:     p2 = patcomp.compile_pattern(P2)
+       
+    1:     def in_special_context(self, node, isiter):
+   71:         if node.parent is None:
+>>>>>>             return False
+   71:         results = {}
+   71:         if (node.parent.parent is not None and
+   71:                self.p1.match(node.parent.parent, results) and
+   41:                results["node"] is node):
+   41:             if isiter:
+                       # iter(d.iterkeys()) -> iter(d.keys()), etc.
+    4:                 return results["func"].value in iter_exempt
+                   else:
+                       # list(d.keys()) -> list(d.keys()), etc.
+   37:                 return results["func"].value in fixer_util.consuming_calls
+   30:         if not isiter:
+   19:             return False
+               # for ... in d.iterkeys() -> for ... in d.keys(), etc.
+   11:         return self.p2.match(node.parent, results) and results["node"] is node

@@ -1,0 +1,145 @@
+    1: """An object-oriented interface to .netrc files."""
+       
+       # Module and documentation by Eric S. Raymond, 21 Dec 1998
+       
+    1: import os, stat, shlex
+    1: if os.name == 'posix':
+    1:     import pwd
+       
+    1: __all__ = ["netrc", "NetrcParseError"]
+       
+       
+    2: class NetrcParseError(Exception):
+    1:     """Exception raised on syntax errors in the .netrc file."""
+    1:     def __init__(self, msg, filename=None, lineno=None):
+    1:         self.filename = filename
+    1:         self.lineno = lineno
+    1:         self.msg = msg
+    1:         Exception.__init__(self, msg)
+       
+    1:     def __str__(self):
+>>>>>>         return "%s (%s, line %s)" % (self.msg, self.filename, self.lineno)
+       
+       
+    2: class netrc:
+    1:     def __init__(self, file=None):
+   14:         default_netrc = file is None
+   14:         if file is None:
+    3:             try:
+    3:                 file = os.path.join(os.environ['HOME'], ".netrc")
+>>>>>>             except KeyError:
+>>>>>>                 raise IOError("Could not find .netrc: $HOME is not set")
+   14:         self.hosts = {}
+   14:         self.macros = {}
+   14:         with open(file) as fp:
+   13:             self._parse(file, fp, default_netrc)
+       
+    1:     def _parse(self, file, fp, default_netrc):
+   13:         lexer = shlex.shlex(fp)
+   13:         lexer.wordchars += r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""
+   13:         lexer.commenters = lexer.commenters.replace('#', '')
+   13:         while 1:
+                   # Look for a machine, default, or macdef top-level keyword
+   40:             toplevel = tt = lexer.get_token()
+   40:             if not tt:
+   12:                 break
+   28:             elif tt[0] == '#':
+                       # seek to beginning of comment, in case reading the token put
+                       # us on a new line, and then skip the rest of the line.
+    6:                 pos = len(tt) + 1
+    6:                 lexer.instream.seek(-pos, 1)
+    6:                 lexer.instream.readline()
+    6:                 continue
+   22:             elif tt == 'machine':
+   18:                 entryname = lexer.get_token()
+    4:             elif tt == 'default':
+    2:                 entryname = 'default'
+    2:             elif tt == 'macdef':                # Just skip to end of macdefs
+    2:                 entryname = lexer.get_token()
+    2:                 self.macros[entryname] = []
+    2:                 lexer.whitespace = ' \t'
+    2:                 while 1:
+    6:                     line = lexer.instream.readline()
+    6:                     if not line or line == '\012':
+    2:                         lexer.whitespace = ' \t\r\n'
+    2:                         break
+    4:                     self.macros[entryname].append(line)
+    2:                 continue
+                   else:
+>>>>>>                 raise NetrcParseError(
+>>>>>>                     "bad toplevel token %r" % tt, file, lexer.lineno)
+       
+                   # We're looking at start of an entry for a named machine or default.
+   20:             login = ''
+   20:             account = password = None
+   20:             self.hosts[entryname] = {}
+   20:             while 1:
+   63:                 tt = lexer.get_token()
+   63:                 if (tt.startswith('#') or
+   60:                     tt in {'', 'machine', 'default', 'macdef'}):
+   19:                     if password:
+   19:                         self.hosts[entryname] = (login, account, password)
+   19:                         lexer.push_token(tt)
+   19:                         break
+                           else:
+>>>>>>                         raise NetrcParseError(
+>>>>>>                             "malformed %s entry %s terminated by %s"
+>>>>>>                             % (toplevel, entryname, repr(tt)),
+>>>>>>                             file, lexer.lineno)
+   44:                 elif tt == 'login' or tt == 'user':
+   20:                     login = lexer.get_token()
+   24:                 elif tt == 'account':
+    4:                     account = lexer.get_token()
+   20:                 elif tt == 'password':
+   20:                     if os.name == 'posix' and default_netrc:
+    3:                         prop = os.fstat(fp.fileno())
+    3:                         if prop.st_uid != os.getuid():
+>>>>>>                             try:
+>>>>>>                                 fowner = pwd.getpwuid(prop.st_uid)[0]
+>>>>>>                             except KeyError:
+>>>>>>                                 fowner = 'uid %s' % prop.st_uid
+>>>>>>                             try:
+>>>>>>                                 user = pwd.getpwuid(os.getuid())[0]
+>>>>>>                             except KeyError:
+>>>>>>                                 user = 'uid %s' % os.getuid()
+>>>>>>                             raise NetrcParseError(
+>>>>>>                                 ("~/.netrc file owner (%s) does not match"
+>>>>>>                                  " current user (%s)") % (fowner, user),
+>>>>>>                                 file, lexer.lineno)
+    3:                         if (prop.st_mode & (stat.S_IRWXG | stat.S_IRWXO)):
+    1:                             raise NetrcParseError(
+    1:                                "~/.netrc access too permissive: access"
+                                      " permissions must restrict access to only"
+    1:                                " the owner", file, lexer.lineno)
+   19:                     password = lexer.get_token()
+                       else:
+>>>>>>                     raise NetrcParseError("bad follower token %r" % tt,
+>>>>>>                                           file, lexer.lineno)
+       
+    1:     def authenticators(self, host):
+               """Return a (user, account, password) tuple for given host."""
+>>>>>>         if host in self.hosts:
+>>>>>>             return self.hosts[host]
+>>>>>>         elif 'default' in self.hosts:
+>>>>>>             return self.hosts['default']
+               else:
+>>>>>>             return None
+       
+    1:     def __repr__(self):
+               """Dump the class data in the format of a .netrc file."""
+>>>>>>         rep = ""
+>>>>>>         for host in self.hosts.keys():
+>>>>>>             attrs = self.hosts[host]
+>>>>>>             rep = rep + "machine "+ host + "\n\tlogin " + repr(attrs[0]) + "\n"
+>>>>>>             if attrs[1]:
+>>>>>>                 rep = rep + "account " + repr(attrs[1])
+>>>>>>             rep = rep + "\tpassword " + repr(attrs[2]) + "\n"
+>>>>>>         for macro in self.macros.keys():
+>>>>>>             rep = rep + "macdef " + macro + "\n"
+>>>>>>             for line in self.macros[macro]:
+>>>>>>                 rep = rep + line
+>>>>>>             rep = rep + "\n"
+>>>>>>         return rep
+       
+    1: if __name__ == '__main__':
+>>>>>>     print netrc()

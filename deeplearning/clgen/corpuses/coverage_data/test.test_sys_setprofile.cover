@@ -1,0 +1,386 @@
+    1: import gc
+    1: import pprint
+    1: import sys
+    1: import unittest
+       
+    1: from test import test_support
+       
+    2: class TestGetProfile(unittest.TestCase):
+    1:     def setUp(self):
+    2:         sys.setprofile(None)
+       
+    1:     def tearDown(self):
+    2:         sys.setprofile(None)
+       
+    1:     def test_empty(self):
+    1:         self.assertIsNone(sys.getprofile())
+       
+    1:     def test_setget(self):
+    1:         def fn(*args):
+>>>>>>             pass
+       
+    1:         sys.setprofile(fn)
+    1:         self.assertIs(sys.getprofile(), fn)
+       
+    2: class HookWatcher:
+    1:     def __init__(self):
+   17:         self.frames = []
+   17:         self.events = []
+       
+    1:     def callback(self, frame, event, arg):
+>>>>>>         if (event == "call"
+>>>>>>             or event == "return"
+>>>>>>             or event == "exception"):
+>>>>>>             self.add_event(event, frame)
+       
+    1:     def add_event(self, event, frame=None):
+               """Add an event to the log."""
+    1:         if frame is None:
+    1:             frame = sys._getframe(1)
+       
+    1:         try:
+    1:             frameno = self.frames.index(frame)
+>>>>>>         except ValueError:
+>>>>>>             frameno = len(self.frames)
+>>>>>>             self.frames.append(frame)
+       
+    1:         self.events.append((frameno, event, ident(frame)))
+       
+    1:     def get_events(self):
+               """Remove calls to add_event()."""
+   17:         disallowed = [ident(self.add_event.im_func), ident(ident)]
+   17:         self.frames = None
+       
+  124:         return [item for item in self.events if item[2] not in disallowed]
+       
+       
+    2: class ProfileSimulator(HookWatcher):
+    1:     def __init__(self, testcase):
+    4:         self.testcase = testcase
+    4:         self.stack = []
+    4:         HookWatcher.__init__(self)
+       
+    1:     def callback(self, frame, event, arg):
+               # Callback registered with sys.setprofile()/sys.settrace()
+>>>>>>         self.dispatch[event](self, frame)
+       
+    1:     def trace_call(self, frame):
+>>>>>>         self.add_event('call', frame)
+>>>>>>         self.stack.append(frame)
+       
+    1:     def trace_return(self, frame):
+>>>>>>         self.add_event('return', frame)
+>>>>>>         self.stack.pop()
+       
+    1:     def trace_exception(self, frame):
+>>>>>>         self.testcase.fail(
+>>>>>>             "the profiler should never receive exception events")
+       
+    1:     def trace_pass(self, frame):
+>>>>>>         pass
+       
+    1:     dispatch = {
+    1:         'call': trace_call,
+    1:         'exception': trace_exception,
+    1:         'return': trace_return,
+    1:         'c_call': trace_pass,
+    1:         'c_return': trace_pass,
+    1:         'c_exception': trace_pass,
+               }
+       
+       
+    2: class TestCaseBase(unittest.TestCase):
+    1:     def check_events(self, callable, expected):
+   17:         events = capture_events(callable, self.new_watcher())
+   17:         if events != expected:
+>>>>>>             self.fail("Expected events:\n%s\nReceived events:\n%s"
+>>>>>>                       % (pprint.pformat(expected), pprint.pformat(events)))
+       
+       
+    2: class ProfileHookTestCase(TestCaseBase):
+    1:     def new_watcher(self):
+   13:         return HookWatcher()
+       
+    1:     def test_simple(self):
+    1:         def f(p):
+    1:             pass
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_exception(self):
+    1:         def f(p):
+    1:             1./0
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_caught_exception(self):
+    1:         def f(p):
+    1:             try: 1./0
+    1:             except: pass
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_caught_nested_exception(self):
+    1:         def f(p):
+    1:             try: 1./0
+    1:             except: pass
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_nested_exception(self):
+    1:         def f(p):
+    1:             1./0
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+                                     # This isn't what I expected:
+                                     # (0, 'exception', protect_ident),
+                                     # I expected this again:
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_exception_in_except_clause(self):
+    1:         def f(p):
+    2:             1./0
+    1:         def g(p):
+    1:             try:
+    1:                 f(p)
+    1:             except:
+    1:                 try: f(p)
+    1:                 except: pass
+    1:         f_ident = ident(f)
+    1:         g_ident = ident(g)
+    1:         self.check_events(g, [(1, 'call', g_ident),
+    1:                               (2, 'call', f_ident),
+    1:                               (2, 'return', f_ident),
+    1:                               (3, 'call', f_ident),
+    1:                               (3, 'return', f_ident),
+    1:                               (1, 'return', g_ident),
+                                     ])
+       
+    1:     def test_exception_propagation(self):
+    1:         def f(p):
+    1:             1./0
+    1:         def g(p):
+    1:             try: f(p)
+    1:             finally: p.add_event("falling through")
+    1:         f_ident = ident(f)
+    1:         g_ident = ident(g)
+    1:         self.check_events(g, [(1, 'call', g_ident),
+    1:                               (2, 'call', f_ident),
+    1:                               (2, 'return', f_ident),
+    1:                               (1, 'falling through', g_ident),
+    1:                               (1, 'return', g_ident),
+                                     ])
+       
+    1:     def test_raise_twice(self):
+    1:         def f(p):
+    1:             try: 1./0
+    1:             except: 1./0
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_raise_reraise(self):
+    1:         def f(p):
+    1:             try: 1./0
+    1:             except: raise
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_raise(self):
+    1:         def f(p):
+    1:             raise Exception()
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_distant_exception(self):
+    1:         def f():
+    1:             1./0
+    1:         def g():
+    1:             f()
+    1:         def h():
+    1:             g()
+    1:         def i():
+    1:             h()
+    1:         def j(p):
+    1:             i()
+    1:         f_ident = ident(f)
+    1:         g_ident = ident(g)
+    1:         h_ident = ident(h)
+    1:         i_ident = ident(i)
+    1:         j_ident = ident(j)
+    1:         self.check_events(j, [(1, 'call', j_ident),
+    1:                               (2, 'call', i_ident),
+    1:                               (3, 'call', h_ident),
+    1:                               (4, 'call', g_ident),
+    1:                               (5, 'call', f_ident),
+    1:                               (5, 'return', f_ident),
+    1:                               (4, 'return', g_ident),
+    1:                               (3, 'return', h_ident),
+    1:                               (2, 'return', i_ident),
+    1:                               (1, 'return', j_ident),
+                                     ])
+       
+    1:     def test_generator(self):
+    1:         def f():
+    3:             for i in range(2):
+    2:                 yield i
+    1:         def g(p):
+    3:             for i in f():
+    2:                 pass
+    1:         f_ident = ident(f)
+    1:         g_ident = ident(g)
+    1:         self.check_events(g, [(1, 'call', g_ident),
+                                     # call the iterator twice to generate values
+    1:                               (2, 'call', f_ident),
+    1:                               (2, 'return', f_ident),
+    1:                               (2, 'call', f_ident),
+    1:                               (2, 'return', f_ident),
+                                     # once more; returns end-of-iteration with
+                                     # actually raising an exception
+    1:                               (2, 'call', f_ident),
+    1:                               (2, 'return', f_ident),
+    1:                               (1, 'return', g_ident),
+                                     ])
+       
+    1:     def test_stop_iteration(self):
+    1:         def f():
+    3:             for i in range(2):
+    2:                 yield i
+    1:             raise StopIteration
+    1:         def g(p):
+    3:             for i in f():
+    2:                 pass
+    1:         f_ident = ident(f)
+    1:         g_ident = ident(g)
+    1:         self.check_events(g, [(1, 'call', g_ident),
+                                     # call the iterator twice to generate values
+    1:                               (2, 'call', f_ident),
+    1:                               (2, 'return', f_ident),
+    1:                               (2, 'call', f_ident),
+    1:                               (2, 'return', f_ident),
+                                     # once more to hit the raise:
+    1:                               (2, 'call', f_ident),
+    1:                               (2, 'return', f_ident),
+    1:                               (1, 'return', g_ident),
+                                     ])
+       
+       
+    2: class ProfileSimulatorTestCase(TestCaseBase):
+    1:     def new_watcher(self):
+    4:         return ProfileSimulator(self)
+       
+    1:     def test_simple(self):
+    1:         def f(p):
+    1:             pass
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_basic_exception(self):
+    1:         def f(p):
+    1:             1./0
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_caught_exception(self):
+    1:         def f(p):
+    1:             try: 1./0
+    1:             except: pass
+    1:         f_ident = ident(f)
+    1:         self.check_events(f, [(1, 'call', f_ident),
+    1:                               (1, 'return', f_ident),
+                                     ])
+       
+    1:     def test_distant_exception(self):
+    1:         def f():
+    1:             1./0
+    1:         def g():
+    1:             f()
+    1:         def h():
+    1:             g()
+    1:         def i():
+    1:             h()
+    1:         def j(p):
+    1:             i()
+    1:         f_ident = ident(f)
+    1:         g_ident = ident(g)
+    1:         h_ident = ident(h)
+    1:         i_ident = ident(i)
+    1:         j_ident = ident(j)
+    1:         self.check_events(j, [(1, 'call', j_ident),
+    1:                               (2, 'call', i_ident),
+    1:                               (3, 'call', h_ident),
+    1:                               (4, 'call', g_ident),
+    1:                               (5, 'call', f_ident),
+    1:                               (5, 'return', f_ident),
+    1:                               (4, 'return', g_ident),
+    1:                               (3, 'return', h_ident),
+    1:                               (2, 'return', i_ident),
+    1:                               (1, 'return', j_ident),
+                                     ])
+       
+       
+    1: def ident(function):
+   65:     if hasattr(function, "f_code"):
+    1:         code = function.f_code
+           else:
+   64:         code = function.func_code
+   65:     return code.co_firstlineno, code.co_name
+       
+       
+    1: def protect(f, p):
+   17:     try: f(p)
+    9:     except: pass
+       
+    1: protect_ident = ident(protect)
+       
+       
+    1: def capture_events(callable, p=None):
+   17:     if p is None:
+>>>>>>         p = HookWatcher()
+           # Disable the garbage collector. This prevents __del__s from showing up in
+           # traces.
+   17:     old_gc = gc.isenabled()
+   17:     gc.disable()
+   17:     try:
+   17:         sys.setprofile(p.callback)
+   17:         protect(callable, p)
+   17:         sys.setprofile(None)
+           finally:
+   17:         if old_gc:
+   17:             gc.enable()
+   17:     return p.get_events()[1:-1]
+       
+       
+    1: def show_events(callable):
+>>>>>>     import pprint
+>>>>>>     pprint.pprint(capture_events(callable))
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(
+    1:         TestGetProfile,
+    1:         ProfileHookTestCase,
+    1:         ProfileSimulatorTestCase
+           )
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

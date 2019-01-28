@@ -1,0 +1,194 @@
+       """distutils.command.upload
+       
+    1: Implements the Distutils 'upload' subcommand (upload package to PyPI)."""
+    1: import os
+    1: import socket
+    1: import platform
+    1: from urllib2 import urlopen, Request, HTTPError
+    1: from base64 import standard_b64encode
+    1: import urlparse
+    1: import cStringIO as StringIO
+    1: from hashlib import md5
+       
+    1: from distutils.errors import DistutilsError, DistutilsOptionError
+    1: from distutils.core import PyPIRCCommand
+    1: from distutils.spawn import spawn
+    1: from distutils import log
+       
+    2: class upload(PyPIRCCommand):
+       
+    1:     description = "upload binary package to PyPI"
+       
+    1:     user_options = PyPIRCCommand.user_options + [
+               ('sign', 's',
+    1:          'sign files to upload using gpg'),
+    1:         ('identity=', 'i', 'GPG identity used to sign files'),
+               ]
+       
+    1:     boolean_options = PyPIRCCommand.boolean_options + ['sign']
+       
+    1:     def initialize_options(self):
+    5:         PyPIRCCommand.initialize_options(self)
+    5:         self.username = ''
+    5:         self.password = ''
+    5:         self.show_response = 0
+    5:         self.sign = False
+    5:         self.identity = None
+       
+    1:     def finalize_options(self):
+    5:         PyPIRCCommand.finalize_options(self)
+    5:         if self.identity and not self.sign:
+>>>>>>             raise DistutilsOptionError(
+>>>>>>                 "Must use --sign for --identity to have meaning"
+                   )
+    5:         config = self._read_pypirc()
+    5:         if config != {}:
+    5:             self.username = config['username']
+    5:             self.password = config['password']
+    5:             self.repository = config['repository']
+    5:             self.realm = config['realm']
+       
+               # getting the password from the distribution
+               # if previously set by the register command
+    5:         if not self.password and self.distribution.password:
+    1:             self.password = self.distribution.password
+       
+    1:     def run(self):
+    2:         if not self.distribution.dist_files:
+>>>>>>             raise DistutilsOptionError("No dist file created in earlier command")
+    3:         for command, pyversion, filename in self.distribution.dist_files:
+    2:             self.upload_file(command, pyversion, filename)
+       
+    1:     def upload_file(self, command, pyversion, filename):
+               # Makes sure the repository URL is compliant
+               schema, netloc, url, params, query, fragments = \
+    2:             urlparse.urlparse(self.repository)
+    2:         if params or query or fragments:
+>>>>>>             raise AssertionError("Incompatible url %s" % self.repository)
+       
+    2:         if schema not in ('http', 'https'):
+>>>>>>             raise AssertionError("unsupported schema " + schema)
+       
+               # Sign if requested
+    2:         if self.sign:
+>>>>>>             gpg_args = ["gpg", "--detach-sign", "-a", filename]
+>>>>>>             if self.identity:
+>>>>>>                 gpg_args[2:2] = ["--local-user", self.identity]
+>>>>>>             spawn(gpg_args,
+>>>>>>                   dry_run=self.dry_run)
+       
+               # Fill in the data - send all the meta-data in case we need to
+               # register a new release
+    2:         f = open(filename,'rb')
+    2:         try:
+    2:             content = f.read()
+               finally:
+    2:             f.close()
+    2:         meta = self.distribution.metadata
+    2:         data = {
+                   # action
+    2:             ':action': 'file_upload',
+    2:             'protcol_version': '1',
+       
+                   # identify release
+    2:             'name': meta.get_name(),
+    2:             'version': meta.get_version(),
+       
+                   # file content
+    2:             'content': (os.path.basename(filename),content),
+    2:             'filetype': command,
+    2:             'pyversion': pyversion,
+    2:             'md5_digest': md5(content).hexdigest(),
+       
+                   # additional meta-data
+    2:             'metadata_version' : '1.0',
+    2:             'summary': meta.get_description(),
+    2:             'home_page': meta.get_url(),
+    2:             'author': meta.get_contact(),
+    2:             'author_email': meta.get_contact_email(),
+    2:             'license': meta.get_licence(),
+    2:             'description': meta.get_long_description(),
+    2:             'keywords': meta.get_keywords(),
+    2:             'platform': meta.get_platforms(),
+    2:             'classifiers': meta.get_classifiers(),
+    2:             'download_url': meta.get_download_url(),
+                   # PEP 314
+    2:             'provides': meta.get_provides(),
+    2:             'requires': meta.get_requires(),
+    2:             'obsoletes': meta.get_obsoletes(),
+                   }
+    2:         comment = ''
+    2:         if command == 'bdist_rpm':
+>>>>>>             dist, version, id = platform.dist()
+>>>>>>             if dist:
+>>>>>>                 comment = 'built for %s %s' % (dist, version)
+    2:         elif command == 'bdist_dumb':
+>>>>>>             comment = 'built for %s' % platform.platform(terse=1)
+    2:         data['comment'] = comment
+       
+    2:         if self.sign:
+>>>>>>             data['gpg_signature'] = (os.path.basename(filename) + ".asc",
+>>>>>>                                      open(filename+".asc").read())
+       
+               # set up the authentication
+    2:         auth = "Basic " + standard_b64encode(self.username + ":" +
+    2:                                              self.password)
+       
+               # Build up the MIME payload for the POST data
+    2:         boundary = '--------------GHSKFJDLGDS7543FJKLFHRE75642756743254'
+    2:         sep_boundary = '\r\n--' + boundary
+    2:         end_boundary = sep_boundary + '--\r\n'
+    2:         body = StringIO.StringIO()
+   48:         for key, value in data.items():
+                   # handle multiple entries for the same name
+   46:             if not isinstance(value, list):
+   34:                 value = [value]
+   82:             for value in value:
+   36:                 if isinstance(value, tuple):
+    2:                     fn = ';filename="%s"' % value[0]
+    2:                     value = value[1]
+                       else:
+   34:                     fn = ""
+       
+   36:                 body.write(sep_boundary)
+   36:                 body.write('\r\nContent-Disposition: form-data; name="%s"' % key)
+   36:                 body.write(fn)
+   36:                 body.write("\r\n\r\n")
+   36:                 body.write(value)
+   36:                 if value and value[-1] == '\r':
+>>>>>>                     body.write('\n')  # write an extra newline (lurve Macs)
+    2:         body.write(end_boundary)
+    2:         body = body.getvalue()
+       
+    2:         self.announce("Submitting %s to %s" % (filename, self.repository), log.INFO)
+       
+               # build the Request
+    2:         headers = {'Content-type':
+    2:                         'multipart/form-data; boundary=%s' % boundary,
+    2:                    'Content-length': str(len(body)),
+    2:                    'Authorization': auth}
+       
+    2:         request = Request(self.repository, data=body,
+    2:                           headers=headers)
+               # send the data
+    2:         try:
+    2:             result = urlopen(request)
+    2:             status = result.getcode()
+    2:             reason = result.msg
+    2:             if self.show_response:
+>>>>>>                 msg = '\n'.join(('-' * 75, result.read(), '-' * 75))
+>>>>>>                 self.announce(msg, log.INFO)
+>>>>>>         except socket.error, e:
+>>>>>>             self.announce(str(e), log.ERROR)
+>>>>>>             raise
+>>>>>>         except HTTPError, e:
+>>>>>>             status = e.code
+>>>>>>             reason = e.msg
+       
+    2:         if status == 200:
+    1:             self.announce('Server response (%s): %s' % (status, reason),
+    1:                           log.INFO)
+               else:
+    1:             msg = 'Upload failed (%s): %s' % (status, reason)
+    1:             self.announce(msg, log.ERROR)
+    1:             raise DistutilsError(msg)

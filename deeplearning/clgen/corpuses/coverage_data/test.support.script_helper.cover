@@ -1,0 +1,170 @@
+       # Common utility functions used by various script execution tests
+       #  e.g. test_cmd_line, test_cmd_line_script and test_runpy
+       
+   19: import sys
+   19: import os
+   19: import re
+   19: import os.path
+   19: import tempfile
+   19: import subprocess
+   19: import py_compile
+   19: import contextlib
+   19: import shutil
+   19: try:
+   19:     import zipfile
+>>>>>> except ImportError:
+           # If Python is build without Unicode support, importing _io will
+           # fail, which, in turn, means that zipfile cannot be imported
+           # Most of this module can then still be used.
+>>>>>>     pass
+       
+   19: from test.support import strip_python_stderr
+       
+       # Executing the interpreter in a subprocess
+   19: def _assert_python(expected_success, *args, **env_vars):
+   99:     cmd_line = [sys.executable]
+   99:     if not env_vars:
+   84:         cmd_line.append('-E')
+   99:     cmd_line.extend(args)
+           # Need to preserve the original environment, for in-place testing of
+           # shared library builds.
+   99:     env = os.environ.copy()
+   99:     env.update(env_vars)
+   99:     p = subprocess.Popen(cmd_line, stdin=subprocess.PIPE,
+   99:                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+   99:                          env=env)
+   99:     try:
+   99:         out, err = p.communicate()
+           finally:
+   99:         subprocess._cleanup()
+   99:         p.stdout.close()
+   99:         p.stderr.close()
+   99:     rc = p.returncode
+   99:     err =  strip_python_stderr(err)
+   99:     if (rc and expected_success) or (not rc and not expected_success):
+>>>>>>         raise AssertionError(
+>>>>>>             "Process return code is %d, "
+>>>>>>             "stderr follows:\n%s" % (rc, err.decode('ascii', 'ignore')))
+   99:     return rc, out, err
+       
+   19: def assert_python_ok(*args, **env_vars):
+           """
+           Assert that running the interpreter with `args` and optional environment
+           variables `env_vars` is ok and return a (return code, stdout, stderr) tuple.
+           """
+   52:     return _assert_python(True, *args, **env_vars)
+       
+   19: def assert_python_failure(*args, **env_vars):
+           """
+           Assert that running the interpreter with `args` and optional environment
+           variables `env_vars` fails and return a (return code, stdout, stderr) tuple.
+           """
+   47:     return _assert_python(False, *args, **env_vars)
+       
+   19: def python_exit_code(*args):
+    9:     cmd_line = [sys.executable, '-E']
+    9:     cmd_line.extend(args)
+    9:     with open(os.devnull, 'w') as devnull:
+    9:         return subprocess.call(cmd_line, stdout=devnull,
+    9:                                 stderr=subprocess.STDOUT)
+       
+   19: def spawn_python(*args, **kwargs):
+   30:     cmd_line = [sys.executable, '-E']
+   30:     cmd_line.extend(args)
+   30:     return subprocess.Popen(cmd_line, stdin=subprocess.PIPE,
+   30:                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+   30:                             **kwargs)
+       
+   19: def kill_python(p):
+   30:     p.stdin.close()
+   30:     data = p.stdout.read()
+   30:     p.stdout.close()
+           # try to cleanup the child so we don't appear to leak when running
+           # with regrtest -R.
+   30:     p.wait()
+   30:     subprocess._cleanup()
+   30:     return data
+       
+   19: def run_python(*args, **kwargs):
+           if __debug__:
+   16:         p = spawn_python(*args, **kwargs)
+           else:
+               p = spawn_python('-O', *args, **kwargs)
+   16:     stdout_data = kill_python(p)
+   16:     return p.wait(), stdout_data
+       
+       # Script creation utilities
+   19: @contextlib.contextmanager
+       def temp_dir():
+   28:     dirname = tempfile.mkdtemp()
+   28:     dirname = os.path.realpath(dirname)
+   28:     try:
+   28:         yield dirname
+           finally:
+   25:         shutil.rmtree(dirname)
+       
+   19: def make_script(script_dir, script_basename, source):
+   42:     script_filename = script_basename+os.extsep+'py'
+   42:     script_name = os.path.join(script_dir, script_filename)
+   42:     script_file = open(script_name, 'w')
+   42:     script_file.write(source)
+   42:     script_file.close()
+   42:     return script_name
+       
+   19: def compile_script(script_name):
+    5:     py_compile.compile(script_name, doraise=True)
+           if __debug__:
+    5:         compiled_name = script_name + 'c'
+           else:
+               compiled_name = script_name + 'o'
+    5:     return compiled_name
+       
+   19: def make_zip_script(zip_dir, zip_basename, script_name, name_in_zip=None):
+    5:     zip_filename = zip_basename+os.extsep+'zip'
+    5:     zip_name = os.path.join(zip_dir, zip_filename)
+    5:     zip_file = zipfile.ZipFile(zip_name, 'w')
+    5:     if name_in_zip is None:
+    5:         name_in_zip = os.path.basename(script_name)
+    5:     zip_file.write(script_name, name_in_zip)
+    5:     zip_file.close()
+           #if test.test_support.verbose:
+           #    zip_file = zipfile.ZipFile(zip_name, 'r')
+           #    print 'Contents of %r:' % zip_name
+           #    zip_file.printdir()
+           #    zip_file.close()
+    5:     return zip_name, os.path.join(zip_name, name_in_zip)
+       
+   19: def make_pkg(pkg_dir, init_source=''):
+   12:     os.mkdir(pkg_dir)
+   12:     make_script(pkg_dir, '__init__', init_source)
+       
+       def make_zip_pkg(zip_dir, zip_basename, pkg_name, script_basename,
+   19:                  source, depth=1, compiled=False):
+    2:     unlink = []
+    2:     init_name = make_script(zip_dir, '__init__', '')
+    2:     unlink.append(init_name)
+    2:     init_basename = os.path.basename(init_name)
+    2:     script_name = make_script(zip_dir, script_basename, source)
+    2:     unlink.append(script_name)
+    2:     if compiled:
+>>>>>>         init_name = compile_script(init_name)
+>>>>>>         script_name = compile_script(script_name)
+>>>>>>         unlink.extend((init_name, script_name))
+    5:     pkg_names = [os.sep.join([pkg_name]*i) for i in range(1, depth+1)]
+    2:     script_name_in_zip = os.path.join(pkg_names[-1], os.path.basename(script_name))
+    2:     zip_filename = zip_basename+os.extsep+'zip'
+    2:     zip_name = os.path.join(zip_dir, zip_filename)
+    2:     zip_file = zipfile.ZipFile(zip_name, 'w')
+    5:     for name in pkg_names:
+    3:         init_name_in_zip = os.path.join(name, init_basename)
+    3:         zip_file.write(init_name, init_name_in_zip)
+    2:     zip_file.write(script_name, script_name_in_zip)
+    2:     zip_file.close()
+    6:     for name in unlink:
+    4:         os.unlink(name)
+           #if test.test_support.verbose:
+           #    zip_file = zipfile.ZipFile(zip_name, 'r')
+           #    print 'Contents of %r:' % zip_name
+           #    zip_file.printdir()
+           #    zip_file.close()
+    2:     return zip_name, os.path.join(zip_name, script_name_in_zip)

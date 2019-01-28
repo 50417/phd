@@ -1,0 +1,372 @@
+       # multibytecodec_support.py
+       #   Common Unittest Routines for CJK codecs
+       #
+       
+    1: import codecs
+    1: import os
+    1: import re
+    1: import sys
+    1: import unittest
+    1: from httplib import HTTPException
+    1: from test import test_support
+    1: from StringIO import StringIO
+       
+    2: class TestBase:
+    1:     encoding        = ''   # codec name
+    1:     codec           = None # codec tuple (with 4 elements)
+    1:     tstring         = ''   # string to test StreamReader
+       
+    1:     codectests      = None # must set. codec test tuple
+    1:     roundtriptest   = 1    # set if roundtrip is possible with unicode
+    1:     has_iso10646    = 0    # set if this encoding contains whole iso10646 map
+    1:     xmlcharnametest = None # string to test xmlcharrefreplace
+    1:     unmappedunicode = u'\udeee' # a unicode code point that is not mapped.
+       
+    1:     def setUp(self):
+  254:         if self.codec is None:
+  254:             self.codec = codecs.lookup(self.encoding)
+  254:         self.encode = self.codec.encode
+  254:         self.decode = self.codec.decode
+  254:         self.reader = self.codec.streamreader
+  254:         self.writer = self.codec.streamwriter
+  254:         self.incrementalencoder = self.codec.incrementalencoder
+  254:         self.incrementaldecoder = self.codec.incrementaldecoder
+       
+    1:     def test_chunkcoding(self):
+   16:         for native, utf8 in zip(*[StringIO(f).readlines()
+  172:                                   for f in self.tstring]):
+  124:             u = self.decode(native)[0]
+  124:             self.assertEqual(u, utf8.decode('utf-8'))
+  124:             if self.roundtriptest:
+  124:                 self.assertEqual(native, self.encode(u)[0])
+       
+    1:     def test_errorhandle(self):
+  142:         for source, scheme, expected in self.codectests:
+  125:             if isinstance(source, bytes):
+  120:                 func = self.decode
+                   else:
+    5:                 func = self.encode
+  125:             if expected:
+   81:                 result = func(source, scheme)[0]
+   81:                 if func is self.decode:
+   77:                     self.assertTrue(type(result) is unicode, type(result))
+   77:                     self.assertEqual(result, expected,
+   77:                                      '%r.decode(%r, %r)=%r != %r'
+   77:                                      % (source, self.encoding, scheme, result,
+   77:                                         expected))
+                       else:
+    4:                     self.assertTrue(type(result) is bytes, type(result))
+    4:                     self.assertEqual(result, expected,
+    4:                                      '%r.encode(%r, %r)=%r != %r'
+    4:                                      % (source, self.encoding, scheme, result,
+    4:                                         expected))
+                   else:
+   44:                 self.assertRaises(UnicodeError, func, source, scheme)
+       
+    1:     def test_xmlcharrefreplace(self):
+   17:         if self.has_iso10646:
+    1:             self.skipTest('encoding contains full ISO 10646 map')
+       
+   16:         s = u"\u0b13\u0b23\u0b60 nd eggs"
+   16:         self.assertEqual(
+   16:             self.encode(s, "xmlcharrefreplace")[0],
+   16:             "&#2835;&#2851;&#2912; nd eggs"
+               )
+       
+    1:     def test_customreplace_encode(self):
+   17:         if self.has_iso10646:
+    1:             self.skipTest('encoding contains full ISO 10646 map')
+       
+   16:         from htmlentitydefs import codepoint2name
+       
+   16:         def xmlcharnamereplace(exc):
+   92:             if not isinstance(exc, UnicodeEncodeError):
+>>>>>>                 raise TypeError("don't know how to handle %r" % exc)
+   92:             l = []
+  184:             for c in exc.object[exc.start:exc.end]:
+   92:                 if ord(c) in codepoint2name:
+   76:                     l.append(u"&%s;" % codepoint2name[ord(c)])
+                       else:
+   16:                     l.append(u"&#%d;" % ord(c))
+   92:             return (u"".join(l), exc.end)
+       
+   16:         codecs.register_error("test.xmlcharnamereplace", xmlcharnamereplace)
+       
+   16:         if self.xmlcharnametest:
+    2:             sin, sout = self.xmlcharnametest
+               else:
+   14:             sin = u"\xab\u211c\xbb = \u2329\u1234\u232a"
+   14:             sout = "&laquo;&real;&raquo; = &lang;&#4660;&rang;"
+   16:         self.assertEqual(self.encode(sin,
+   16:                                     "test.xmlcharnamereplace")[0], sout)
+       
+    1:     def test_callback_wrong_objects(self):
+   17:         def myreplace(exc):
+  102:             return (ret, exc.end)
+   17:         codecs.register_error("test.cjktest", myreplace)
+       
+  119:         for ret in ([1, 2, 3], [], None, object(), 'string', ''):
+  102:             self.assertRaises(TypeError, self.encode, self.unmappedunicode,
+  102:                               'test.cjktest')
+       
+    1:     def test_callback_long_index(self):
+   17:         def myreplace(exc):
+   17:             return (u'x', long(exc.end))
+   17:         codecs.register_error("test.cjktest", myreplace)
+   17:         self.assertEqual(self.encode(u'abcd' + self.unmappedunicode + u'efgh',
+   17:                                      'test.cjktest'), ('abcdxefgh', 9))
+       
+   17:         def myreplace(exc):
+   17:             return (u'x', sys.maxint + 1)
+   17:         codecs.register_error("test.cjktest", myreplace)
+   17:         self.assertRaises(IndexError, self.encode, self.unmappedunicode,
+   17:                           'test.cjktest')
+       
+    1:     def test_callback_None_index(self):
+   17:         def myreplace(exc):
+   17:             return (u'x', None)
+   17:         codecs.register_error("test.cjktest", myreplace)
+   17:         self.assertRaises(TypeError, self.encode, self.unmappedunicode,
+   17:                           'test.cjktest')
+       
+    1:     def test_callback_backward_index(self):
+   17:         def myreplace(exc):
+   68:             if myreplace.limit > 0:
+   51:                 myreplace.limit -= 1
+   51:                 return (u'REPLACED', 0)
+                   else:
+   17:                 return (u'TERMINAL', exc.end)
+   17:         myreplace.limit = 3
+   17:         codecs.register_error("test.cjktest", myreplace)
+   17:         self.assertEqual(self.encode(u'abcd' + self.unmappedunicode + u'efgh',
+   17:                                      'test.cjktest'),
+   17:                 ('abcdREPLACEDabcdREPLACEDabcdREPLACEDabcdTERMINALefgh', 9))
+       
+    1:     def test_callback_forward_index(self):
+   17:         def myreplace(exc):
+   17:             return (u'REPLACED', exc.end + 2)
+   17:         codecs.register_error("test.cjktest", myreplace)
+   17:         self.assertEqual(self.encode(u'abcd' + self.unmappedunicode + u'efgh',
+   17:                                      'test.cjktest'), ('abcdREPLACEDgh', 9))
+       
+    1:     def test_callback_index_outofbound(self):
+   17:         def myreplace(exc):
+   17:             return (u'TERM', 100)
+   17:         codecs.register_error("test.cjktest", myreplace)
+   17:         self.assertRaises(IndexError, self.encode, self.unmappedunicode,
+   17:                           'test.cjktest')
+       
+    1:     def test_incrementalencoder(self):
+   17:         UTF8Reader = codecs.getreader('utf-8')
+   17:         for sizehint in [None] + range(1, 33) + \
+  663:                         [64, 128, 256, 512, 1024]:
+  646:             istream = UTF8Reader(StringIO(self.tstring[1]))
+  646:             ostream = StringIO()
+  646:             encoder = self.incrementalencoder()
+  646:             while 1:
+21790:                 if sizehint is not None:
+21756:                     data = istream.read(sizehint)
+                       else:
+   34:                     data = istream.read()
+       
+21790:                 if not data:
+  646:                     break
+21144:                 e = encoder.encode(data)
+21144:                 ostream.write(e)
+       
+  646:             self.assertEqual(ostream.getvalue(), self.tstring[0])
+       
+    1:     def test_incrementaldecoder(self):
+   17:         UTF8Writer = codecs.getwriter('utf-8')
+   17:         for sizehint in [None, -1] + range(1, 33) + \
+  680:                         [64, 128, 256, 512, 1024]:
+  663:             istream = StringIO(self.tstring[0])
+  663:             ostream = UTF8Writer(StringIO())
+  663:             decoder = self.incrementaldecoder()
+  663:             while 1:
+40737:                 data = istream.read(sizehint)
+40737:                 if not data:
+  663:                     break
+                       else:
+40074:                     u = decoder.decode(data)
+40074:                     ostream.write(u)
+       
+  663:             self.assertEqual(ostream.getvalue(), self.tstring[1])
+       
+    1:     def test_incrementalencoder_error_callback(self):
+   17:         inv = self.unmappedunicode
+       
+   17:         e = self.incrementalencoder()
+   17:         self.assertRaises(UnicodeEncodeError, e.encode, inv, True)
+       
+   17:         e.errors = 'ignore'
+   17:         self.assertEqual(e.encode(inv, True), '')
+       
+   17:         e.reset()
+   17:         def tempreplace(exc):
+   17:             return (u'called', exc.end)
+   17:         codecs.register_error('test.incremental_error_callback', tempreplace)
+   17:         e.errors = 'test.incremental_error_callback'
+   17:         self.assertEqual(e.encode(inv, True), 'called')
+       
+               # again
+   17:         e.errors = 'ignore'
+   17:         self.assertEqual(e.encode(inv, True), '')
+       
+    1:     def test_streamreader(self):
+   17:         UTF8Writer = codecs.getwriter('utf-8')
+   68:         for name in ["read", "readline", "readlines"]:
+   51:             for sizehint in [None, -1] + range(1, 33) + \
+ 2040:                             [64, 128, 256, 512, 1024]:
+ 1989:                 istream = self.reader(StringIO(self.tstring[0]))
+ 1989:                 ostream = UTF8Writer(StringIO())
+ 1989:                 func = getattr(istream, name)
+ 1989:                 while 1:
+111264:                     data = func(sizehint)
+111264:                     if not data:
+ 1989:                         break
+109275:                     if name == "readlines":
+35585:                         ostream.writelines(data)
+                           else:
+73690:                         ostream.write(data)
+       
+ 1989:                 self.assertEqual(ostream.getvalue(), self.tstring[1])
+       
+    1:     def test_streamwriter(self):
+   17:         readfuncs = ('read', 'readline', 'readlines')
+   17:         UTF8Reader = codecs.getreader('utf-8')
+   68:         for name in readfuncs:
+   51:             for sizehint in [None] + range(1, 33) + \
+ 1989:                             [64, 128, 256, 512, 1024]:
+ 1938:                 istream = UTF8Reader(StringIO(self.tstring[1]))
+ 1938:                 ostream = self.writer(StringIO())
+ 1938:                 func = getattr(istream, name)
+ 1938:                 while 1:
+47180:                     if sizehint is not None:
+46964:                         data = func(sizehint)
+                           else:
+  216:                         data = func()
+       
+47180:                     if not data:
+ 1938:                         break
+45242:                     if name == "readlines":
+  646:                         ostream.writelines(data)
+                           else:
+44596:                         ostream.write(data)
+       
+ 1938:                 self.assertEqual(ostream.getvalue(), self.tstring[0])
+       
+    2: class TestBase_Mapping(unittest.TestCase):
+    1:     pass_enctest = []
+    1:     pass_dectest = []
+    1:     supmaps = []
+    1:     codectests = []
+       
+    1:     def __init__(self, *args, **kw):
+    5:         unittest.TestCase.__init__(self, *args, **kw)
+    5:         try:
+    5:             self.open_mapping_file().close() # test it to report the error early
+    5:         except (IOError, HTTPException):
+>>>>>>             self.skipTest("Could not retrieve "+self.mapfileurl)
+       
+    1:     def open_mapping_file(self):
+    5:         return test_support.open_urlresource(self.mapfileurl)
+       
+    1:     def test_mapping_file(self):
+>>>>>>         if self.mapfileurl.endswith('.xml'):
+>>>>>>             self._test_mapping_file_ucm()
+               else:
+>>>>>>             self._test_mapping_file_plain()
+       
+    1:     def _test_mapping_file_plain(self):
+>>>>>>         _unichr = lambda c: eval("u'\\U%08x'" % int(c, 16))
+>>>>>>         unichrs = lambda s: u''.join(_unichr(c) for c in s.split('+'))
+>>>>>>         urt_wa = {}
+       
+>>>>>>         with self.open_mapping_file() as f:
+>>>>>>             for line in f:
+>>>>>>                 if not line:
+>>>>>>                     break
+>>>>>>                 data = line.split('#')[0].strip().split()
+>>>>>>                 if len(data) != 2:
+>>>>>>                     continue
+       
+>>>>>>                 csetval = eval(data[0])
+>>>>>>                 if csetval <= 0x7F:
+>>>>>>                     csetch = chr(csetval & 0xff)
+>>>>>>                 elif csetval >= 0x1000000:
+                           csetch = chr(csetval >> 24) + chr((csetval >> 16) & 0xff) + \
+>>>>>>                              chr((csetval >> 8) & 0xff) + chr(csetval & 0xff)
+>>>>>>                 elif csetval >= 0x10000:
+                           csetch = chr(csetval >> 16) + \
+>>>>>>                              chr((csetval >> 8) & 0xff) + chr(csetval & 0xff)
+>>>>>>                 elif csetval >= 0x100:
+>>>>>>                     csetch = chr(csetval >> 8) + chr(csetval & 0xff)
+                       else:
+>>>>>>                     continue
+       
+>>>>>>                 unich = unichrs(data[1])
+>>>>>>                 if unich == u'\ufffd' or unich in urt_wa:
+>>>>>>                     continue
+>>>>>>                 urt_wa[unich] = csetch
+       
+>>>>>>                 self._testpoint(csetch, unich)
+       
+    1:     def _test_mapping_file_ucm(self):
+>>>>>>         with self.open_mapping_file() as f:
+>>>>>>             ucmdata = f.read()
+>>>>>>         uc = re.findall('<a u="([A-F0-9]{4})" b="([0-9A-F ]+)"/>', ucmdata)
+>>>>>>         for uni, coded in uc:
+>>>>>>             unich = unichr(int(uni, 16))
+>>>>>>             codech = ''.join(chr(int(c, 16)) for c in coded.split())
+>>>>>>             self._testpoint(codech, unich)
+       
+    1:     def test_mapping_supplemental(self):
+>>>>>>         for mapping in self.supmaps:
+>>>>>>             self._testpoint(*mapping)
+       
+    1:     def _testpoint(self, csetch, unich):
+>>>>>>         if (csetch, unich) not in self.pass_enctest:
+>>>>>>             try:
+>>>>>>                 self.assertEqual(unich.encode(self.encoding), csetch)
+>>>>>>             except UnicodeError, exc:
+>>>>>>                 self.fail('Encoding failed while testing %s -> %s: %s' % (
+>>>>>>                             repr(unich), repr(csetch), exc.reason))
+>>>>>>         if (csetch, unich) not in self.pass_dectest:
+>>>>>>             try:
+>>>>>>                 self.assertEqual(csetch.decode(self.encoding), unich)
+>>>>>>             except UnicodeError, exc:
+>>>>>>                 self.fail('Decoding failed while testing %s -> %s: %s' % (
+>>>>>>                             repr(csetch), repr(unich), exc.reason))
+       
+    1:     def test_errorhandle(self):
+>>>>>>         for source, scheme, expected in self.codectests:
+>>>>>>             if isinstance(source, bytes):
+>>>>>>                 func = source.decode
+                   else:
+>>>>>>                 func = source.encode
+>>>>>>             if expected:
+>>>>>>                 if isinstance(source, bytes):
+>>>>>>                     result = func(self.encoding, scheme)
+>>>>>>                     self.assertTrue(type(result) is unicode, type(result))
+>>>>>>                     self.assertEqual(result, expected,
+>>>>>>                                      '%r.decode(%r, %r)=%r != %r'
+>>>>>>                                      % (source, self.encoding, scheme, result,
+>>>>>>                                         expected))
+                       else:
+>>>>>>                     result = func(self.encoding, scheme)
+>>>>>>                     self.assertTrue(type(result) is bytes, type(result))
+>>>>>>                     self.assertEqual(result, expected,
+>>>>>>                                      '%r.encode(%r, %r)=%r != %r'
+>>>>>>                                      % (source, self.encoding, scheme, result,
+>>>>>>                                         expected))
+                   else:
+>>>>>>                 self.assertRaises(UnicodeError, func, self.encoding, scheme)
+       
+    1: def load_teststring(name):
+   17:     dir = os.path.join(os.path.dirname(__file__), 'cjkencodings')
+   17:     with open(os.path.join(dir, name + '.txt'), 'rb') as f:
+   17:         encoded = f.read()
+   17:     with open(os.path.join(dir, name + '-utf8.txt'), 'rb') as f:
+   17:         utf8 = f.read()
+   17:     return encoded, utf8

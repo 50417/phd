@@ -1,0 +1,472 @@
+    1: import sys
+    1: import os
+    1: import marshal
+    1: import imp
+    1: import struct
+    1: import time
+    1: import unittest
+       
+    1: from test import test_support
+    1: from test.test_importhooks import ImportHooksBaseTestCase, test_src, test_co
+       
+       # some tests can be ran even without zlib
+    1: try:
+    1:     import zlib
+>>>>>> except ImportError:
+>>>>>>     zlib = None
+       
+    1: from zipfile import ZipFile, ZipInfo, ZIP_STORED, ZIP_DEFLATED
+       
+    1: import zipimport
+    1: import linecache
+    1: import doctest
+    1: import inspect
+    1: import StringIO
+    1: from traceback import extract_tb, extract_stack, print_tb
+    1: raise_src = 'def do_raise(): raise TypeError\n'
+       
+    1: def make_pyc(co, mtime):
+    5:     data = marshal.dumps(co)
+    5:     if type(mtime) is type(0.0):
+               # Mac mtimes need a bit of special casing
+    5:         if mtime < 0x7fffffff:
+    5:             mtime = int(mtime)
+               else:
+>>>>>>             mtime = int(-0x100000000L + long(mtime))
+    5:     pyc = imp.get_magic() + struct.pack("<i", int(mtime)) + data
+    5:     return pyc
+       
+    1: def module_path_to_dotted_name(path):
+    4:     return path.replace(os.sep, '.')
+       
+    1: NOW = time.time()
+    1: test_pyc = make_pyc(test_co, NOW)
+       
+       
+       if __debug__:
+    1:     pyc_ext = ".pyc"
+       else:
+           pyc_ext = ".pyo"
+       
+       
+    1: TESTMOD = "ziptestmodule"
+    1: TESTPACK = "ziptestpackage"
+    1: TESTPACK2 = "ziptestpackage2"
+    1: TEMP_ZIP = os.path.abspath("junk95142" + os.extsep + "zip")
+       
+       
+    2: class UncompressedZipImportTestCase(ImportHooksBaseTestCase):
+       
+    1:     compression = ZIP_STORED
+       
+    1:     def setUp(self):
+               # We're reusing the zip archive path, so we must clear the
+               # cached directory info and linecache
+   40:         linecache.clearcache()
+   40:         zipimport._zip_directory_cache.clear()
+   40:         ImportHooksBaseTestCase.setUp(self)
+       
+    1:     def doTest(self, expected_ext, files, *modules, **kw):
+   34:         z = ZipFile(TEMP_ZIP, "w")
+   34:         try:
+   88:             for name, (mtime, data) in files.items():
+   54:                 zinfo = ZipInfo(name, time.localtime(mtime))
+   54:                 zinfo.compress_type = self.compression
+   54:                 z.writestr(zinfo, data)
+   34:             z.close()
+       
+   34:             stuff = kw.get("stuff", None)
+   34:             if stuff is not None:
+                       # Prepend 'stuff' to the start of the zipfile
+    2:                 f = open(TEMP_ZIP, "rb")
+    2:                 data = f.read()
+    2:                 f.close()
+       
+    2:                 f = open(TEMP_ZIP, "wb")
+    2:                 f.write(stuff)
+    2:                 f.write(data)
+    2:                 f.close()
+       
+   34:             sys.path.insert(0, TEMP_ZIP)
+       
+   34:             mod = __import__(".".join(modules), globals(), locals(),
+   34:                              ["__dummy__"])
+       
+   31:             call = kw.get('call')
+   31:             if call is not None:
+   10:                 call(mod)
+       
+   31:             if expected_ext:
+   27:                 file = mod.get_file()
+   27:                 self.assertEqual(file, os.path.join(TEMP_ZIP,
+   27:                                  *modules) + expected_ext)
+               finally:
+   34:             z.close()
+   34:             os.remove(TEMP_ZIP)
+       
+    1:     def testAFakeZlib(self):
+               #
+               # This could cause a stack overflow before: importing zlib.py
+               # from a compressed archive would cause zlib to be imported
+               # which would find zlib.py in the archive, which would... etc.
+               #
+               # This test *must* be executed first: it must be the first one
+               # to trigger zipimport to import zlib (zipimport caches the
+               # zlib.decompress function object, after which the problem being
+               # tested here wouldn't be a problem anymore...
+               # (Hence the 'A' in the test method name: to make it the first
+               # item in a list sorted by name, like unittest.makeSuite() does.)
+               #
+               # This test fails on platforms on which the zlib module is
+               # statically linked, but the problem it tests for can't
+               # occur in that case (builtin modules are always found first),
+               # so we'll simply skip it then. Bug #765456.
+               #
+    2:         if "zlib" in sys.builtin_module_names:
+>>>>>>             return
+    2:         if "zlib" in sys.modules:
+    2:             del sys.modules["zlib"]
+    2:         files = {"zlib.py": (NOW, test_src)}
+    2:         try:
+    2:             self.doTest(".py", files, "zlib")
+    1:         except ImportError:
+    1:             if self.compression != ZIP_DEFLATED:
+>>>>>>                 self.fail("expected test to not raise ImportError")
+               else:
+    1:             if self.compression != ZIP_STORED:
+>>>>>>                 self.fail("expected test to raise ImportError")
+       
+    1:     def testPy(self):
+    2:         files = {TESTMOD + ".py": (NOW, test_src)}
+    2:         self.doTest(".py", files, TESTMOD)
+       
+    1:     def testPyc(self):
+    2:         files = {TESTMOD + pyc_ext: (NOW, test_pyc)}
+    2:         self.doTest(pyc_ext, files, TESTMOD)
+       
+    1:     def testBoth(self):
+    2:         files = {TESTMOD + ".py": (NOW, test_src),
+    2:                  TESTMOD + pyc_ext: (NOW, test_pyc)}
+    2:         self.doTest(pyc_ext, files, TESTMOD)
+       
+    1:     def testEmptyPy(self):
+    2:         files = {TESTMOD + ".py": (NOW, "")}
+    2:         self.doTest(None, files, TESTMOD)
+       
+    1:     def testBadMagic(self):
+               # make pyc magic word invalid, forcing loading from .py
+    2:         m0 = ord(test_pyc[0])
+    2:         m0 ^= 0x04  # flip an arbitrary bit
+    2:         badmagic_pyc = chr(m0) + test_pyc[1:]
+    2:         files = {TESTMOD + ".py": (NOW, test_src),
+    2:                  TESTMOD + pyc_ext: (NOW, badmagic_pyc)}
+    2:         self.doTest(".py", files, TESTMOD)
+       
+    1:     def testBadMagic2(self):
+               # make pyc magic word invalid, causing an ImportError
+    2:         m0 = ord(test_pyc[0])
+    2:         m0 ^= 0x04  # flip an arbitrary bit
+    2:         badmagic_pyc = chr(m0) + test_pyc[1:]
+    2:         files = {TESTMOD + pyc_ext: (NOW, badmagic_pyc)}
+    2:         try:
+    2:             self.doTest(".py", files, TESTMOD)
+    2:         except ImportError:
+    2:             pass
+               else:
+>>>>>>             self.fail("expected ImportError; import from bad pyc")
+       
+    1:     def testBadMTime(self):
+    2:         t3 = ord(test_pyc[7])
+    2:         t3 ^= 0x02  # flip the second bit -- not the first as that one
+                           # isn't stored in the .py's mtime in the zip archive.
+    2:         badtime_pyc = test_pyc[:7] + chr(t3) + test_pyc[8:]
+    2:         files = {TESTMOD + ".py": (NOW, test_src),
+    2:                  TESTMOD + pyc_ext: (NOW, badtime_pyc)}
+    2:         self.doTest(".py", files, TESTMOD)
+       
+    1:     def testPackage(self):
+    2:         packdir = TESTPACK + os.sep
+    2:         files = {packdir + "__init__" + pyc_ext: (NOW, test_pyc),
+    2:                  packdir + TESTMOD + pyc_ext: (NOW, test_pyc)}
+    2:         self.doTest(pyc_ext, files, TESTPACK, TESTMOD)
+       
+    1:     def testDeepPackage(self):
+    2:         packdir = TESTPACK + os.sep
+    2:         packdir2 = packdir + TESTPACK2 + os.sep
+    2:         files = {packdir + "__init__" + pyc_ext: (NOW, test_pyc),
+    2:                  packdir2 + "__init__" + pyc_ext: (NOW, test_pyc),
+    2:                  packdir2 + TESTMOD + pyc_ext: (NOW, test_pyc)}
+    2:         self.doTest(pyc_ext, files, TESTPACK, TESTPACK2, TESTMOD)
+       
+    1:     def testZipImporterMethods(self):
+    2:         packdir = TESTPACK + os.sep
+    2:         packdir2 = packdir + TESTPACK2 + os.sep
+    2:         files = {packdir + "__init__" + pyc_ext: (NOW, test_pyc),
+    2:                  packdir2 + "__init__" + pyc_ext: (NOW, test_pyc),
+    2:                  packdir2 + TESTMOD + pyc_ext: (NOW, test_pyc)}
+       
+    2:         z = ZipFile(TEMP_ZIP, "w")
+    2:         try:
+    8:             for name, (mtime, data) in files.items():
+    6:                 zinfo = ZipInfo(name, time.localtime(mtime))
+    6:                 zinfo.compress_type = self.compression
+    6:                 z.writestr(zinfo, data)
+    2:             z.close()
+       
+    2:             zi = zipimport.zipimporter(TEMP_ZIP)
+    2:             self.assertEqual(zi.archive, TEMP_ZIP)
+    2:             self.assertEqual(zi.is_package(TESTPACK), True)
+    2:             mod = zi.load_module(TESTPACK)
+    2:             self.assertEqual(zi.get_filename(TESTPACK), mod.__file__)
+       
+    2:             self.assertEqual(zi.is_package(packdir + '__init__'), False)
+    2:             self.assertEqual(zi.is_package(packdir + TESTPACK2), True)
+    2:             self.assertEqual(zi.is_package(packdir2 + TESTMOD), False)
+       
+    2:             mod_path = packdir2 + TESTMOD
+    2:             mod_name = module_path_to_dotted_name(mod_path)
+    2:             __import__(mod_name)
+    2:             mod = sys.modules[mod_name]
+    2:             self.assertEqual(zi.get_source(TESTPACK), None)
+    2:             self.assertEqual(zi.get_source(mod_path), None)
+    2:             self.assertEqual(zi.get_filename(mod_path), mod.__file__)
+                   # To pass in the module name instead of the path, we must use the right importer
+    2:             loader = mod.__loader__
+    2:             self.assertEqual(loader.get_source(mod_name), None)
+    2:             self.assertEqual(loader.get_filename(mod_name), mod.__file__)
+       
+                   # test prefix and archivepath members
+    2:             zi2 = zipimport.zipimporter(TEMP_ZIP + os.sep + TESTPACK)
+    2:             self.assertEqual(zi2.archive, TEMP_ZIP)
+    2:             self.assertEqual(zi2.prefix, TESTPACK + os.sep)
+               finally:
+    2:             z.close()
+    2:             os.remove(TEMP_ZIP)
+       
+    1:     def testZipImporterMethodsInSubDirectory(self):
+    2:         packdir = TESTPACK + os.sep
+    2:         packdir2 = packdir + TESTPACK2 + os.sep
+    2:         files = {packdir2 + "__init__" + pyc_ext: (NOW, test_pyc),
+    2:                  packdir2 + TESTMOD + pyc_ext: (NOW, test_pyc)}
+       
+    2:         z = ZipFile(TEMP_ZIP, "w")
+    2:         try:
+    6:             for name, (mtime, data) in files.items():
+    4:                 zinfo = ZipInfo(name, time.localtime(mtime))
+    4:                 zinfo.compress_type = self.compression
+    4:                 z.writestr(zinfo, data)
+    2:             z.close()
+       
+    2:             zi = zipimport.zipimporter(TEMP_ZIP + os.sep + packdir)
+    2:             self.assertEqual(zi.archive, TEMP_ZIP)
+    2:             self.assertEqual(zi.prefix, packdir)
+    2:             self.assertEqual(zi.is_package(TESTPACK2), True)
+    2:             mod = zi.load_module(TESTPACK2)
+    2:             self.assertEqual(zi.get_filename(TESTPACK2), mod.__file__)
+       
+    2:             self.assertEqual(zi.is_package(TESTPACK2 + os.sep + '__init__'), False)
+    2:             self.assertEqual(zi.is_package(TESTPACK2 + os.sep + TESTMOD), False)
+       
+    2:             mod_path = TESTPACK2 + os.sep + TESTMOD
+    2:             mod_name = module_path_to_dotted_name(mod_path)
+    2:             __import__(mod_name)
+    2:             mod = sys.modules[mod_name]
+    2:             self.assertEqual(zi.get_source(TESTPACK2), None)
+    2:             self.assertEqual(zi.get_source(mod_path), None)
+    2:             self.assertEqual(zi.get_filename(mod_path), mod.__file__)
+                   # To pass in the module name instead of the path, we must use the right importer
+    2:             loader = mod.__loader__
+    2:             self.assertEqual(loader.get_source(mod_name), None)
+    2:             self.assertEqual(loader.get_filename(mod_name), mod.__file__)
+               finally:
+    2:             z.close()
+    2:             os.remove(TEMP_ZIP)
+       
+    1:     def testGetData(self):
+    2:         z = ZipFile(TEMP_ZIP, "w")
+    2:         z.compression = self.compression
+    2:         try:
+    2:             name = "testdata.dat"
+  514:             data = "".join([chr(x) for x in range(256)]) * 500
+    2:             z.writestr(name, data)
+    2:             z.close()
+    2:             zi = zipimport.zipimporter(TEMP_ZIP)
+    2:             self.assertEqual(data, zi.get_data(name))
+    2:             self.assertIn('zipimporter object', repr(zi))
+               finally:
+    2:             z.close()
+    2:             os.remove(TEMP_ZIP)
+       
+    1:     def testImporterAttr(self):
+               src = """if 1:  # indent hack
+               def get_file():
+                   return __file__
+               if __loader__.get_data("some.data") != "some data":
+    2:             raise AssertionError, "bad data"\n"""
+    2:         pyc = make_pyc(compile(src, "<???>", "exec"), NOW)
+    2:         files = {TESTMOD + pyc_ext: (NOW, pyc),
+    2:                  "some.data": (NOW, "some data")}
+    2:         self.doTest(pyc_ext, files, TESTMOD)
+       
+    1:     def testImport_WithStuff(self):
+               # try importing from a zipfile which contains additional
+               # stuff at the beginning of the file
+    2:         files = {TESTMOD + ".py": (NOW, test_src)}
+    2:         self.doTest(".py", files, TESTMOD,
+    2:                     stuff="Some Stuff"*31)
+       
+    1:     def assertModuleSource(self, module):
+    4:         self.assertEqual(inspect.getsource(module), test_src)
+       
+    1:     def testGetSource(self):
+    2:         files = {TESTMOD + ".py": (NOW, test_src)}
+    2:         self.doTest(".py", files, TESTMOD, call=self.assertModuleSource)
+       
+    1:     def testGetCompiledSource(self):
+    2:         pyc = make_pyc(compile(test_src, "<???>", "exec"), NOW)
+    2:         files = {TESTMOD + ".py": (NOW, test_src),
+    2:                  TESTMOD + pyc_ext: (NOW, pyc)}
+    2:         self.doTest(pyc_ext, files, TESTMOD, call=self.assertModuleSource)
+       
+    1:     def runDoctest(self, callback):
+    4:         files = {TESTMOD + ".py": (NOW, test_src),
+    4:                  "xyz.txt": (NOW, ">>> log.append(True)\n")}
+    4:         self.doTest(".py", files, TESTMOD, call=callback)
+       
+    1:     def doDoctestFile(self, module):
+    2:         log = []
+    2:         old_master, doctest.master = doctest.master, None
+    2:         try:
+    2:             doctest.testfile(
+    2:                 'xyz.txt', package=module, module_relative=True,
+    2:                 globs=locals()
+                   )
+               finally:
+    2:             doctest.master = old_master
+    2:         self.assertEqual(log,[True])
+       
+    1:     def testDoctestFile(self):
+    2:         self.runDoctest(self.doDoctestFile)
+       
+    1:     def doDoctestSuite(self, module):
+    2:         log = []
+    2:         doctest.DocFileTest(
+    2:             'xyz.txt', package=module, module_relative=True,
+    2:             globs=locals()
+               ).run()
+    2:         self.assertEqual(log,[True])
+       
+    1:     def testDoctestSuite(self):
+    2:         self.runDoctest(self.doDoctestSuite)
+       
+    1:     def doTraceback(self, module):
+    2:         try:
+    2:             module.do_raise()
+    2:         except:
+    2:             tb = sys.exc_info()[2].tb_next
+       
+    2:             f,lno,n,line = extract_tb(tb, 1)[0]
+    2:             self.assertEqual(line, raise_src.strip())
+       
+    2:             f,lno,n,line = extract_stack(tb.tb_frame, 1)[0]
+    2:             self.assertEqual(line, raise_src.strip())
+       
+    2:             s = StringIO.StringIO()
+    2:             print_tb(tb, 1, s)
+    2:             self.assertTrue(s.getvalue().endswith(raise_src))
+               else:
+>>>>>>             raise AssertionError("This ought to be impossible")
+       
+    1:     def testTraceback(self):
+    2:         files = {TESTMOD + ".py": (NOW, raise_src)}
+    2:         self.doTest(None, files, TESTMOD, call=self.doTraceback)
+       
+       
+    2: @unittest.skipUnless(zlib, "requires zlib")
+    1: class CompressedZipImportTestCase(UncompressedZipImportTestCase):
+    1:     compression = ZIP_DEFLATED
+       
+       
+    2: class BadFileZipImportTestCase(unittest.TestCase):
+    1:     def assertZipFailure(self, filename):
+    6:         self.assertRaises(zipimport.ZipImportError,
+    6:                           zipimport.zipimporter, filename)
+       
+    1:     def testNoFile(self):
+    1:         self.assertZipFailure('AdfjdkFJKDFJjdklfjs')
+       
+    1:     def testEmptyFilename(self):
+    1:         self.assertZipFailure('')
+       
+    1:     def testBadArgs(self):
+    1:         self.assertRaises(TypeError, zipimport.zipimporter, None)
+    1:         self.assertRaises(TypeError, zipimport.zipimporter, TESTMOD, kwd=None)
+       
+    1:     def testFilenameTooLong(self):
+    1:         self.assertZipFailure('A' * 33000)
+       
+    1:     def testEmptyFile(self):
+    1:         test_support.unlink(TESTMOD)
+    1:         open(TESTMOD, 'w+').close()
+    1:         self.assertZipFailure(TESTMOD)
+       
+    1:     def testFileUnreadable(self):
+    1:         test_support.unlink(TESTMOD)
+    1:         fd = os.open(TESTMOD, os.O_CREAT, 000)
+    1:         try:
+    1:             os.close(fd)
+    1:             self.assertZipFailure(TESTMOD)
+               finally:
+                   # If we leave "the read-only bit" set on Windows, nothing can
+                   # delete TESTMOD, and later tests suffer bogus failures.
+    1:             os.chmod(TESTMOD, 0666)
+    1:             test_support.unlink(TESTMOD)
+       
+    1:     def testNotZipFile(self):
+    1:         test_support.unlink(TESTMOD)
+    1:         fp = open(TESTMOD, 'w+')
+    1:         fp.write('a' * 22)
+    1:         fp.close()
+    1:         self.assertZipFailure(TESTMOD)
+       
+           # XXX: disabled until this works on Big-endian machines
+    1:     def _testBogusZipFile(self):
+>>>>>>         test_support.unlink(TESTMOD)
+>>>>>>         fp = open(TESTMOD, 'w+')
+>>>>>>         fp.write(struct.pack('=I', 0x06054B50))
+>>>>>>         fp.write('a' * 18)
+>>>>>>         fp.close()
+>>>>>>         z = zipimport.zipimporter(TESTMOD)
+       
+>>>>>>         try:
+>>>>>>             self.assertRaises(TypeError, z.find_module, None)
+>>>>>>             self.assertRaises(TypeError, z.load_module, None)
+>>>>>>             self.assertRaises(TypeError, z.is_package, None)
+>>>>>>             self.assertRaises(TypeError, z.get_code, None)
+>>>>>>             self.assertRaises(TypeError, z.get_data, None)
+>>>>>>             self.assertRaises(TypeError, z.get_source, None)
+       
+>>>>>>             error = zipimport.ZipImportError
+>>>>>>             self.assertEqual(z.find_module('abc'), None)
+       
+>>>>>>             self.assertRaises(error, z.load_module, 'abc')
+>>>>>>             self.assertRaises(error, z.get_code, 'abc')
+>>>>>>             self.assertRaises(IOError, z.get_data, 'abc')
+>>>>>>             self.assertRaises(error, z.get_source, 'abc')
+>>>>>>             self.assertRaises(error, z.is_package, 'abc')
+               finally:
+>>>>>>             zipimport._zip_directory_cache.clear()
+       
+       
+    1: def test_main():
+    1:     try:
+    1:         test_support.run_unittest(
+    1:               UncompressedZipImportTestCase,
+    1:               CompressedZipImportTestCase,
+    1:               BadFileZipImportTestCase,
+                   )
+           finally:
+    1:         test_support.unlink(TESTMOD)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

@@ -1,0 +1,456 @@
+       
+       """
+       csv.py - read/write/investigate CSV files
+    1: """
+       
+    1: import re
+    1: from functools import reduce
+    1: from _csv import Error, __version__, writer, reader, register_dialect, \
+                        unregister_dialect, get_dialect, list_dialects, \
+                        field_size_limit, \
+                        QUOTE_MINIMAL, QUOTE_ALL, QUOTE_NONNUMERIC, QUOTE_NONE, \
+                        __doc__
+    1: from _csv import Dialect as _Dialect
+       
+    1: try:
+    1:     from cStringIO import StringIO
+>>>>>> except ImportError:
+>>>>>>     from StringIO import StringIO
+       
+    1: __all__ = [ "QUOTE_MINIMAL", "QUOTE_ALL", "QUOTE_NONNUMERIC", "QUOTE_NONE",
+    1:             "Error", "Dialect", "__doc__", "excel", "excel_tab",
+    1:             "field_size_limit", "reader", "writer",
+    1:             "register_dialect", "get_dialect", "list_dialects", "Sniffer",
+    1:             "unregister_dialect", "__version__", "DictReader", "DictWriter" ]
+       
+    2: class Dialect:
+           """Describe an Excel dialect.
+       
+           This must be subclassed (see csv.excel).  Valid attributes are:
+           delimiter, quotechar, escapechar, doublequote, skipinitialspace,
+           lineterminator, quoting.
+       
+    1:     """
+    1:     _name = ""
+    1:     _valid = False
+           # placeholders
+    1:     delimiter = None
+    1:     quotechar = None
+    1:     escapechar = None
+    1:     doublequote = None
+    1:     skipinitialspace = None
+    1:     lineterminator = None
+    1:     quoting = None
+       
+    1:     def __init__(self):
+   18:         if self.__class__ != Dialect:
+   18:             self._valid = True
+   18:         self._validate()
+       
+    1:     def _validate(self):
+   18:         try:
+   18:             _Dialect(self)
+    9:         except TypeError, e:
+                   # We do this for compatibility with py2.3
+    9:             raise Error(str(e))
+       
+    2: class excel(Dialect):
+    1:     """Describe the usual properties of Excel-generated CSV files."""
+    1:     delimiter = ','
+    1:     quotechar = '"'
+    1:     doublequote = True
+    1:     skipinitialspace = False
+    1:     lineterminator = '\r\n'
+    1:     quoting = QUOTE_MINIMAL
+    1: register_dialect("excel", excel)
+       
+    2: class excel_tab(excel):
+    1:     """Describe the usual properties of Excel-generated TAB-delimited files."""
+    1:     delimiter = '\t'
+    1: register_dialect("excel-tab", excel_tab)
+       
+       
+    2: class DictReader:
+    1:     def __init__(self, f, fieldnames=None, restkey=None, restval=None,
+    1:                  dialect="excel", *args, **kwds):
+   12:         self._fieldnames = fieldnames   # list of keys for the dict
+   12:         self.restkey = restkey          # key to catch long rows
+   12:         self.restval = restval          # default value for short rows
+   12:         self.reader = reader(f, dialect, *args, **kwds)
+   12:         self.dialect = dialect
+   12:         self.line_num = 0
+       
+    1:     def __iter__(self):
+    1:         return self
+       
+    1:     @property
+           def fieldnames(self):
+   50:         if self._fieldnames is None:
+    3:             try:
+    3:                 self._fieldnames = self.reader.next()
+>>>>>>             except StopIteration:
+>>>>>>                 pass
+   50:         self.line_num = self.reader.line_num
+   50:         return self._fieldnames
+       
+           # Issue 20004: Because DictReader is a classic class, this setter is
+           # ignored.  At this point in 2.7's lifecycle, it is too late to change the
+           # base class for fear of breaking working code.  If you want to change
+           # fieldnames without overwriting the getter, set _fieldnames directly.
+    1:     @fieldnames.setter
+           def fieldnames(self, value):
+>>>>>>         self._fieldnames = value
+       
+    1:     def next(self):
+   18:         if self.line_num == 0:
+                   # Used only for its side effect.
+   10:             self.fieldnames
+   18:         row = self.reader.next()
+   16:         self.line_num = self.reader.line_num
+       
+               # unlike the basic reader, we prefer not to return blanks,
+               # because we will typically wind up with a dict full of None
+               # values
+   17:         while row == []:
+    1:             row = self.reader.next()
+   16:         d = dict(zip(self.fieldnames, row))
+   16:         lf = len(self.fieldnames)
+   16:         lr = len(row)
+   16:         if lf < lr:
+    3:             d[self.restkey] = row[lf:]
+   13:         elif lf > lr:
+   10:             for key in self.fieldnames[lr:]:
+    6:                 d[key] = self.restval
+   16:         return d
+       
+       
+    2: class DictWriter:
+    1:     def __init__(self, f, fieldnames, restval="", extrasaction="raise",
+    1:                  dialect="excel", *args, **kwds):
+    2:         self.fieldnames = fieldnames    # list of keys for the dict
+    2:         self.restval = restval          # for writing short dicts
+    2:         if extrasaction.lower() not in ("raise", "ignore"):
+>>>>>>             raise ValueError, \
+>>>>>>                   ("extrasaction (%s) must be 'raise' or 'ignore'" %
+>>>>>>                    extrasaction)
+    2:         self.extrasaction = extrasaction
+    2:         self.writer = writer(f, dialect, *args, **kwds)
+       
+    1:     def writeheader(self):
+    1:         header = dict(zip(self.fieldnames, self.fieldnames))
+    1:         self.writerow(header)
+       
+    1:     def _dict_to_list(self, rowdict):
+    3:         if self.extrasaction == "raise":
+   11:             wrong_fields = [k for k in rowdict if k not in self.fieldnames]
+    3:             if wrong_fields:
+    1:                 raise ValueError("dict contains fields not in fieldnames: "
+    3:                                  + ", ".join([repr(x) for x in wrong_fields]))
+    8:         return [rowdict.get(key, self.restval) for key in self.fieldnames]
+       
+    1:     def writerow(self, rowdict):
+    3:         return self.writer.writerow(self._dict_to_list(rowdict))
+       
+    1:     def writerows(self, rowdicts):
+>>>>>>         rows = []
+>>>>>>         for rowdict in rowdicts:
+>>>>>>             rows.append(self._dict_to_list(rowdict))
+>>>>>>         return self.writer.writerows(rows)
+       
+       # Guard Sniffer's type checking against builds that exclude complex()
+    1: try:
+    1:     complex
+>>>>>> except NameError:
+>>>>>>     complex = float
+       
+    2: class Sniffer:
+           '''
+           "Sniffs" the format of a CSV file (i.e. delimiter, quotechar)
+           Returns a Dialect object.
+    1:     '''
+    1:     def __init__(self):
+               # in case there is more than one possible delimiter
+    5:         self.preferred = [',', '\t', ';', ' ', ':']
+       
+       
+    1:     def sniff(self, sample, delimiters=None):
+               """
+               Returns a dialect (or None) corresponding to the sample
+               """
+       
+               quotechar, doublequote, delimiter, skipinitialspace = \
+   20:                    self._guess_quote_and_delimiter(sample, delimiters)
+   20:         if not delimiter:
+   11:             delimiter, skipinitialspace = self._guess_delimiter(sample,
+   11:                                                                 delimiters)
+       
+   20:         if not delimiter:
+>>>>>>             raise Error, "Could not determine delimiter"
+       
+   40:         class dialect(Dialect):
+   20:             _name = "sniffed"
+   20:             lineterminator = '\r\n'
+   20:             quoting = QUOTE_MINIMAL
+                   # escapechar = ''
+       
+   20:         dialect.doublequote = doublequote
+   20:         dialect.delimiter = delimiter
+               # _csv.reader won't accept a quotechar of ''
+   20:         dialect.quotechar = quotechar or '"'
+   20:         dialect.skipinitialspace = skipinitialspace
+       
+   20:         return dialect
+       
+       
+    1:     def _guess_quote_and_delimiter(self, data, delimiters):
+               """
+               Looks for text enclosed between two identical quotes
+               (the probable quotechar) which are preceded and followed
+               by the same character (the probable delimiter).
+               For example:
+                                ,'some text',
+               The quote with the most wins, same with the delimiter.
+               If there is no quotechar the delimiter can't be determined
+               this way.
+               """
+       
+   20:         matches = []
+   20:         for restr in ('(?P<delim>[^\w\n"\'])(?P<space> ?)(?P<quote>["\']).*?(?P=quote)(?P=delim)', # ,".*?",
+                             '(?:^|\n)(?P<quote>["\']).*?(?P=quote)(?P<delim>[^\w\n"\'])(?P<space> ?)',   #  ".*?",
+                             '(?P<delim>>[^\w\n"\'])(?P<space> ?)(?P<quote>["\']).*?(?P=quote)(?:$|\n)',  # ,".*?"
+   64:                       '(?:^|\n)(?P<quote>["\']).*?(?P=quote)(?:$|\n)'):                            #  ".*?" (no delim, no space)
+   53:             regexp = re.compile(restr, re.DOTALL | re.MULTILINE)
+   53:             matches = regexp.findall(data)
+   53:             if matches:
+    9:                 break
+       
+   20:         if not matches:
+                   # (quotechar, doublequote, delimiter, skipinitialspace)
+   11:             return ('', False, None, 0)
+    9:         quotes = {}
+    9:         delims = {}
+    9:         spaces = 0
+   48:         for m in matches:
+   39:             n = regexp.groupindex['quote'] - 1
+   39:             key = m[n]
+   39:             if key:
+   39:                 quotes[key] = quotes.get(key, 0) + 1
+   39:             try:
+   39:                 n = regexp.groupindex['delim'] - 1
+   39:                 key = m[n]
+>>>>>>             except KeyError:
+>>>>>>                 continue
+   39:             if key and (delimiters is None or key in delimiters):
+   39:                 delims[key] = delims.get(key, 0) + 1
+   39:             try:
+   39:                 n = regexp.groupindex['space'] - 1
+>>>>>>             except KeyError:
+>>>>>>                 continue
+   39:             if m[n]:
+    8:                 spaces += 1
+       
+    9:         quotechar = reduce(lambda a, b, quotes = quotes:
+    9:                            (quotes[a] > quotes[b]) and a or b, quotes.keys())
+       
+    9:         if delims:
+    9:             delim = reduce(lambda a, b, delims = delims:
+   13:                            (delims[a] > delims[b]) and a or b, delims.keys())
+    9:             skipinitialspace = delims[delim] == spaces
+    9:             if delim == '\n': # most likely a file with a single column
+>>>>>>                 delim = ''
+               else:
+                   # there is *no* delimiter, it's a single column of quoted data
+>>>>>>             delim = ''
+>>>>>>             skipinitialspace = 0
+       
+               # if we see an extra quote between delimiters, we've got a
+               # double quoted format
+    9:         dq_regexp = re.compile(
+    9:                                r"((%(delim)s)|^)\W*%(quote)s[^%(delim)s\n]*%(quote)s[^%(delim)s\n]*%(quote)s\W*((%(delim)s)|$)" % \
+    9:                                {'delim':re.escape(delim), 'quote':quotechar}, re.MULTILINE)
+       
+       
+       
+    9:         if dq_regexp.search(data):
+    4:             doublequote = True
+               else:
+    5:             doublequote = False
+       
+    9:         return (quotechar, doublequote, delim, skipinitialspace)
+       
+       
+    1:     def _guess_delimiter(self, data, delimiters):
+               """
+               The delimiter /should/ occur the same number of times on
+               each row. However, due to malformed data, it may not. We don't want
+               an all or nothing approach, so we allow for small variations in this
+               number.
+                 1) build a table of the frequency of each character on every line.
+                 2) build a table of frequencies of this frequency (meta-frequency?),
+                    e.g.  'x occurred 5 times in 10 rows, 6 times in 1000 rows,
+                    7 times in 2 rows'
+                 3) use the mode of the meta-frequency to determine the /expected/
+                    frequency for that character
+                 4) find out how often the character actually meets that goal
+                 5) the character that best meets its goal is the delimiter
+               For performance reasons, the data is evaluated in chunks, so it can
+               try and evaluate the smallest portion of the data possible, evaluating
+               additional chunks as necessary.
+               """
+       
+   11:         data = filter(None, data.split('\n'))
+       
+ 1408:         ascii = [chr(c) for c in range(127)] # 7-bit ASCII
+       
+               # build frequency tables
+   11:         chunkLength = min(10, len(data))
+   11:         iteration = 0
+   11:         charFrequency = {}
+   11:         modes = {}
+   11:         delims = {}
+   11:         start, end = 0, min(chunkLength, len(data))
+   20:         while start < len(data):
+   11:             iteration += 1
+   48:             for line in data[start:end]:
+ 4736:                 for char in ascii:
+ 4699:                     metaFrequency = charFrequency.get(char, {})
+                           # must count even if frequency is 0
+ 4699:                     freq = line.count(char)
+                           # value is the mode
+ 4699:                     metaFrequency[freq] = metaFrequency.get(freq, 0) + 1
+ 4699:                     charFrequency[char] = metaFrequency
+       
+ 1408:             for char in charFrequency.keys():
+ 1397:                 items = charFrequency[char].items()
+ 1397:                 if len(items) == 1 and items[0][0] == 0:
+ 1137:                     continue
+                       # get the mode of the frequencies
+  260:                 if len(items) > 1:
+  555:                     modes[char] = reduce(lambda a, b: a[1] > b[1] and a or b,
+  219:                                          items)
+                           # adjust the mode - subtract the sum of all
+                           # other frequencies
+  219:                     items.remove(modes[char])
+  219:                     modes[char] = (modes[char][0], modes[char][1]
+  336:                                    - reduce(lambda a, b: (0, a[1] + b[1]),
+  219:                                             items)[1])
+                       else:
+   41:                     modes[char] = items[0]
+       
+                   # build a list of possible delimiters
+   11:             modeList = modes.items()
+   11:             total = float(chunkLength * iteration)
+                   # (rows of consistent data) / (number of rows) = 100%
+   11:             consistency = 1.0
+                   # minimum consistency threshold
+   11:             threshold = 0.9
+   22:             while len(delims) == 0 and consistency >= threshold:
+  271:                 for k, v in modeList:
+  260:                     if v[0] > 0 and v[1] > 0:
+   78:                         if ((v[1]/total) >= consistency and
+   41:                             (delimiters is None or k in delimiters)):
+   33:                             delims[k] = v
+   11:                 consistency -= 0.01
+       
+   11:             if len(delims) == 1:
+    2:                 delim = delims.keys()[0]
+    2:                 skipinitialspace = (data[0].count(delim) ==
+    2:                                     data[0].count("%c " % delim))
+    2:                 return (delim, skipinitialspace)
+       
+                   # analyze another chunkLength lines
+    9:             start = end
+    9:             end += chunkLength
+       
+    9:         if not delims:
+>>>>>>             return ('', 0)
+       
+               # if there's more than one, fall back to a 'preferred' list
+    9:         if len(delims) > 1:
+   37:             for d in self.preferred:
+   32:                 if d in delims.keys():
+    4:                     skipinitialspace = (data[0].count(d) ==
+    4:                                         data[0].count("%c " % d))
+    4:                     return (d, skipinitialspace)
+       
+               # nothing else indicates a preference, pick the character that
+               # dominates(?)
+   18:         items = [(v,k) for (k,v) in delims.items()]
+    5:         items.sort()
+    5:         delim = items[-1][1]
+       
+    5:         skipinitialspace = (data[0].count(delim) ==
+    5:                             data[0].count("%c " % delim))
+    5:         return (delim, skipinitialspace)
+       
+       
+    1:     def has_header(self, sample):
+               # Creates a dictionary of types of data in each column. If any
+               # column is of a single type (say, integers), *except* for the first
+               # row, then the first row is presumed to be labels. If the type
+               # can't be determined, it is assumed to be a string in which case
+               # the length of the string is the determining factor: if all of the
+               # rows except for the first are the same length, it's a header.
+               # Finally, a 'vote' is taken at the end for each column, adding or
+               # subtracting from the likelihood of the first row being a header.
+       
+    4:         rdr = reader(StringIO(sample), self.sniff(sample))
+       
+    4:         header = rdr.next() # assume first row is header
+       
+    4:         columns = len(header)
+    4:         columnTypes = {}
+   24:         for i in range(columns): columnTypes[i] = None
+       
+    4:         checked = 0
+   18:         for row in rdr:
+                   # arbitrary number of rows to check, to keep it sane
+   14:             if checked > 20:
+>>>>>>                 break
+   14:             checked += 1
+       
+   14:             if len(row) != columns:
+>>>>>>                 continue # skip rows that have irregular number of columns
+       
+   62:             for col in columnTypes.keys():
+       
+  240:                 for thisType in [int, long, float, complex]:
+  192:                     try:
+  192:                         thisType(row[col])
+>>>>>>                         break
+  192:                     except (ValueError, OverflowError):
+  192:                         pass
+                       else:
+                           # fallback to length of string
+   48:                     thisType = len(row[col])
+       
+                       # treat longs as ints
+   48:                 if thisType == long:
+>>>>>>                     thisType = int
+       
+   48:                 if thisType != columnTypes[col]:
+   34:                     if columnTypes[col] is None: # add new column type
+   20:                         columnTypes[col] = thisType
+                           else:
+                               # type is inconsistent, remove column from
+                               # consideration
+   14:                         del columnTypes[col]
+       
+               # finally, compare results against first row and "vote"
+               # on whether it's a header
+    4:         hasHeader = 0
+   10:         for col, colType in columnTypes.items():
+    6:             if type(colType) == type(0): # it's a length
+    6:                 if len(header[col]) != colType:
+    4:                     hasHeader += 1
+                       else:
+    2:                     hasHeader -= 1
+                   else: # attempt typecast
+>>>>>>                 try:
+>>>>>>                     colType(header[col])
+>>>>>>                 except (ValueError, TypeError):
+>>>>>>                     hasHeader += 1
+                       else:
+>>>>>>                     hasHeader -= 1
+       
+    4:         return hasHeader > 0

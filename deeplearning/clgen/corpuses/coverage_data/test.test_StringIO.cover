@@ -1,0 +1,224 @@
+       # Tests StringIO and cStringIO
+       
+    1: import unittest
+    1: import StringIO
+    1: import cStringIO
+    1: import types
+    1: import array
+    1: import sys
+    1: from test import test_support
+       
+       
+    2: class TestGenericStringIO(unittest.TestCase):
+           # use a class variable MODULE to define which module is being tested
+       
+           # Line of data to test as string
+    1:     _line = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!'
+       
+           # Constructor to use for the test data (._line is passed to this
+           # constructor)
+    1:     constructor = str
+       
+    1:     def setUp(self):
+   63:         self._lines = self.constructor((self._line + '\n') * 5)
+   63:         self._fp = self.MODULE.StringIO(self._lines)
+       
+    1:     def test_reads(self):
+    5:         eq = self.assertEqual
+    5:         self.assertRaises(TypeError, self._fp.seek)
+    5:         eq(self._fp.read(10), self._line[:10])
+    5:         eq(self._fp.read(0), '')
+    5:         eq(self._fp.readline(0), '')
+    5:         eq(self._fp.readline(), self._line[10:] + '\n')
+    5:         eq(len(self._fp.readlines(60)), 2)
+    5:         self._fp.seek(0)
+    5:         eq(self._fp.readline(-1), self._line + '\n')
+       
+    1:     def test_writes(self):
+    5:         f = self.MODULE.StringIO()
+    5:         self.assertRaises(TypeError, f.seek)
+    5:         f.write(self._line[:6])
+    5:         f.seek(3)
+    5:         f.write(self._line[20:26])
+    5:         f.write(self._line[52])
+    5:         self.assertEqual(f.getvalue(), 'abcuvwxyz!')
+       
+    1:     def test_writelines(self):
+    5:         f = self.MODULE.StringIO()
+    5:         f.writelines([self._line[0], self._line[1], self._line[2]])
+    5:         f.seek(0)
+    5:         self.assertEqual(f.getvalue(), 'abc')
+       
+    1:     def test_writelines_error(self):
+    5:         def errorGen():
+    5:             yield 'a'
+    5:             raise KeyboardInterrupt()
+    5:         f = self.MODULE.StringIO()
+    5:         self.assertRaises(KeyboardInterrupt, f.writelines, errorGen())
+       
+    1:     def test_truncate(self):
+    5:         eq = self.assertEqual
+    5:         f = self.MODULE.StringIO()
+    5:         f.write(self._lines)
+    5:         f.seek(10)
+    5:         f.truncate()
+    5:         eq(f.getvalue(), 'abcdefghij')
+    5:         f.truncate(5)
+    5:         eq(f.getvalue(), 'abcde')
+    5:         f.write('xyz')
+    5:         eq(f.getvalue(), 'abcdexyz')
+    5:         self.assertRaises(IOError, f.truncate, -1)
+    5:         f.close()
+    5:         self.assertRaises(ValueError, f.write, 'frobnitz')
+       
+    1:     def test_closed_flag(self):
+    5:         f = self.MODULE.StringIO()
+    5:         self.assertEqual(f.closed, False)
+    5:         f.close()
+    5:         self.assertEqual(f.closed, True)
+    5:         f = self.MODULE.StringIO("abc")
+    5:         self.assertEqual(f.closed, False)
+    5:         f.close()
+    5:         self.assertEqual(f.closed, True)
+       
+    1:     def test_isatty(self):
+    5:         f = self.MODULE.StringIO()
+    5:         self.assertRaises(TypeError, f.isatty, None)
+    5:         self.assertEqual(f.isatty(), False)
+    5:         f.close()
+    5:         self.assertRaises(ValueError, f.isatty)
+       
+    1:     def test_iterator(self):
+    5:         eq = self.assertEqual
+    5:         unless = self.assertTrue
+    5:         eq(iter(self._fp), self._fp)
+               # Does this object support the iteration protocol?
+    5:         unless(hasattr(self._fp, '__iter__'))
+    5:         unless(hasattr(self._fp, 'next'))
+    5:         i = 0
+   30:         for line in self._fp:
+   25:             eq(line, self._line + '\n')
+   25:             i += 1
+    5:         eq(i, 5)
+    5:         self._fp.close()
+    5:         self.assertRaises(ValueError, self._fp.next)
+       
+    1:     def test_getvalue(self):
+    5:         self._fp.close()
+    5:         self.assertRaises(ValueError, self._fp.getvalue)
+       
+    1:     @test_support.bigmemtest(test_support._2G + 2**26, memuse=2.001)
+           def test_reads_from_large_stream(self, size):
+    5:         linesize = 2**26 # 64 MiB
+    5:         lines = ['x' * (linesize - 1) + '\n'] * (size // linesize) + \
+    5:                 ['y' * (size % linesize)]
+    5:         f = self.MODULE.StringIO(''.join(lines))
+   10:         for i, expected in enumerate(lines):
+    5:             line = f.read(len(expected))
+    5:             self.assertEqual(len(line), len(expected))
+    5:             self.assertEqual(line, expected)
+    5:         self.assertEqual(f.read(), '')
+    5:         f.seek(0)
+   10:         for i, expected in enumerate(lines):
+    5:             line = f.readline()
+    5:             self.assertEqual(len(line), len(expected))
+    5:             self.assertEqual(line, expected)
+    5:         self.assertEqual(f.readline(), '')
+    5:         f.seek(0)
+    5:         self.assertEqual(f.readlines(), lines)
+    5:         self.assertEqual(f.readlines(), [])
+    5:         f.seek(0)
+    5:         self.assertEqual(f.readlines(size), lines)
+    5:         self.assertEqual(f.readlines(), [])
+       
+           # In worst case cStringIO requires 2 + 1 + 1/2 + 1/2**2 + ... = 4
+           # bytes per input character.
+    1:     @test_support.bigmemtest(test_support._2G, memuse=4)
+           def test_writes_to_large_stream(self, size):
+    5:         s = 'x' * 2**26 # 64 MiB
+    5:         f = self.MODULE.StringIO()
+    5:         n = size
+    5:         while n > len(s):
+>>>>>>             f.write(s)
+>>>>>>             n -= len(s)
+    5:         s = None
+    5:         f.write('x' * n)
+    5:         self.assertEqual(len(f.getvalue()), size)
+       
+       
+    2: class TestStringIO(TestGenericStringIO):
+    1:     MODULE = StringIO
+       
+    1:     def test_unicode(self):
+       
+    2:         if not test_support.have_unicode: return
+       
+               # The StringIO module also supports concatenating Unicode
+               # snippets to larger Unicode strings. This is tested by this
+               # method. Note that cStringIO does not support this extension.
+       
+    2:         f = self.MODULE.StringIO()
+    2:         f.write(self._line[:6])
+    2:         f.seek(3)
+    2:         f.write(unicode(self._line[20:26]))
+    2:         f.write(unicode(self._line[52]))
+    2:         s = f.getvalue()
+    2:         self.assertEqual(s, unicode('abcuvwxyz!'))
+    2:         self.assertEqual(type(s), types.UnicodeType)
+       
+    2: class TestcStringIO(TestGenericStringIO):
+    1:     MODULE = cStringIO
+       
+    1:     def test_array_support(self):
+               # Issue #1730114: cStringIO should accept array objects
+    3:         a = array.array('B', [0,1,2])
+    3:         f = self.MODULE.StringIO(a)
+    3:         self.assertEqual(f.getvalue(), '\x00\x01\x02')
+       
+    1:     def test_unicode(self):
+       
+    3:         if not test_support.have_unicode: return
+       
+               # The cStringIO module converts Unicode strings to character
+               # strings when writing them to cStringIO objects.
+               # Check that this works.
+       
+    3:         f = self.MODULE.StringIO()
+    3:         f.write(u'abcde')
+    3:         s = f.getvalue()
+    3:         self.assertEqual(s, 'abcde')
+    3:         self.assertEqual(type(s), str)
+       
+    3:         f = self.MODULE.StringIO(u'abcde')
+    3:         s = f.getvalue()
+    3:         self.assertEqual(s, 'abcde')
+    3:         self.assertEqual(type(s), str)
+       
+    3:         self.assertRaises(UnicodeEncodeError, self.MODULE.StringIO, u'\xf4')
+       
+       
+    1: import sys
+    1: if sys.platform.startswith('java'):
+           # Jython doesn't have a buffer object, so we just do a useless
+           # fake of the buffer tests.
+>>>>>>     buffer = str
+       
+    2: class TestBufferStringIO(TestStringIO):
+    1:     constructor = buffer
+       
+    2: class TestBuffercStringIO(TestcStringIO):
+    1:     constructor = buffer
+       
+    2: class TestMemoryviewcStringIO(TestcStringIO):
+    1:     constructor = memoryview
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(TestStringIO, TestcStringIO)
+    1:     with test_support.check_py3k_warnings(("buffer.. not supported",
+    1:                                              DeprecationWarning)):
+    1:         test_support.run_unittest(TestBufferStringIO, TestBuffercStringIO)
+    1:     test_support.run_unittest(TestMemoryviewcStringIO)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

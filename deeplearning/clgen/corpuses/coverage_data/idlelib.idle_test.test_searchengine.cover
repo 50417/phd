@@ -1,0 +1,329 @@
+    1: '''Test functions and SearchEngine class in SearchEngine.py.'''
+       
+       # With mock replacements, the module does not use any gui widgets.
+       # The use of tk.Text is avoided (for now, until mock Text is improved)
+       # by patching instances with an index function returning what is needed.
+       # This works because mock Text.get does not use .index.
+       
+    1: import re
+    1: import unittest
+       #from test.test_support import requires
+    1: from Tkinter import  BooleanVar, StringVar, TclError  # ,Tk, Text
+    1: import tkMessageBox
+    1: from idlelib import SearchEngine as se
+    1: from idlelib.idle_test.mock_tk import Var, Mbox
+    1: from idlelib.idle_test.mock_tk import Text as mockText
+       
+    1: def setUpModule():
+           # Replace s-e module tkinter imports other than non-gui TclError.
+    1:     se.BooleanVar = Var
+    1:     se.StringVar = Var
+    1:     se.tkMessageBox = Mbox
+       
+    1: def tearDownModule():
+           # Restore 'just in case', though other tests should also replace.
+    1:     se.BooleanVar = BooleanVar
+    1:     se.StringVar = StringVar
+    1:     se.tkMessageBox = tkMessageBox
+       
+       
+    2: class Mock:
+    3:     def __init__(self, *args, **kwargs): pass
+       
+    2: class GetTest(unittest.TestCase):
+           # SearchEngine.get returns singleton created & saved on first call.
+    1:     def test_get(self):
+    1:         saved_Engine = se.SearchEngine
+    1:         se.SearchEngine = Mock  # monkey-patch class
+    1:         try:
+    1:             root = Mock()
+    1:             engine = se.get(root)
+    1:             self.assertIsInstance(engine, se.SearchEngine)
+    1:             self.assertIs(root._searchengine, engine)
+    1:             self.assertIs(se.get(root), engine)
+               finally:
+    1:             se.SearchEngine = saved_Engine  # restore class to module
+       
+    2: class GetLineColTest(unittest.TestCase):
+           #  Test simple text-independent helper function
+    1:     def test_get_line_col(self):
+    1:         self.assertEqual(se.get_line_col('1.0'), (1, 0))
+    1:         self.assertEqual(se.get_line_col('1.11'), (1, 11))
+       
+    1:         self.assertRaises(ValueError, se.get_line_col, ('1.0 lineend'))
+    1:         self.assertRaises(ValueError, se.get_line_col, ('end'))
+       
+    2: class GetSelectionTest(unittest.TestCase):
+           # Test text-dependent helper function.
+       ##    # Need gui for text.index('sel.first/sel.last/insert').
+       ##    @classmethod
+       ##    def setUpClass(cls):
+       ##        requires('gui')
+       ##        cls.root = Tk()
+       ##
+       ##    @classmethod
+       ##    def tearDownClass(cls):
+       ##        cls.root.destroy()
+       ##        del cls.root
+       
+    1:     def test_get_selection(self):
+               # text = Text(master=self.root)
+    1:         text = mockText()
+    1:         text.insert('1.0',  'Hello World!')
+       
+               # fix text.index result when called in get_selection
+    1:         def sel(s):
+                   # select entire text, cursor irrelevant
+    2:             if s == 'sel.first': return '1.0'
+    1:             if s == 'sel.last': return '1.12'
+>>>>>>             raise TclError
+    1:         text.index = sel  # replaces .tag_add('sel', '1.0, '1.12')
+    1:         self.assertEqual(se.get_selection(text), ('1.0', '1.12'))
+       
+    1:         def mark(s):
+                   # no selection, cursor after 'Hello'
+    2:             if s == 'insert': return '1.5'
+    1:             raise TclError
+    1:         text.index = mark  # replaces .mark_set('insert', '1.5')
+    1:         self.assertEqual(se.get_selection(text), ('1.5', '1.5'))
+       
+       
+    2: class ReverseSearchTest(unittest.TestCase):
+           # Test helper function that searches backwards within a line.
+    1:     def test_search_reverse(self):
+    1:         Equal = self.assertEqual
+    1:         line = "Here is an 'is' test text."
+    1:         prog = re.compile('is')
+    1:         Equal(se.search_reverse(prog, line, len(line)).span(), (12, 14))
+    1:         Equal(se.search_reverse(prog, line, 14).span(), (12, 14))
+    1:         Equal(se.search_reverse(prog, line, 13).span(), (5, 7))
+    1:         Equal(se.search_reverse(prog, line, 7).span(), (5, 7))
+    1:         Equal(se.search_reverse(prog, line, 6), None)
+       
+       
+    2: class SearchEngineTest(unittest.TestCase):
+           # Test class methods that do not use Text widget.
+       
+    1:     def setUp(self):
+    5:         self.engine = se.SearchEngine(root=None)
+               # Engine.root is only used to create error message boxes.
+               # The mock replacement ignores the root argument.
+       
+    1:     def test_is_get(self):
+    1:         engine = self.engine
+    1:         Equal = self.assertEqual
+       
+    1:         Equal(engine.getpat(), '')
+    1:         engine.setpat('hello')
+    1:         Equal(engine.getpat(), 'hello')
+       
+    1:         Equal(engine.isre(), False)
+    1:         engine.revar.set(1)
+    1:         Equal(engine.isre(), True)
+       
+    1:         Equal(engine.iscase(), False)
+    1:         engine.casevar.set(1)
+    1:         Equal(engine.iscase(), True)
+       
+    1:         Equal(engine.isword(), False)
+    1:         engine.wordvar.set(1)
+    1:         Equal(engine.isword(), True)
+       
+    1:         Equal(engine.iswrap(), True)
+    1:         engine.wrapvar.set(0)
+    1:         Equal(engine.iswrap(), False)
+       
+    1:         Equal(engine.isback(), False)
+    1:         engine.backvar.set(1)
+    1:         Equal(engine.isback(), True)
+       
+    1:     def test_setcookedpat(self):
+    1:         engine = self.engine
+    1:         engine.setcookedpat('\s')
+    1:         self.assertEqual(engine.getpat(), '\s')
+    1:         engine.revar.set(1)
+    1:         engine.setcookedpat('\s')
+    1:         self.assertEqual(engine.getpat(), r'\\s')
+       
+    1:     def test_getcookedpat(self):
+    1:         engine = self.engine
+    1:         Equal = self.assertEqual
+       
+    1:         Equal(engine.getcookedpat(), '')
+    1:         engine.setpat('hello')
+    1:         Equal(engine.getcookedpat(), 'hello')
+    1:         engine.wordvar.set(True)
+    1:         Equal(engine.getcookedpat(), r'\bhello\b')
+    1:         engine.wordvar.set(False)
+       
+    1:         engine.setpat('\s')
+    1:         Equal(engine.getcookedpat(), r'\\s')
+    1:         engine.revar.set(True)
+    1:         Equal(engine.getcookedpat(), '\s')
+       
+    1:     def test_getprog(self):
+    1:         engine = self.engine
+    1:         Equal = self.assertEqual
+       
+    1:         engine.setpat('Hello')
+    1:         temppat = engine.getprog()
+    1:         Equal(temppat.pattern, re.compile('Hello', re.IGNORECASE).pattern)
+    1:         engine.casevar.set(1)
+    1:         temppat = engine.getprog()
+    1:         Equal(temppat.pattern, re.compile('Hello').pattern, 0)
+       
+    1:         engine.setpat('')
+    1:         Equal(engine.getprog(), None)
+    1:         engine.setpat('+')
+    1:         engine.revar.set(1)
+    1:         Equal(engine.getprog(), None)
+    1:         self.assertEqual(Mbox.showerror.message,
+    1:                           'Error: nothing to repeat\nPattern: +')
+       
+    1:     def test_report_error(self):
+    1:         showerror = Mbox.showerror
+    1:         Equal = self.assertEqual
+    1:         pat = '[a-z'
+    1:         msg = 'unexpected end of regular expression'
+       
+    1:         Equal(self.engine.report_error(pat, msg), None)
+    1:         Equal(showerror.title, 'Regular expression error')
+    1:         expected_message = ("Error: " + msg + "\nPattern: [a-z")
+    1:         Equal(showerror.message, expected_message)
+       
+    1:         Equal(self.engine.report_error(pat, msg, 5), None)
+    1:         Equal(showerror.title, 'Regular expression error')
+    1:         expected_message += "\nOffset: 5"
+    1:         Equal(showerror.message, expected_message)
+       
+       
+    2: class SearchTest(unittest.TestCase):
+           # Test that search_text makes right call to right method.
+       
+    1:     @classmethod
+           def setUpClass(cls):
+       ##        requires('gui')
+       ##        cls.root = Tk()
+       ##        cls.text = Text(master=cls.root)
+    1:         cls.text = mockText()
+               test_text = (
+    1:             'First line\n'
+                   'Line with target\n'
+                   'Last line\n')
+    1:         cls.text.insert('1.0', test_text)
+    1:         cls.pat = re.compile('target')
+       
+    1:         cls.engine = se.SearchEngine(None)
+    5:         cls.engine.search_forward = lambda *args: ('f', args)
+    4:         cls.engine.search_backward = lambda *args: ('b', args)
+       
+       ##    @classmethod
+       ##    def tearDownClass(cls):
+       ##        cls.root.destroy()
+       ##        del cls.root
+       
+    1:     def test_search(self):
+    1:         Equal = self.assertEqual
+    1:         engine = self.engine
+    1:         search = engine.search_text
+    1:         text = self.text
+    1:         pat = self.pat
+       
+    1:         engine.patvar.set(None)
+               #engine.revar.set(pat)
+    1:         Equal(search(text), None)
+       
+    1:         def mark(s):
+                   # no selection, cursor after 'Hello'
+    6:             if s == 'insert': return '1.5'
+    3:             raise TclError
+    1:         text.index = mark
+    1:         Equal(search(text, pat), ('f', (text, pat, 1, 5, True, False)))
+    1:         engine.wrapvar.set(False)
+    1:         Equal(search(text, pat), ('f', (text, pat, 1, 5, False, False)))
+    1:         engine.wrapvar.set(True)
+    1:         engine.backvar.set(True)
+    1:         Equal(search(text, pat), ('b', (text, pat, 1, 5, True, False)))
+    1:         engine.backvar.set(False)
+       
+    1:         def sel(s):
+    8:             if s == 'sel.first': return '2.10'
+    4:             if s == 'sel.last': return '2.16'
+>>>>>>             raise TclError
+    1:         text.index = sel
+    1:         Equal(search(text, pat), ('f', (text, pat, 2, 16, True, False)))
+    1:         Equal(search(text, pat, True), ('f', (text, pat, 2, 10, True, True)))
+    1:         engine.backvar.set(True)
+    1:         Equal(search(text, pat), ('b', (text, pat, 2, 10, True, False)))
+    1:         Equal(search(text, pat, True), ('b', (text, pat, 2, 16, True, True)))
+       
+       
+    2: class ForwardBackwardTest(unittest.TestCase):
+           # Test that search_forward method finds the target.
+       ##    @classmethod
+       ##    def tearDownClass(cls):
+       ##        cls.root.destroy()
+       ##        del cls.root
+       
+    1:     @classmethod
+           def setUpClass(cls):
+    1:         cls.engine = se.SearchEngine(None)
+       ##        requires('gui')
+       ##        cls.root = Tk()
+       ##        cls.text = Text(master=cls.root)
+    1:         cls.text = mockText()
+               # search_backward calls index('end-1c')
+    3:         cls.text.index = lambda index: '4.0'
+               test_text = (
+    1:             'First line\n'
+                   'Line with target\n'
+                   'Last line\n')
+    1:         cls.text.insert('1.0', test_text)
+    1:         cls.pat = re.compile('target')
+    1:         cls.res = (2, (10, 16))  # line, slice indexes of 'target'
+    1:         cls.failpat = re.compile('xyz')  # not in text
+    1:         cls.emptypat = re.compile('\w*')  # empty match possible
+       
+    1:     def make_search(self, func):
+    2:         def search(pat, line, col, wrap, ok=0):
+   14:             res = func(self.text, pat, line, col, wrap, ok)
+                   # res is (line, matchobject) or None
+   14:             return (res[0], res[1].span()) if res else res
+    2:         return search
+       
+    1:     def test_search_forward(self):
+               # search for non-empty match
+    1:         Equal = self.assertEqual
+    1:         forward = self.make_search(self.engine.search_forward)
+    1:         pat = self.pat
+    1:         Equal(forward(pat, 1, 0, True), self.res)
+    1:         Equal(forward(pat, 3, 0, True), self.res)  # wrap
+    1:         Equal(forward(pat, 3, 0, False), None)  # no wrap
+    1:         Equal(forward(pat, 2, 10, False), self.res)
+       
+    1:         Equal(forward(self.failpat, 1, 0, True), None)
+    1:         Equal(forward(self.emptypat, 2,  9, True, ok=True), (2, (9, 9)))
+               #Equal(forward(self.emptypat, 2, 9, True), self.res)
+               # While the initial empty match is correctly ignored, skipping
+               # the rest of the line and returning (3, (0,4)) seems buggy - tjr.
+    1:         Equal(forward(self.emptypat, 2, 10, True), self.res)
+       
+    1:     def test_search_backward(self):
+               # search for non-empty match
+    1:         Equal = self.assertEqual
+    1:         backward = self.make_search(self.engine.search_backward)
+    1:         pat = self.pat
+    1:         Equal(backward(pat, 3, 5, True), self.res)
+    1:         Equal(backward(pat, 2, 0, True), self.res)  # wrap
+    1:         Equal(backward(pat, 2, 0, False), None)  # no wrap
+    1:         Equal(backward(pat, 2, 16, False), self.res)
+       
+    1:         Equal(backward(self.failpat, 3, 9, True), None)
+    1:         Equal(backward(self.emptypat, 2,  10, True, ok=True), (2, (9,9)))
+               # Accepted because 9 < 10, not because ok=True.
+               # It is not clear that ok=True is useful going back - tjr
+    1:         Equal(backward(self.emptypat, 2, 9, True), (2, (5, 9)))
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     unittest.main(verbosity=2, exit=2)

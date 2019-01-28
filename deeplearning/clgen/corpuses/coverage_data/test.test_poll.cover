@@ -1,0 +1,213 @@
+       # Test case for the os.poll() function
+       
+    1: import os
+    1: import random
+    1: import select
+    1: try:
+    1:     import threading
+>>>>>> except ImportError:
+>>>>>>     threading = None
+    1: import time
+    1: import unittest
+    1: from test.test_support import TESTFN, run_unittest, reap_threads, cpython_only
+       
+    1: try:
+    1:     select.poll
+>>>>>> except AttributeError:
+>>>>>>     raise unittest.SkipTest, "select.poll not defined -- skipping test_poll"
+       
+       
+    1: def find_ready_matching(ready, flag):
+   24:     match = []
+  192:     for fd, mode in ready:
+  168:         if mode & flag:
+   90:             match.append(fd)
+   24:     return match
+       
+    2: class PollTests(unittest.TestCase):
+       
+    1:     def test_poll1(self):
+               # Basic functional test of poll object
+               # Create a bunch of pipe and test that poll works with them.
+       
+    1:         p = select.poll()
+       
+    1:         NUM_PIPES = 12
+    1:         MSG = " This is a test."
+    1:         MSG_LEN = len(MSG)
+    1:         readers = []
+    1:         writers = []
+    1:         r2w = {}
+    1:         w2r = {}
+       
+   13:         for i in range(NUM_PIPES):
+   12:             rd, wr = os.pipe()
+   12:             p.register(rd)
+   12:             p.modify(rd, select.POLLIN)
+   12:             p.register(wr, select.POLLOUT)
+   12:             readers.append(rd)
+   12:             writers.append(wr)
+   12:             r2w[rd] = wr
+   12:             w2r[wr] = rd
+       
+    1:         bufs = []
+       
+   13:         while writers:
+   12:             ready = p.poll()
+   12:             ready_writers = find_ready_matching(ready, select.POLLOUT)
+   12:             if not ready_writers:
+>>>>>>                 raise RuntimeError, "no pipes ready for writing"
+   12:             wr = random.choice(ready_writers)
+   12:             os.write(wr, MSG)
+       
+   12:             ready = p.poll()
+   12:             ready_readers = find_ready_matching(ready, select.POLLIN)
+   12:             if not ready_readers:
+>>>>>>                 raise RuntimeError, "no pipes ready for reading"
+   12:             rd = random.choice(ready_readers)
+   12:             buf = os.read(rd, MSG_LEN)
+   12:             self.assertEqual(len(buf), MSG_LEN)
+   12:             bufs.append(buf)
+   12:             os.close(r2w[rd]) ; os.close( rd )
+   12:             p.unregister( r2w[rd] )
+   12:             p.unregister( rd )
+   12:             writers.remove(r2w[rd])
+       
+    1:         self.assertEqual(bufs, [MSG] * NUM_PIPES)
+       
+    1:     def poll_unit_tests(self):
+               # returns NVAL for invalid file descriptor
+>>>>>>         FD = 42
+>>>>>>         try:
+>>>>>>             os.close(FD)
+>>>>>>         except OSError:
+>>>>>>             pass
+>>>>>>         p = select.poll()
+>>>>>>         p.register(FD)
+>>>>>>         r = p.poll()
+>>>>>>         self.assertEqual(r[0], (FD, select.POLLNVAL))
+       
+>>>>>>         f = open(TESTFN, 'w')
+>>>>>>         fd = f.fileno()
+>>>>>>         p = select.poll()
+>>>>>>         p.register(f)
+>>>>>>         r = p.poll()
+>>>>>>         self.assertEqual(r[0][0], fd)
+>>>>>>         f.close()
+>>>>>>         r = p.poll()
+>>>>>>         self.assertEqual(r[0], (fd, select.POLLNVAL))
+>>>>>>         os.unlink(TESTFN)
+       
+               # type error for invalid arguments
+>>>>>>         p = select.poll()
+>>>>>>         self.assertRaises(TypeError, p.register, p)
+>>>>>>         self.assertRaises(TypeError, p.unregister, p)
+       
+               # can't unregister non-existent object
+>>>>>>         p = select.poll()
+>>>>>>         self.assertRaises(KeyError, p.unregister, 3)
+       
+               # Test error cases
+>>>>>>         pollster = select.poll()
+>>>>>>         class Nope:
+>>>>>>             pass
+       
+>>>>>>         class Almost:
+>>>>>>             def fileno(self):
+>>>>>>                 return 'fileno'
+       
+>>>>>>         self.assertRaises(TypeError, pollster.register, Nope(), 0)
+>>>>>>         self.assertRaises(TypeError, pollster.register, Almost(), 0)
+       
+           # Another test case for poll().  This is copied from the test case for
+           # select(), modified to use poll() instead.
+       
+    1:     def test_poll2(self):
+    1:         cmd = 'for i in 0 1 2 3 4 5 6 7 8 9; do echo testing...; sleep 1; done'
+    1:         p = os.popen(cmd, 'r')
+    1:         pollster = select.poll()
+    1:         pollster.register( p, select.POLLIN )
+   17:         for tout in (0, 1000, 2000, 4000, 8000, 16000) + (-1,)*10:
+   16:             fdlist = pollster.poll(tout)
+   16:             if (fdlist == []):
+    1:                 continue
+   15:             fd, flags = fdlist[0]
+   15:             if flags & select.POLLHUP:
+    5:                 line = p.readline()
+    5:                 if line != "":
+>>>>>>                     self.fail('error: pipe seems to be closed, but still returns data')
+>>>>>>                 continue
+       
+   10:             elif flags & select.POLLIN:
+   10:                 line = p.readline()
+   10:                 if not line:
+>>>>>>                     break
+>>>>>>                 continue
+                   else:
+>>>>>>                 self.fail('Unexpected return value from select.poll: %s' % fdlist)
+    1:         p.close()
+       
+    1:     def test_poll3(self):
+               # test int overflow
+    1:         pollster = select.poll()
+    1:         pollster.register(1)
+       
+    1:         self.assertRaises(OverflowError, pollster.poll, 1L << 64)
+       
+    1:         x = 2 + 3
+    1:         if x != 5:
+>>>>>>             self.fail('Overflow must have occurred')
+       
+               # Issues #15989, #17919
+    1:         self.assertRaises(OverflowError, pollster.register, 0, -1)
+    1:         self.assertRaises(OverflowError, pollster.register, 0, 1 << 64)
+    1:         self.assertRaises(OverflowError, pollster.modify, 1, -1)
+    1:         self.assertRaises(OverflowError, pollster.modify, 1, 1 << 64)
+       
+    1:     @cpython_only
+           def test_poll_c_limits(self):
+    1:         from _testcapi import USHRT_MAX, INT_MAX, UINT_MAX
+    1:         pollster = select.poll()
+    1:         pollster.register(1)
+       
+               # Issues #15989, #17919
+    1:         self.assertRaises(OverflowError, pollster.register, 0, USHRT_MAX + 1)
+    1:         self.assertRaises(OverflowError, pollster.modify, 1, USHRT_MAX + 1)
+    1:         self.assertRaises(OverflowError, pollster.poll, INT_MAX + 1)
+    1:         self.assertRaises(OverflowError, pollster.poll, UINT_MAX + 1)
+       
+    1:     @unittest.skipUnless(threading, 'Threading required for this test.')
+    1:     @reap_threads
+           def test_threaded_poll(self):
+    1:         r, w = os.pipe()
+    1:         self.addCleanup(os.close, r)
+    1:         self.addCleanup(os.close, w)
+    1:         rfds = []
+   11:         for i in range(10):
+   10:             fd = os.dup(r)
+   10:             self.addCleanup(os.close, fd)
+   10:             rfds.append(fd)
+    1:         pollster = select.poll()
+   11:         for fd in rfds:
+   10:             pollster.register(fd, select.POLLIN)
+       
+    1:         t = threading.Thread(target=pollster.poll)
+    1:         t.start()
+    1:         try:
+    1:             time.sleep(0.5)
+                   # trigger ufds array reallocation
+   11:             for fd in rfds:
+   10:                 pollster.unregister(fd)
+    1:             pollster.register(w, select.POLLOUT)
+    1:             self.assertRaises(RuntimeError, pollster.poll)
+               finally:
+                   # and make the call to poll() from the thread return
+    1:             os.write(w, b'spam')
+    1:             t.join()
+       
+       
+    1: def test_main():
+    1:     run_unittest(PollTests)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

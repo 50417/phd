@@ -1,0 +1,73 @@
+       # Copyright 2007 Google, Inc. All Rights Reserved.
+       # Licensed to PSF under a Contributor Agreement.
+       
+    1: """Fixer that changes xrange(...) into range(...)."""
+       
+       # Local imports
+    1: from .. import fixer_base
+    1: from ..fixer_util import Name, Call, consuming_calls
+    1: from .. import patcomp
+       
+       
+    2: class FixXrange(fixer_base.BaseFix):
+    1:     BM_compatible = True
+           PATTERN = """
+                     power<
+                        (name='range'|name='xrange') trailer< '(' args=any ')' >
+                     rest=any* >
+    1:               """
+       
+    1:     def start_tree(self, tree, filename):
+   42:         super(FixXrange, self).start_tree(tree, filename)
+   42:         self.transformed_xranges = set()
+       
+    1:     def finish_tree(self, tree, filename):
+   42:         self.transformed_xranges = None
+       
+    1:     def transform(self, node, results):
+   54:         name = results["name"]
+   54:         if name.value == u"xrange":
+    9:             return self.transform_xrange(node, results)
+   45:         elif name.value == u"range":
+   45:             return self.transform_range(node, results)
+               else:
+>>>>>>             raise ValueError(repr(name))
+       
+    1:     def transform_xrange(self, node, results):
+    9:         name = results["name"]
+    9:         name.replace(Name(u"range", prefix=name.prefix))
+               # This prevents the new range call from being wrapped in a list later.
+    9:         self.transformed_xranges.add(id(node))
+       
+    1:     def transform_range(self, node, results):
+   45:         if (id(node) not in self.transformed_xranges and
+   45:             not self.in_special_context(node)):
+    5:             range_call = Call(Name(u"range"), [results["args"].clone()])
+                   # Encase the range call in list().
+    5:             list_call = Call(Name(u"list"), [range_call],
+    5:                              prefix=node.prefix)
+                   # Put things that were after the range() call after the list call.
+    7:             for n in results["rest"]:
+    2:                 list_call.append_child(n)
+    5:             return list_call
+       
+    1:     P1 = "power< func=NAME trailer< '(' node=any ')' > any* >"
+    1:     p1 = patcomp.compile_pattern(P1)
+       
+           P2 = """for_stmt< 'for' any 'in' node=any ':' any* >
+                   | comp_for< 'for' any 'in' node=any any* >
+                   | comparison< any 'in' node=any any*>
+    1:          """
+    1:     p2 = patcomp.compile_pattern(P2)
+       
+    1:     def in_special_context(self, node):
+   45:         if node.parent is None:
+>>>>>>             return False
+   45:         results = {}
+   45:         if (node.parent.parent is not None and
+   45:                self.p1.match(node.parent.parent, results) and
+   11:                results["node"] is node):
+                   # list(d.keys()) -> list(d.keys()), etc.
+   11:             return results["func"].value in consuming_calls
+               # for ... in d.iterkeys() -> for ... in d.keys(), etc.
+   34:         return self.p2.match(node.parent, results) and results["node"] is node

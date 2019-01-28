@@ -1,0 +1,791 @@
+       r"""TELNET client class.
+       
+       Based on RFC 854: TELNET Protocol Specification, by J. Postel and
+       J. Reynolds
+       
+       Example:
+       
+       >>> from telnetlib import Telnet
+       >>> tn = Telnet('www.python.org', 79)   # connect to finger port
+       >>> tn.write('guido\r\n')
+       >>> print tn.read_all()
+       Login       Name               TTY         Idle    When    Where
+       guido    Guido van Rossum      pts/2        <Dec  2 11:10> snag.cnri.reston..
+       
+       >>>
+       
+       Note that read_all() won't read until eof -- it just reads some data
+       -- but it guarantees to read at least one byte unless EOF is hit.
+       
+       It is possible to pass a Telnet object to select.select() in order to
+       wait until more data is available.  Note that in this case,
+       read_eager() may return '' even if there was data on the socket,
+       because the protocol negotiation may have eaten the data.  This is why
+       EOFError is needed in some cases to distinguish between "no data" and
+       "connection closed" (since the socket also appears ready for reading
+       when it is closed).
+       
+       To do:
+       - option negotiation
+       - timeout should be intrinsic to the connection object instead of an
+         option on one of the read calls only
+       
+    1: """
+       
+       
+       # Imported modules
+    1: import errno
+    1: import sys
+    1: import socket
+    1: import select
+       
+    1: __all__ = ["Telnet"]
+       
+       # Tunable parameters
+    1: DEBUGLEVEL = 0
+       
+       # Telnet protocol defaults
+    1: TELNET_PORT = 23
+       
+       # Telnet protocol characters (don't change)
+    1: IAC  = chr(255) # "Interpret As Command"
+    1: DONT = chr(254)
+    1: DO   = chr(253)
+    1: WONT = chr(252)
+    1: WILL = chr(251)
+    1: theNULL = chr(0)
+       
+    1: SE  = chr(240)  # Subnegotiation End
+    1: NOP = chr(241)  # No Operation
+    1: DM  = chr(242)  # Data Mark
+    1: BRK = chr(243)  # Break
+    1: IP  = chr(244)  # Interrupt process
+    1: AO  = chr(245)  # Abort output
+    1: AYT = chr(246)  # Are You There
+    1: EC  = chr(247)  # Erase Character
+    1: EL  = chr(248)  # Erase Line
+    1: GA  = chr(249)  # Go Ahead
+    1: SB =  chr(250)  # Subnegotiation Begin
+       
+       
+       # Telnet protocol options code (don't change)
+       # These ones all come from arpa/telnet.h
+    1: BINARY = chr(0) # 8-bit data path
+    1: ECHO = chr(1) # echo
+    1: RCP = chr(2) # prepare to reconnect
+    1: SGA = chr(3) # suppress go ahead
+    1: NAMS = chr(4) # approximate message size
+    1: STATUS = chr(5) # give status
+    1: TM = chr(6) # timing mark
+    1: RCTE = chr(7) # remote controlled transmission and echo
+    1: NAOL = chr(8) # negotiate about output line width
+    1: NAOP = chr(9) # negotiate about output page size
+    1: NAOCRD = chr(10) # negotiate about CR disposition
+    1: NAOHTS = chr(11) # negotiate about horizontal tabstops
+    1: NAOHTD = chr(12) # negotiate about horizontal tab disposition
+    1: NAOFFD = chr(13) # negotiate about formfeed disposition
+    1: NAOVTS = chr(14) # negotiate about vertical tab stops
+    1: NAOVTD = chr(15) # negotiate about vertical tab disposition
+    1: NAOLFD = chr(16) # negotiate about output LF disposition
+    1: XASCII = chr(17) # extended ascii character set
+    1: LOGOUT = chr(18) # force logout
+    1: BM = chr(19) # byte macro
+    1: DET = chr(20) # data entry terminal
+    1: SUPDUP = chr(21) # supdup protocol
+    1: SUPDUPOUTPUT = chr(22) # supdup output
+    1: SNDLOC = chr(23) # send location
+    1: TTYPE = chr(24) # terminal type
+    1: EOR = chr(25) # end or record
+    1: TUID = chr(26) # TACACS user identification
+    1: OUTMRK = chr(27) # output marking
+    1: TTYLOC = chr(28) # terminal location number
+    1: VT3270REGIME = chr(29) # 3270 regime
+    1: X3PAD = chr(30) # X.3 PAD
+    1: NAWS = chr(31) # window size
+    1: TSPEED = chr(32) # terminal speed
+    1: LFLOW = chr(33) # remote flow control
+    1: LINEMODE = chr(34) # Linemode option
+    1: XDISPLOC = chr(35) # X Display Location
+    1: OLD_ENVIRON = chr(36) # Old - Environment variables
+    1: AUTHENTICATION = chr(37) # Authenticate
+    1: ENCRYPT = chr(38) # Encryption option
+    1: NEW_ENVIRON = chr(39) # New - Environment variables
+       # the following ones come from
+       # http://www.iana.org/assignments/telnet-options
+       # Unfortunately, that document does not assign identifiers
+       # to all of them, so we are making them up
+    1: TN3270E = chr(40) # TN3270E
+    1: XAUTH = chr(41) # XAUTH
+    1: CHARSET = chr(42) # CHARSET
+    1: RSP = chr(43) # Telnet Remote Serial Port
+    1: COM_PORT_OPTION = chr(44) # Com Port Control Option
+    1: SUPPRESS_LOCAL_ECHO = chr(45) # Telnet Suppress Local Echo
+    1: TLS = chr(46) # Telnet Start TLS
+    1: KERMIT = chr(47) # KERMIT
+    1: SEND_URL = chr(48) # SEND-URL
+    1: FORWARD_X = chr(49) # FORWARD_X
+    1: PRAGMA_LOGON = chr(138) # TELOPT PRAGMA LOGON
+    1: SSPI_LOGON = chr(139) # TELOPT SSPI LOGON
+    1: PRAGMA_HEARTBEAT = chr(140) # TELOPT PRAGMA HEARTBEAT
+    1: EXOPL = chr(255) # Extended-Options-List
+    1: NOOPT = chr(0)
+       
+    2: class Telnet:
+       
+           """Telnet interface class.
+       
+           An instance of this class represents a connection to a telnet
+           server.  The instance is initially not connected; the open()
+           method must be used to establish a connection.  Alternatively, the
+           host name and optional port number can be passed to the
+           constructor, too.
+       
+           Don't try to reopen an already connected instance.
+       
+           This class has many read_*() methods.  Note that some of them
+           raise EOFError when the end of the connection is read, because
+           they can return an empty string for other reasons.  See the
+           individual doc strings.
+       
+           read_until(expected, [timeout])
+               Read until the expected string has been seen, or a timeout is
+               hit (default is no timeout); may block.
+       
+           read_all()
+               Read all data until EOF; may block.
+       
+           read_some()
+               Read at least one byte or EOF; may block.
+       
+           read_very_eager()
+               Read all data available already queued or on the socket,
+               without blocking.
+       
+           read_eager()
+               Read either data already queued or some data available on the
+               socket, without blocking.
+       
+           read_lazy()
+               Read all data in the raw queue (processing it first), without
+               doing any socket I/O.
+       
+           read_very_lazy()
+               Reads all data in the cooked queue, without doing any socket
+               I/O.
+       
+           read_sb_data()
+               Reads available data between SB ... SE sequence. Don't block.
+       
+           set_option_negotiation_callback(callback)
+               Each time a telnet option is read on the input flow, this callback
+               (if set) is called with the following parameters :
+               callback(telnet socket, command, option)
+                   option will be chr(0) when there is no option.
+               No other action is done afterwards by telnetlib.
+       
+    1:     """
+       
+    1:     def __init__(self, host=None, port=0,
+    1:                  timeout=socket._GLOBAL_DEFAULT_TIMEOUT):
+               """Constructor.
+       
+               When called without arguments, create an unconnected instance.
+               With a hostname argument, it connects the instance; port number
+               and timeout are optional.
+               """
+   55:         self.debuglevel = DEBUGLEVEL
+   55:         self.host = host
+   55:         self.port = port
+   55:         self.timeout = timeout
+   55:         self.sock = None
+   55:         self.rawq = ''
+   55:         self.irawq = 0
+   55:         self.cookedq = ''
+   55:         self.eof = 0
+   55:         self.iacseq = '' # Buffer for IAC sequence.
+   55:         self.sb = 0 # flag for SB and SE sequence.
+   55:         self.sbdataq = ''
+   55:         self.option_callback = None
+   55:         self._has_poll = hasattr(select, 'poll')
+   55:         if host is not None:
+   54:             self.open(host, port, timeout)
+       
+    1:     def open(self, host, port=0, timeout=socket._GLOBAL_DEFAULT_TIMEOUT):
+               """Connect to a host.
+       
+               The optional second argument is the port number, which
+               defaults to the standard telnet port (23).
+       
+               Don't try to reopen an already connected instance.
+               """
+   55:         self.eof = 0
+   55:         if not port:
+>>>>>>             port = TELNET_PORT
+   55:         self.host = host
+   55:         self.port = port
+   55:         self.timeout = timeout
+   55:         self.sock = socket.create_connection((host, port), timeout)
+       
+    1:     def __del__(self):
+               """Destructor -- close the connection."""
+   55:         self.close()
+       
+    1:     def msg(self, msg, *args):
+               """Print a debug message, when the debug level is > 0.
+       
+               If extra arguments are present, they are substituted in the
+               message using the standard string formatting operator.
+       
+               """
+  171:         if self.debuglevel > 0:
+>>>>>>             print 'Telnet(%s,%s):' % (self.host, self.port),
+>>>>>>             if args:
+>>>>>>                 print msg % args
+                   else:
+>>>>>>                 print msg
+       
+    1:     def set_debuglevel(self, debuglevel):
+               """Set the debug level.
+       
+               The higher it is, the more debug output you get (on sys.stdout).
+       
+               """
+>>>>>>         self.debuglevel = debuglevel
+       
+    1:     def close(self):
+               """Close the connection."""
+   55:         sock = self.sock
+   55:         self.sock = 0
+   55:         self.eof = 1
+   55:         self.iacseq = ''
+   55:         self.sb = 0
+   55:         if sock:
+   55:             sock.close()
+       
+    1:     def get_socket(self):
+               """Return the socket object used internally."""
+    1:         return self.sock
+       
+    1:     def fileno(self):
+               """Return the fileno() of the socket object used internally."""
+22649:         return self.sock.fileno()
+       
+    1:     def write(self, buffer):
+               """Write a string to the socket, doubling any IAC characters.
+       
+               Can block if the connection is blocked.  May raise
+               socket.error if the connection is closed.
+       
+               """
+>>>>>>         if IAC in buffer:
+>>>>>>             buffer = buffer.replace(IAC, IAC+IAC)
+>>>>>>         self.msg("send %r", buffer)
+>>>>>>         self.sock.sendall(buffer)
+       
+    1:     def read_until(self, match, timeout=None):
+               """Read until a given string is encountered or until timeout.
+       
+               When no match is found, return whatever is available instead,
+               possibly the empty string.  Raise EOFError if the connection
+               is closed and no cooked data is available.
+       
+               """
+    4:         if self._has_poll:
+    3:             return self._read_until_with_poll(match, timeout)
+               else:
+    1:             return self._read_until_with_select(match, timeout)
+       
+    1:     def _read_until_with_poll(self, match, timeout):
+               """Read until a given string is encountered or until timeout.
+       
+               This method uses select.poll() to implement the timeout.
+               """
+    3:         n = len(match)
+    3:         call_timeout = timeout
+    3:         if timeout is not None:
+    1:             from time import time
+    1:             time_start = time()
+    3:         self.process_rawq()
+    3:         i = self.cookedq.find(match)
+    3:         if i < 0:
+    3:             poller = select.poll()
+    3:             poll_in_or_priority_flags = select.POLLIN | select.POLLPRI
+    3:             poller.register(self, poll_in_or_priority_flags)
+    7:             while i < 0 and not self.eof:
+    5:                 try:
+                           # Poll takes its timeout in milliseconds.
+    5:                     ready = poller.poll(None if timeout is None
+    2:                                         else 1000 * call_timeout)
+>>>>>>                 except select.error as e:
+>>>>>>                     if e.errno == errno.EINTR:
+>>>>>>                         if timeout is not None:
+>>>>>>                             elapsed = time() - time_start
+>>>>>>                             call_timeout = timeout-elapsed
+>>>>>>                         continue
+>>>>>>                     raise
+    9:                 for fd, mode in ready:
+    4:                     if mode & poll_in_or_priority_flags:
+    4:                         i = max(0, len(self.cookedq)-n)
+    4:                         self.fill_rawq()
+    4:                         self.process_rawq()
+    4:                         i = self.cookedq.find(match, i)
+    5:                 if timeout is not None:
+    2:                     elapsed = time() - time_start
+    2:                     if elapsed >= timeout:
+    1:                         break
+    1:                     call_timeout = timeout-elapsed
+    3:             poller.unregister(self)
+    3:         if i >= 0:
+    2:             i = i + n
+    2:             buf = self.cookedq[:i]
+    2:             self.cookedq = self.cookedq[i:]
+    2:             return buf
+    1:         return self.read_very_lazy()
+       
+    1:     def _read_until_with_select(self, match, timeout=None):
+               """Read until a given string is encountered or until timeout.
+       
+               The timeout is implemented using select.select().
+               """
+    1:         n = len(match)
+    1:         self.process_rawq()
+    1:         i = self.cookedq.find(match)
+    1:         if i >= 0:
+>>>>>>             i = i+n
+>>>>>>             buf = self.cookedq[:i]
+>>>>>>             self.cookedq = self.cookedq[i:]
+>>>>>>             return buf
+    1:         s_reply = ([self], [], [])
+    1:         s_args = s_reply
+    1:         if timeout is not None:
+>>>>>>             s_args = s_args + (timeout,)
+>>>>>>             from time import time
+>>>>>>             time_start = time()
+    1:         while not self.eof and select.select(*s_args) == s_reply:
+    1:             i = max(0, len(self.cookedq)-n)
+    1:             self.fill_rawq()
+    1:             self.process_rawq()
+    1:             i = self.cookedq.find(match, i)
+    1:             if i >= 0:
+    1:                 i = i+n
+    1:                 buf = self.cookedq[:i]
+    1:                 self.cookedq = self.cookedq[i:]
+    1:                 return buf
+>>>>>>             if timeout is not None:
+>>>>>>                 elapsed = time() - time_start
+>>>>>>                 if elapsed >= timeout:
+>>>>>>                     break
+>>>>>>                 s_args = s_reply + (timeout-elapsed,)
+>>>>>>         return self.read_very_lazy()
+       
+    1:     def read_all(self):
+               """Read all data until EOF; block until connection closed."""
+   33:         self.process_rawq()
+  173:         while not self.eof:
+  140:             self.fill_rawq()
+  140:             self.process_rawq()
+   33:         buf = self.cookedq
+   33:         self.cookedq = ''
+   33:         return buf
+       
+    1:     def read_some(self):
+               """Read at least one byte of cooked data unless EOF is hit.
+       
+               Return '' if EOF is hit.  Block if no data is immediately
+               available.
+       
+               """
+    2:         self.process_rawq()
+    4:         while not self.cookedq and not self.eof:
+    2:             self.fill_rawq()
+    2:             self.process_rawq()
+    2:         buf = self.cookedq
+    2:         self.cookedq = ''
+    2:         return buf
+       
+    1:     def read_very_eager(self):
+               """Read everything that's possible without blocking in I/O (eager).
+       
+               Raise EOFError if connection closed and no cooked data
+               available.  Return '' if no cooked data available otherwise.
+               Don't block unless in the midst of an IAC sequence.
+       
+               """
+11278:         self.process_rawq()
+11284:         while not self.eof and self.sock_avail():
+    6:             self.fill_rawq()
+    6:             self.process_rawq()
+11278:         return self.read_very_lazy()
+       
+    1:     def read_eager(self):
+               """Read readily available data.
+       
+               Raise EOFError if connection closed and no cooked data
+               available.  Return '' if no cooked data available otherwise.
+               Don't block unless in the midst of an IAC sequence.
+       
+               """
+11354:         self.process_rawq()
+11360:         while not self.cookedq and not self.eof and self.sock_avail():
+    6:             self.fill_rawq()
+    6:             self.process_rawq()
+11354:         return self.read_very_lazy()
+       
+    1:     def read_lazy(self):
+               """Process and return data that's already in the queues (lazy).
+       
+               Raise EOFError if connection closed and no data available.
+               Return '' if no cooked data available otherwise.  Don't block
+               unless in the midst of an IAC sequence.
+       
+               """
+    8:         self.process_rawq()
+    8:         return self.read_very_lazy()
+       
+    1:     def read_very_lazy(self):
+               """Return any data available in the cooked queue (very lazy).
+       
+               Raise EOFError if connection closed and no data available.
+               Return '' if no cooked data available otherwise.  Don't block.
+       
+               """
+22650:         buf = self.cookedq
+22650:         self.cookedq = ''
+22650:         if not buf and self.eof and not self.rawq:
+    8:             raise EOFError, 'telnet connection closed'
+22642:         return buf
+       
+    1:     def read_sb_data(self):
+               """Return any data available in the SB ... SE queue.
+       
+               Return '' if no SB ... SE available. Should only be called
+               after seeing a SB or SE command. When a new SB command is
+               found, old unread SB data will be discarded. Don't block.
+       
+               """
+    7:         buf = self.sbdataq
+    7:         self.sbdataq = ''
+    7:         return buf
+       
+    1:     def set_option_negotiation_callback(self, callback):
+               """Provide a callback function called after each receipt of a telnet option."""
+   26:         self.option_callback = callback
+       
+    1:     def process_rawq(self):
+               """Transfer from raw queue to cooked queue.
+       
+               Set self.eof when connection is closed.  Don't block unless in
+               the midst of an IAC sequence.
+       
+               """
+22849:         buf = ['', '']
+22849:         try:
+27455:             while self.rawq:
+ 4606:                 c = self.rawq_getchar()
+ 4606:                 if not self.iacseq:
+ 4560:                     if c == theNULL:
+>>>>>>                         continue
+ 4560:                     if c == "\021":
+>>>>>>                         continue
+ 4560:                     if c != IAC:
+ 4514:                         buf[self.sb] = buf[self.sb] + c
+ 4514:                         continue
+                           else:
+   46:                         self.iacseq += c
+   46:                 elif len(self.iacseq) == 1:
+                           # 'IAC: IAC CMD [OPTION only for WILL/WONT/DO/DONT]'
+   46:                     if c in (DO, DONT, WILL, WONT):
+>>>>>>                         self.iacseq += c
+>>>>>>                         continue
+       
+   46:                     self.iacseq = ''
+   46:                     if c == IAC:
+    4:                         buf[self.sb] = buf[self.sb] + c
+                           else:
+   42:                         if c == SB: # SB ... SE start.
+    5:                             self.sb = 1
+    5:                             self.sbdataq = ''
+   37:                         elif c == SE:
+    5:                             self.sb = 0
+    5:                             self.sbdataq = self.sbdataq + buf[1]
+    5:                             buf[1] = ''
+   42:                         if self.option_callback:
+                                   # Callback is supposed to look into
+                                   # the sbdataq
+   42:                             self.option_callback(self.sock, c, NOOPT)
+                               else:
+                                   # We can't offer automatic processing of
+                                   # suboptions. Alas, we should not get any
+                                   # unless we did a WILL/DO before.
+>>>>>>                             self.msg('IAC %d not recognized' % ord(c))
+>>>>>>                 elif len(self.iacseq) == 2:
+>>>>>>                     cmd = self.iacseq[1]
+>>>>>>                     self.iacseq = ''
+>>>>>>                     opt = c
+>>>>>>                     if cmd in (DO, DONT):
+>>>>>>                         self.msg('IAC %s %d',
+>>>>>>                             cmd == DO and 'DO' or 'DONT', ord(opt))
+>>>>>>                         if self.option_callback:
+>>>>>>                             self.option_callback(self.sock, cmd, opt)
+                               else:
+>>>>>>                             self.sock.sendall(IAC + WONT + opt)
+>>>>>>                     elif cmd in (WILL, WONT):
+>>>>>>                         self.msg('IAC %s %d',
+>>>>>>                             cmd == WILL and 'WILL' or 'WONT', ord(opt))
+>>>>>>                         if self.option_callback:
+>>>>>>                             self.option_callback(self.sock, cmd, opt)
+                               else:
+>>>>>>                             self.sock.sendall(IAC + DONT + opt)
+>>>>>>         except EOFError: # raised by self.rawq_getchar()
+>>>>>>             self.iacseq = '' # Reset on EOF
+>>>>>>             self.sb = 0
+>>>>>>             pass
+22849:         self.cookedq = self.cookedq + buf[0]
+22849:         self.sbdataq = self.sbdataq + buf[1]
+       
+    1:     def rawq_getchar(self):
+               """Get next char from raw queue.
+       
+               Block if no data is immediately available.  Raise EOFError
+               when connection is closed.
+       
+               """
+ 4606:         if not self.rawq:
+>>>>>>             self.fill_rawq()
+>>>>>>             if self.eof:
+>>>>>>                 raise EOFError
+ 4606:         c = self.rawq[self.irawq]
+ 4606:         self.irawq = self.irawq + 1
+ 4606:         if self.irawq >= len(self.rawq):
+  129:             self.rawq = ''
+  129:             self.irawq = 0
+ 4606:         return c
+       
+    1:     def fill_rawq(self):
+               """Fill raw queue from exactly one recv() system call.
+       
+               Block if no data is immediately available.  Set self.eof when
+               connection is closed.
+       
+               """
+  171:         if self.irawq >= len(self.rawq):
+  171:             self.rawq = ''
+  171:             self.irawq = 0
+               # The buffer size should be fairly small so as to avoid quadratic
+               # behavior in process_rawq() above
+  171:         buf = self.sock.recv(50)
+  171:         self.msg("recv %r", buf)
+  171:         self.eof = (not buf)
+  171:         self.rawq = self.rawq + buf
+       
+    1:     def sock_avail(self):
+               """Test whether data is available on the socket."""
+22635:         return select.select([self], [], [], 0) == ([self], [], [])
+       
+    1:     def interact(self):
+               """Interaction function, emulates a very dumb telnet client."""
+>>>>>>         if sys.platform == "win32":
+>>>>>>             self.mt_interact()
+>>>>>>             return
+>>>>>>         while 1:
+>>>>>>             rfd, wfd, xfd = select.select([self, sys.stdin], [], [])
+>>>>>>             if self in rfd:
+>>>>>>                 try:
+>>>>>>                     text = self.read_eager()
+>>>>>>                 except EOFError:
+>>>>>>                     print '*** Connection closed by remote host ***'
+>>>>>>                     break
+>>>>>>                 if text:
+>>>>>>                     sys.stdout.write(text)
+>>>>>>                     sys.stdout.flush()
+>>>>>>             if sys.stdin in rfd:
+>>>>>>                 line = sys.stdin.readline()
+>>>>>>                 if not line:
+>>>>>>                     break
+>>>>>>                 self.write(line)
+       
+    1:     def mt_interact(self):
+               """Multithreaded version of interact()."""
+>>>>>>         import thread
+>>>>>>         thread.start_new_thread(self.listener, ())
+>>>>>>         while 1:
+>>>>>>             line = sys.stdin.readline()
+>>>>>>             if not line:
+>>>>>>                 break
+>>>>>>             self.write(line)
+       
+    1:     def listener(self):
+               """Helper for mt_interact() -- this executes in the other thread."""
+>>>>>>         while 1:
+>>>>>>             try:
+>>>>>>                 data = self.read_eager()
+>>>>>>             except EOFError:
+>>>>>>                 print '*** Connection closed by remote host ***'
+>>>>>>                 return
+>>>>>>             if data:
+>>>>>>                 sys.stdout.write(data)
+                   else:
+>>>>>>                 sys.stdout.flush()
+       
+    1:     def expect(self, list, timeout=None):
+               """Read until one from a list of a regular expressions matches.
+       
+               The first argument is a list of regular expressions, either
+               compiled (re.RegexObject instances) or uncompiled (strings).
+               The optional second argument is a timeout, in seconds; default
+               is no timeout.
+       
+               Return a tuple of three items: the index in the list of the
+               first regular expression that matches; the match object
+               returned; and the text read up till and including the match.
+       
+               If EOF is read and no text was read, raise EOFError.
+               Otherwise, when nothing matches, return (-1, None, text) where
+               text is the text received so far (may be the empty string if a
+               timeout happened).
+       
+               If a regular expression ends with a greedy match (e.g. '.*')
+               or if more than one expression can match the same input, the
+               results are undeterministic, and may depend on the I/O timing.
+       
+               """
+    4:         if self._has_poll:
+    3:             return self._expect_with_poll(list, timeout)
+               else:
+    1:             return self._expect_with_select(list, timeout)
+       
+    1:     def _expect_with_poll(self, expect_list, timeout=None):
+               """Read until one from a list of a regular expressions matches.
+       
+               This method uses select.poll() to implement the timeout.
+               """
+    3:         re = None
+    3:         expect_list = expect_list[:]
+    3:         indices = range(len(expect_list))
+    6:         for i in indices:
+    3:             if not hasattr(expect_list[i], "search"):
+    3:                 if not re: import re
+    3:                 expect_list[i] = re.compile(expect_list[i])
+    3:         call_timeout = timeout
+    3:         if timeout is not None:
+    1:             from time import time
+    1:             time_start = time()
+    3:         self.process_rawq()
+    3:         m = None
+    6:         for i in indices:
+    3:             m = expect_list[i].search(self.cookedq)
+    3:             if m:
+>>>>>>                 e = m.end()
+>>>>>>                 text = self.cookedq[:e]
+>>>>>>                 self.cookedq = self.cookedq[e:]
+>>>>>>                 break
+    3:         if not m:
+    3:             poller = select.poll()
+    3:             poll_in_or_priority_flags = select.POLLIN | select.POLLPRI
+    3:             poller.register(self, poll_in_or_priority_flags)
+    6:             while not m and not self.eof:
+    4:                 try:
+    4:                     ready = poller.poll(None if timeout is None
+    2:                                         else 1000 * call_timeout)
+>>>>>>                 except select.error as e:
+>>>>>>                     if e.errno == errno.EINTR:
+>>>>>>                         if timeout is not None:
+>>>>>>                             elapsed = time() - time_start
+>>>>>>                             call_timeout = timeout-elapsed
+>>>>>>                         continue
+>>>>>>                     raise
+    7:                 for fd, mode in ready:
+    3:                     if mode & poll_in_or_priority_flags:
+    3:                         self.fill_rawq()
+    3:                         self.process_rawq()
+    4:                         for i in indices:
+    3:                             m = expect_list[i].search(self.cookedq)
+    3:                             if m:
+    2:                                 e = m.end()
+    2:                                 text = self.cookedq[:e]
+    2:                                 self.cookedq = self.cookedq[e:]
+    2:                                 break
+    4:                 if timeout is not None:
+    2:                     elapsed = time() - time_start
+    2:                     if elapsed >= timeout:
+    1:                         break
+    1:                     call_timeout = timeout-elapsed
+    3:             poller.unregister(self)
+    3:         if m:
+    2:             return (i, m, text)
+    1:         text = self.read_very_lazy()
+    1:         if not text and self.eof:
+>>>>>>             raise EOFError
+    1:         return (-1, None, text)
+       
+    1:     def _expect_with_select(self, list, timeout=None):
+               """Read until one from a list of a regular expressions matches.
+       
+               The timeout is implemented using select.select().
+               """
+    1:         re = None
+    1:         list = list[:]
+    1:         indices = range(len(list))
+    2:         for i in indices:
+    1:             if not hasattr(list[i], "search"):
+    1:                 if not re: import re
+    1:                 list[i] = re.compile(list[i])
+    1:         if timeout is not None:
+>>>>>>             from time import time
+>>>>>>             time_start = time()
+    1:         while 1:
+    2:             self.process_rawq()
+    3:             for i in indices:
+    2:                 m = list[i].search(self.cookedq)
+    2:                 if m:
+    1:                     e = m.end()
+    1:                     text = self.cookedq[:e]
+    1:                     self.cookedq = self.cookedq[e:]
+    1:                     return (i, m, text)
+    1:             if self.eof:
+>>>>>>                 break
+    1:             if timeout is not None:
+>>>>>>                 elapsed = time() - time_start
+>>>>>>                 if elapsed >= timeout:
+>>>>>>                     break
+>>>>>>                 s_args = ([self.fileno()], [], [], timeout-elapsed)
+>>>>>>                 r, w, x = select.select(*s_args)
+>>>>>>                 if not r:
+>>>>>>                     break
+    1:             self.fill_rawq()
+>>>>>>         text = self.read_very_lazy()
+>>>>>>         if not text and self.eof:
+>>>>>>             raise EOFError
+>>>>>>         return (-1, None, text)
+       
+       
+    1: def test():
+           """Test program for telnetlib.
+       
+           Usage: python telnetlib.py [-d] ... [host [port]]
+       
+           Default host is localhost; default port is 23.
+       
+           """
+>>>>>>     debuglevel = 0
+>>>>>>     while sys.argv[1:] and sys.argv[1] == '-d':
+>>>>>>         debuglevel = debuglevel+1
+>>>>>>         del sys.argv[1]
+>>>>>>     host = 'localhost'
+>>>>>>     if sys.argv[1:]:
+>>>>>>         host = sys.argv[1]
+>>>>>>     port = 0
+>>>>>>     if sys.argv[2:]:
+>>>>>>         portstr = sys.argv[2]
+>>>>>>         try:
+>>>>>>             port = int(portstr)
+>>>>>>         except ValueError:
+>>>>>>             port = socket.getservbyname(portstr, 'tcp')
+>>>>>>     tn = Telnet()
+>>>>>>     tn.set_debuglevel(debuglevel)
+>>>>>>     tn.open(host, port, timeout=0.5)
+>>>>>>     tn.interact()
+>>>>>>     tn.close()
+       
+    1: if __name__ == '__main__':
+>>>>>>     test()

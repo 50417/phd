@@ -1,0 +1,229 @@
+    1: import unittest
+    1: from doctest import DocTestSuite
+    1: from test import test_support as support
+    1: import weakref
+    1: import gc
+       
+       # Modules under test
+    1: _thread = support.import_module('thread')
+    1: threading = support.import_module('threading')
+    1: import _threading_local
+       
+       
+    2: class Weak(object):
+    1:     pass
+       
+    1: def target(local, weaklist):
+  340:     weak = Weak()
+  340:     local.weak = weak
+  340:     weaklist.append(weakref.ref(weak))
+       
+    2: class BaseLocalTest:
+       
+    1:     def test_local_refs(self):
+    2:         self._local_refs(20)
+    2:         self._local_refs(50)
+    2:         self._local_refs(100)
+       
+    1:     def _local_refs(self, n):
+    6:         local = self._local()
+    6:         weaklist = []
+  346:         for i in range(n):
+  340:             t = threading.Thread(target=target, args=(local, weaklist))
+  340:             t.start()
+  340:             t.join()
+    6:         del t
+       
+    6:         gc.collect()
+    6:         self.assertEqual(len(weaklist), n)
+       
+               # XXX _threading_local keeps the local of the last stopped thread alive.
+  346:         deadlist = [weak for weak in weaklist if weak() is None]
+    6:         self.assertIn(len(deadlist), (n-1, n))
+       
+               # Assignment to the same thread local frees it sometimes (!)
+    6:         local.someothervar = None
+    6:         gc.collect()
+  346:         deadlist = [weak for weak in weaklist if weak() is None]
+    6:         self.assertIn(len(deadlist), (n-1, n), (n, len(deadlist)))
+       
+    1:     def test_derived(self):
+               # Issue 3088: if there is a threads switch inside the __init__
+               # of a threading.local derived class, the per-thread dictionary
+               # is created but not correctly set on the object.
+               # The first member set may be bogus.
+    2:         import time
+    4:         class Local(self._local):
+    2:             def __init__(self):
+   22:                 time.sleep(0.01)
+    2:         local = Local()
+       
+    2:         def f(i):
+   20:             local.x = i
+                   # Simply check that the variable is correctly set
+   20:             self.assertEqual(local.x, i)
+       
+   24:         with support.start_threads(threading.Thread(target=f, args=(i,))
+   22:                                    for i in range(10)):
+    2:             pass
+       
+    1:     def test_derived_cycle_dealloc(self):
+               # http://bugs.python.org/issue6990
+    4:         class Local(self._local):
+    2:             pass
+    2:         locals = None
+    2:         passed = [False]
+    2:         e1 = threading.Event()
+    2:         e2 = threading.Event()
+       
+    2:         def f():
+                   # 1) Involve Local in a cycle
+    2:             cycle = [Local()]
+    2:             cycle.append(cycle)
+    2:             cycle[0].foo = 'bar'
+       
+                   # 2) GC the cycle (triggers threadmodule.c::local_clear
+                   # before local_dealloc)
+    2:             del cycle
+    2:             gc.collect()
+    2:             e1.set()
+    2:             e2.wait()
+       
+                   # 4) New Locals should be empty
+   24:             passed[0] = all(not hasattr(local, 'foo') for local in locals)
+       
+    2:         t = threading.Thread(target=f)
+    2:         t.start()
+    2:         e1.wait()
+       
+               # 3) New Locals should recycle the original's address. Creating
+               # them in the thread overwrites the thread state and avoids the
+               # bug
+   22:         locals = [Local() for i in range(10)]
+    2:         e2.set()
+    2:         t.join()
+       
+    2:         self.assertTrue(passed[0])
+       
+    1:     def test_arguments(self):
+               # Issue 1522237
+    2:         from thread import _local as local
+    2:         from _threading_local import local as py_local
+       
+    6:         for cls in (local, py_local):
+    8:             class MyLocal(cls):
+    4:                 def __init__(self, *args, **kwargs):
+    8:                     pass
+       
+    4:             MyLocal(a=1)
+    4:             MyLocal(1)
+    4:             self.assertRaises(TypeError, cls, a=1)
+    4:             self.assertRaises(TypeError, cls, 1)
+       
+    1:     def _test_one_class(self, c):
+    4:         self._failed = "No error message set or cleared."
+    4:         obj = c()
+    4:         e1 = threading.Event()
+    4:         e2 = threading.Event()
+       
+    4:         def f1():
+    4:             obj.x = 'foo'
+    4:             obj.y = 'bar'
+    4:             del obj.y
+    4:             e1.set()
+    4:             e2.wait()
+       
+    4:         def f2():
+    4:             try:
+    4:                 foo = obj.x
+    4:             except AttributeError:
+                       # This is expected -- we haven't set obj.x in this thread yet!
+    4:                 self._failed = ""  # passed
+                   else:
+>>>>>>                 self._failed = ('Incorrectly got value %r from class %r\n' %
+>>>>>>                                 (foo, c))
+>>>>>>                 sys.stderr.write(self._failed)
+       
+    4:         t1 = threading.Thread(target=f1)
+    4:         t1.start()
+    4:         e1.wait()
+    4:         t2 = threading.Thread(target=f2)
+    4:         t2.start()
+    4:         t2.join()
+               # The test is done; just let t1 know it can exit, and wait for it.
+    4:         e2.set()
+    4:         t1.join()
+       
+    4:         self.assertFalse(self._failed, self._failed)
+       
+    1:     def test_threading_local(self):
+    2:         self._test_one_class(self._local)
+       
+    1:     def test_threading_local_subclass(self):
+    4:         class LocalSubclass(self._local):
+    2:             """To test that subclasses behave properly."""
+    2:         self._test_one_class(LocalSubclass)
+       
+    1:     def _test_dict_attribute(self, cls):
+    4:         obj = cls()
+    4:         obj.x = 5
+    4:         self.assertEqual(obj.__dict__, {'x': 5})
+    4:         with self.assertRaises(AttributeError):
+    4:             obj.__dict__ = {}
+    4:         with self.assertRaises(AttributeError):
+    4:             del obj.__dict__
+       
+    1:     def test_dict_attribute(self):
+    2:         self._test_dict_attribute(self._local)
+       
+    1:     def test_dict_attribute_subclass(self):
+    4:         class LocalSubclass(self._local):
+    2:             """To test that subclasses behave properly."""
+    2:         self._test_dict_attribute(LocalSubclass)
+       
+       
+    2: class ThreadLocalTest(unittest.TestCase, BaseLocalTest):
+    1:     _local = _thread._local
+       
+           # Fails for the pure Python implementation
+    1:     def test_cycle_collection(self):
+    2:         class X:
+    1:             pass
+       
+    1:         x = X()
+    1:         x.local = self._local()
+    1:         x.local.x = x
+    1:         wr = weakref.ref(x)
+    1:         del x
+    1:         gc.collect()
+    1:         self.assertIsNone(wr())
+       
+    2: class PyThreadingLocalTest(unittest.TestCase, BaseLocalTest):
+    1:     _local = _threading_local.local
+       
+       
+    1: def test_main():
+    1:     suite = unittest.TestSuite()
+    1:     suite.addTest(DocTestSuite('_threading_local'))
+    1:     suite.addTest(unittest.makeSuite(ThreadLocalTest))
+    1:     suite.addTest(unittest.makeSuite(PyThreadingLocalTest))
+       
+    1:     try:
+    1:         from thread import _local
+>>>>>>     except ImportError:
+>>>>>>         pass
+           else:
+    1:         import _threading_local
+    1:         local_orig = _threading_local.local
+    1:         def setUp(test):
+    1:             _threading_local.local = _local
+    1:         def tearDown(test):
+    1:             _threading_local.local = local_orig
+    1:         suite.addTest(DocTestSuite('_threading_local',
+    1:                                    setUp=setUp, tearDown=tearDown)
+                             )
+       
+    1:     support.run_unittest(suite)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

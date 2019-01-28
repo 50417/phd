@@ -1,0 +1,979 @@
+       # As a test suite for the os module, this is woefully inadequate, but this
+       # does add tests for a few functions which have been determined to be more
+       # portable than they had been thought to be.
+       
+    1: import os
+    1: import errno
+    1: import unittest
+    1: import warnings
+    1: import sys
+    1: import signal
+    1: import subprocess
+    1: import sysconfig
+    1: import textwrap
+    1: import time
+    1: try:
+    1:     import resource
+>>>>>> except ImportError:
+>>>>>>     resource = None
+       
+    1: from test import test_support
+    1: from test.script_helper import assert_python_ok
+    1: import mmap
+    1: import uuid
+       
+    1: warnings.filterwarnings("ignore", "tempnam", RuntimeWarning, __name__)
+    1: warnings.filterwarnings("ignore", "tmpnam", RuntimeWarning, __name__)
+       
+       # Tests creating TESTFN
+    2: class FileTests(unittest.TestCase):
+    1:     def setUp(self):
+    6:         if os.path.exists(test_support.TESTFN):
+    2:             os.unlink(test_support.TESTFN)
+    1:     tearDown = setUp
+       
+    1:     def test_access(self):
+    1:         f = os.open(test_support.TESTFN, os.O_CREAT|os.O_RDWR)
+    1:         os.close(f)
+    1:         self.assertTrue(os.access(test_support.TESTFN, os.W_OK))
+       
+    1:     def test_closerange(self):
+    1:         first = os.open(test_support.TESTFN, os.O_CREAT|os.O_RDWR)
+               # We must allocate two consecutive file descriptors, otherwise
+               # it will mess up other file descriptors (perhaps even the three
+               # standard ones).
+    1:         second = os.dup(first)
+    1:         try:
+    1:             retries = 0
+    1:             while second != first + 1:
+>>>>>>                 os.close(first)
+>>>>>>                 retries += 1
+>>>>>>                 if retries > 10:
+                           # XXX test skipped
+>>>>>>                     self.skipTest("couldn't allocate two consecutive fds")
+>>>>>>                 first, second = second, os.dup(second)
+               finally:
+    1:             os.close(second)
+               # close a fd that is open, and one that isn't
+    1:         os.closerange(first, first + 2)
+    1:         self.assertRaises(OSError, os.write, first, "a")
+       
+    1:     @test_support.cpython_only
+           def test_rename(self):
+    1:         path = unicode(test_support.TESTFN)
+    1:         old = sys.getrefcount(path)
+    1:         self.assertRaises(TypeError, os.rename, path, 0)
+    1:         new = sys.getrefcount(path)
+    1:         self.assertEqual(old, new)
+       
+       
+    2: class TemporaryFileTests(unittest.TestCase):
+    1:     def setUp(self):
+    3:         self.files = []
+    3:         os.mkdir(test_support.TESTFN)
+       
+    1:     def tearDown(self):
+    7:         for name in self.files:
+    4:             os.unlink(name)
+    3:         os.rmdir(test_support.TESTFN)
+       
+    1:     def check_tempfile(self, name):
+               # make sure it doesn't already exist:
+    4:         self.assertFalse(os.path.exists(name),
+    4:                     "file already exists for temporary file")
+               # make sure we can create the file
+    4:         open(name, "w")
+    4:         self.files.append(name)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'tempnam'), 'test needs os.tempnam()')
+           def test_tempnam(self):
+    1:         with warnings.catch_warnings():
+    1:             warnings.filterwarnings("ignore", "tempnam", RuntimeWarning,
+    1:                                     r"test_os$")
+    1:             warnings.filterwarnings("ignore", "tempnam", DeprecationWarning)
+    1:             self.check_tempfile(os.tempnam())
+       
+    1:             name = os.tempnam(test_support.TESTFN)
+    1:             self.check_tempfile(name)
+       
+    1:             name = os.tempnam(test_support.TESTFN, "pfx")
+    1:             self.assertTrue(os.path.basename(name)[:3] == "pfx")
+    1:             self.check_tempfile(name)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'tmpfile'), 'test needs os.tmpfile()')
+           def test_tmpfile(self):
+               # As with test_tmpnam() below, the Windows implementation of tmpfile()
+               # attempts to create a file in the root directory of the current drive.
+               # On Vista and Server 2008, this test will always fail for normal users
+               # as writing to the root directory requires elevated privileges.  With
+               # XP and below, the semantics of tmpfile() are the same, but the user
+               # running the test is more likely to have administrative privileges on
+               # their account already.  If that's the case, then os.tmpfile() should
+               # work.  In order to make this test as useful as possible, rather than
+               # trying to detect Windows versions or whether or not the user has the
+               # right permissions, just try and create a file in the root directory
+               # and see if it raises a 'Permission denied' OSError.  If it does, then
+               # test that a subsequent call to os.tmpfile() raises the same error. If
+               # it doesn't, assume we're on XP or below and the user running the test
+               # has administrative privileges, and proceed with the test as normal.
+    1:         with warnings.catch_warnings():
+    1:             warnings.filterwarnings("ignore", "tmpfile", DeprecationWarning)
+       
+    1:             if sys.platform == 'win32':
+>>>>>>                 name = '\\python_test_os_test_tmpfile.txt'
+>>>>>>                 if os.path.exists(name):
+>>>>>>                     os.remove(name)
+>>>>>>                 try:
+>>>>>>                     fp = open(name, 'w')
+>>>>>>                 except IOError, first:
+                           # open() failed, assert tmpfile() fails in the same way.
+                           # Although open() raises an IOError and os.tmpfile() raises an
+                           # OSError(), 'args' will be (13, 'Permission denied') in both
+                           # cases.
+>>>>>>                     try:
+>>>>>>                         fp = os.tmpfile()
+>>>>>>                     except OSError, second:
+>>>>>>                         self.assertEqual(first.args, second.args)
+                           else:
+>>>>>>                         self.fail("expected os.tmpfile() to raise OSError")
+>>>>>>                     return
+                       else:
+                           # open() worked, therefore, tmpfile() should work.  Close our
+                           # dummy file and proceed with the test as normal.
+>>>>>>                     fp.close()
+>>>>>>                     os.remove(name)
+       
+    1:             fp = os.tmpfile()
+    1:             fp.write("foobar")
+    1:             fp.seek(0,0)
+    1:             s = fp.read()
+    1:             fp.close()
+    1:             self.assertTrue(s == "foobar")
+       
+    1:     @unittest.skipUnless(hasattr(os, 'tmpnam'), 'test needs os.tmpnam()')
+           def test_tmpnam(self):
+    1:         with warnings.catch_warnings():
+    1:             warnings.filterwarnings("ignore", "tmpnam", RuntimeWarning,
+    1:                                     r"test_os$")
+    1:             warnings.filterwarnings("ignore", "tmpnam", DeprecationWarning)
+       
+    1:             name = os.tmpnam()
+    1:             if sys.platform in ("win32",):
+                       # The Windows tmpnam() seems useless.  From the MS docs:
+                       #
+                       #     The character string that tmpnam creates consists of
+                       #     the path prefix, defined by the entry P_tmpdir in the
+                       #     file STDIO.H, followed by a sequence consisting of the
+                       #     digit characters '0' through '9'; the numerical value
+                       #     of this string is in the range 1 - 65,535.  Changing the
+                       #     definitions of L_tmpnam or P_tmpdir in STDIO.H does not
+                       #     change the operation of tmpnam.
+                       #
+                       # The really bizarre part is that, at least under MSVC6,
+                       # P_tmpdir is "\\".  That is, the path returned refers to
+                       # the root of the current drive.  That's a terrible place to
+                       # put temp files, and, depending on privileges, the user
+                       # may not even be able to open a file in the root directory.
+>>>>>>                 self.assertFalse(os.path.exists(name),
+>>>>>>                             "file already exists for temporary file")
+                   else:
+    1:                 self.check_tempfile(name)
+       
+       # Test attributes on return values from os.*stat* family.
+    2: class StatAttributeTests(unittest.TestCase):
+    1:     def setUp(self):
+    3:         os.mkdir(test_support.TESTFN)
+    3:         self.fname = os.path.join(test_support.TESTFN, "f1")
+    3:         f = open(self.fname, 'wb')
+    3:         f.write("ABC")
+    3:         f.close()
+       
+    1:     def tearDown(self):
+    3:         os.unlink(self.fname)
+    3:         os.rmdir(test_support.TESTFN)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'stat'), 'test needs os.stat()')
+           def test_stat_attributes(self):
+    1:         import stat
+    1:         result = os.stat(self.fname)
+       
+               # Make sure direct access works
+    1:         self.assertEqual(result[stat.ST_SIZE], 3)
+    1:         self.assertEqual(result.st_size, 3)
+       
+               # Make sure all the attributes are there
+    1:         members = dir(result)
+   63:         for name in dir(stat):
+   62:             if name[:3] == 'ST_':
+   10:                 attr = name.lower()
+   10:                 if name.endswith("TIME"):
+    6:                     def trunc(x): return int(x)
+                       else:
+   14:                     def trunc(x): return x
+   10:                 self.assertEqual(trunc(getattr(result, attr)),
+   10:                                  result[getattr(stat, name)])
+   10:                 self.assertIn(attr, members)
+       
+    1:         try:
+    1:             result[200]
+>>>>>>             self.fail("No exception raised")
+    1:         except IndexError:
+    1:             pass
+       
+               # Make sure that assignment fails
+    1:         try:
+    1:             result.st_mode = 1
+>>>>>>             self.fail("No exception raised")
+    1:         except (AttributeError, TypeError):
+    1:             pass
+       
+    1:         try:
+    1:             result.st_rdev = 1
+>>>>>>             self.fail("No exception raised")
+    1:         except (AttributeError, TypeError):
+    1:             pass
+       
+    1:         try:
+    1:             result.parrot = 1
+>>>>>>             self.fail("No exception raised")
+    1:         except AttributeError:
+    1:             pass
+       
+               # Use the stat_result constructor with a too-short tuple.
+    1:         try:
+    1:             result2 = os.stat_result((10,))
+>>>>>>             self.fail("No exception raised")
+    1:         except TypeError:
+    1:             pass
+       
+               # Use the constructor with a too-long tuple.
+    1:         try:
+    1:             result2 = os.stat_result((0,1,2,3,4,5,6,7,8,9,10,11,12,13,14))
+>>>>>>         except TypeError:
+>>>>>>             pass
+       
+       
+    1:     @unittest.skipUnless(hasattr(os, 'statvfs'), 'test needs os.statvfs()')
+           def test_statvfs_attributes(self):
+    1:         try:
+    1:             result = os.statvfs(self.fname)
+>>>>>>         except OSError, e:
+                   # On AtheOS, glibc always returns ENOSYS
+>>>>>>             if e.errno == errno.ENOSYS:
+>>>>>>                 self.skipTest('glibc always returns ENOSYS on AtheOS')
+       
+               # Make sure direct access works
+    1:         self.assertEqual(result.f_bfree, result[3])
+       
+               # Make sure all the attributes are there.
+               members = ('bsize', 'frsize', 'blocks', 'bfree', 'bavail', 'files',
+    1:                     'ffree', 'favail', 'flag', 'namemax')
+   11:         for value, member in enumerate(members):
+   10:             self.assertEqual(getattr(result, 'f_' + member), result[value])
+       
+               # Make sure that assignment really fails
+    1:         try:
+    1:             result.f_bfree = 1
+>>>>>>             self.fail("No exception raised")
+    1:         except TypeError:
+    1:             pass
+       
+    1:         try:
+    1:             result.parrot = 1
+>>>>>>             self.fail("No exception raised")
+    1:         except AttributeError:
+    1:             pass
+       
+               # Use the constructor with a too-short tuple.
+    1:         try:
+    1:             result2 = os.statvfs_result((10,))
+>>>>>>             self.fail("No exception raised")
+    1:         except TypeError:
+    1:             pass
+       
+               # Use the constructor with a too-long tuple.
+    1:         try:
+    1:             result2 = os.statvfs_result((0,1,2,3,4,5,6,7,8,9,10,11,12,13,14))
+    1:         except TypeError:
+    1:             pass
+       
+    1:     def test_utime_dir(self):
+    1:         delta = 1000000
+    1:         st = os.stat(test_support.TESTFN)
+               # round to int, because some systems may support sub-second
+               # time stamps in stat, but not in utime.
+    1:         os.utime(test_support.TESTFN, (st.st_atime, int(st.st_mtime-delta)))
+    1:         st2 = os.stat(test_support.TESTFN)
+    1:         self.assertEqual(st2.st_mtime, int(st.st_mtime-delta))
+       
+           # Restrict tests to Win32, since there is no guarantee other
+           # systems support centiseconds
+    1:     def get_file_system(path):
+    2:         if sys.platform == 'win32':
+>>>>>>             root = os.path.splitdrive(os.path.abspath(path))[0] + '\\'
+>>>>>>             import ctypes
+>>>>>>             kernel32 = ctypes.windll.kernel32
+>>>>>>             buf = ctypes.create_string_buffer("", 100)
+>>>>>>             if kernel32.GetVolumeInformationA(root, None, 0, None, None, None, buf, len(buf)):
+>>>>>>                 return buf.value
+       
+    1:     @unittest.skipUnless(sys.platform == "win32", "Win32 specific tests")
+    1:     @unittest.skipUnless(get_file_system(test_support.TESTFN) == "NTFS",
+    1:                          "requires NTFS")
+           def test_1565150(self):
+>>>>>>         t1 = 1159195039.25
+>>>>>>         os.utime(self.fname, (t1, t1))
+>>>>>>         self.assertEqual(os.stat(self.fname).st_mtime, t1)
+       
+    1:     @unittest.skipUnless(sys.platform == "win32", "Win32 specific tests")
+    1:     @unittest.skipUnless(get_file_system(test_support.TESTFN) == "NTFS",
+    1:                          "requires NTFS")
+           def test_large_time(self):
+>>>>>>         t1 = 5000000000 # some day in 2128
+>>>>>>         os.utime(self.fname, (t1, t1))
+>>>>>>         self.assertEqual(os.stat(self.fname).st_mtime, t1)
+       
+    1:     @unittest.skipUnless(sys.platform == "win32", "Win32 specific tests")
+           def test_1686475(self):
+               # Verify that an open file can be stat'ed
+>>>>>>         try:
+>>>>>>             os.stat(r"c:\pagefile.sys")
+>>>>>>         except WindowsError, e:
+>>>>>>             if e.errno == 2: # file does not exist; cannot run test
+>>>>>>                 self.skipTest(r'c:\pagefile.sys does not exist')
+>>>>>>             self.fail("Could not stat pagefile.sys")
+       
+    1: from test import mapping_tests
+       
+    2: class EnvironTests(mapping_tests.BasicTestMappingProtocol):
+    1:     """check that os.environ object conform to mapping protocol"""
+    1:     type2test = None
+    1:     def _reference(self):
+   16:         return {"KEY1":"VALUE1", "KEY2":"VALUE2", "KEY3":"VALUE3"}
+    1:     def _empty_mapping(self):
+   26:         os.environ.clear()
+   26:         return os.environ
+    1:     def setUp(self):
+   15:         self.__save = dict(os.environ)
+   15:         os.environ.clear()
+    1:     def tearDown(self):
+   15:         os.environ.clear()
+   15:         os.environ.update(self.__save)
+       
+           # Bug 1110478
+    1:     def test_update2(self):
+    1:         if os.path.exists("/bin/sh"):
+    1:             os.environ.update(HELLO="World")
+    1:             with os.popen("/bin/sh -c 'echo $HELLO'") as popen:
+    1:                 value = popen.read().strip()
+    1:                 self.assertEqual(value, "World")
+       
+           # On FreeBSD < 7 and OS X < 10.6, unsetenv() doesn't return a value (issue
+           # #13415).
+    1:     @unittest.skipIf(sys.platform.startswith(('freebsd', 'darwin')),
+    1:                      "due to known OS bug: see issue #13415")
+           def test_unset_error(self):
+>>>>>>         if sys.platform == "win32":
+                   # an environment variable is limited to 32,767 characters
+>>>>>>             key = 'x' * 50000
+>>>>>>             self.assertRaises(ValueError, os.environ.__delitem__, key)
+               else:
+                   # "=" is not allowed in a variable name
+>>>>>>             key = 'key='
+>>>>>>             self.assertRaises(OSError, os.environ.__delitem__, key)
+       
+    2: class WalkTests(unittest.TestCase):
+    1:     """Tests for os.walk()."""
+       
+    1:     def test_traversal(self):
+    1:         import os
+    1:         from os.path import join
+       
+               # Build:
+               #     TESTFN/
+               #       TEST1/              a file kid and two directory kids
+               #         tmp1
+               #         SUB1/             a file kid and a directory kid
+               #           tmp2
+               #           SUB11/          no kids
+               #         SUB2/             a file kid and a dirsymlink kid
+               #           tmp3
+               #           link/           a symlink to TESTFN.2
+               #       TEST2/
+               #         tmp4              a lone file
+    1:         walk_path = join(test_support.TESTFN, "TEST1")
+    1:         sub1_path = join(walk_path, "SUB1")
+    1:         sub11_path = join(sub1_path, "SUB11")
+    1:         sub2_path = join(walk_path, "SUB2")
+    1:         tmp1_path = join(walk_path, "tmp1")
+    1:         tmp2_path = join(sub1_path, "tmp2")
+    1:         tmp3_path = join(sub2_path, "tmp3")
+    1:         link_path = join(sub2_path, "link")
+    1:         t2_path = join(test_support.TESTFN, "TEST2")
+    1:         tmp4_path = join(test_support.TESTFN, "TEST2", "tmp4")
+       
+               # Create stuff.
+    1:         os.makedirs(sub11_path)
+    1:         os.makedirs(sub2_path)
+    1:         os.makedirs(t2_path)
+    5:         for path in tmp1_path, tmp2_path, tmp3_path, tmp4_path:
+    4:             f = file(path, "w")
+    4:             f.write("I'm " + path + " and proud of it.  Blame test_os.\n")
+    4:             f.close()
+    1:         if hasattr(os, "symlink"):
+    1:             os.symlink(os.path.abspath(t2_path), link_path)
+    1:             sub2_tree = (sub2_path, ["link"], ["tmp3"])
+               else:
+>>>>>>             sub2_tree = (sub2_path, [], ["tmp3"])
+       
+               # Walk top-down.
+    1:         all = list(os.walk(walk_path))
+    1:         self.assertEqual(len(all), 4)
+               # We can't know which order SUB1 and SUB2 will appear in.
+               # Not flipped:  TESTFN, SUB1, SUB11, SUB2
+               #     flipped:  TESTFN, SUB2, SUB1, SUB11
+    1:         flipped = all[0][1][0] != "SUB1"
+    1:         all[0][1].sort()
+    1:         self.assertEqual(all[0], (walk_path, ["SUB1", "SUB2"], ["tmp1"]))
+    1:         self.assertEqual(all[1 + flipped], (sub1_path, ["SUB11"], ["tmp2"]))
+    1:         self.assertEqual(all[2 + flipped], (sub11_path, [], []))
+    1:         self.assertEqual(all[3 - 2 * flipped], sub2_tree)
+       
+               # Prune the search.
+    1:         all = []
+    3:         for root, dirs, files in os.walk(walk_path):
+    2:             all.append((root, dirs, files))
+                   # Don't descend into SUB1.
+    2:             if 'SUB1' in dirs:
+                       # Note that this also mutates the dirs we appended to all!
+    1:                 dirs.remove('SUB1')
+    1:         self.assertEqual(len(all), 2)
+    1:         self.assertEqual(all[0], (walk_path, ["SUB2"], ["tmp1"]))
+    1:         self.assertEqual(all[1], sub2_tree)
+       
+               # Walk bottom-up.
+    1:         all = list(os.walk(walk_path, topdown=False))
+    1:         self.assertEqual(len(all), 4)
+               # We can't know which order SUB1 and SUB2 will appear in.
+               # Not flipped:  SUB11, SUB1, SUB2, TESTFN
+               #     flipped:  SUB2, SUB11, SUB1, TESTFN
+    1:         flipped = all[3][1][0] != "SUB1"
+    1:         all[3][1].sort()
+    1:         self.assertEqual(all[3], (walk_path, ["SUB1", "SUB2"], ["tmp1"]))
+    1:         self.assertEqual(all[flipped], (sub11_path, [], []))
+    1:         self.assertEqual(all[flipped + 1], (sub1_path, ["SUB11"], ["tmp2"]))
+    1:         self.assertEqual(all[2 - 2 * flipped], sub2_tree)
+       
+    1:         if hasattr(os, "symlink"):
+                   # Walk, following symlinks.
+    5:             for root, dirs, files in os.walk(walk_path, followlinks=True):
+    5:                 if root == link_path:
+    1:                     self.assertEqual(dirs, [])
+    1:                     self.assertEqual(files, ["tmp4"])
+    1:                     break
+                   else:
+>>>>>>                 self.fail("Didn't follow symlink with followlinks=True")
+       
+    1:     def tearDown(self):
+               # Tear everything down.  This is a decent use for bottom-up on
+               # Windows, which doesn't have a recursive delete command.  The
+               # (not so) subtlety is that rmdir will fail unless the dir's
+               # kids are removed first, so bottom up is essential.
+    7:         for root, dirs, files in os.walk(test_support.TESTFN, topdown=False):
+   10:             for name in files:
+    4:                 os.remove(os.path.join(root, name))
+   12:             for name in dirs:
+    6:                 dirname = os.path.join(root, name)
+    6:                 if not os.path.islink(dirname):
+    5:                     os.rmdir(dirname)
+                       else:
+    1:                     os.remove(dirname)
+    1:         os.rmdir(test_support.TESTFN)
+       
+    2: class MakedirTests (unittest.TestCase):
+    1:     def setUp(self):
+    1:         os.mkdir(test_support.TESTFN)
+       
+    1:     def test_makedir(self):
+    1:         base = test_support.TESTFN
+    1:         path = os.path.join(base, 'dir1', 'dir2', 'dir3')
+    1:         os.makedirs(path)             # Should work
+    1:         path = os.path.join(base, 'dir1', 'dir2', 'dir3', 'dir4')
+    1:         os.makedirs(path)
+       
+               # Try paths with a '.' in them
+    1:         self.assertRaises(OSError, os.makedirs, os.curdir)
+    1:         path = os.path.join(base, 'dir1', 'dir2', 'dir3', 'dir4', 'dir5', os.curdir)
+    1:         os.makedirs(path)
+    1:         path = os.path.join(base, 'dir1', os.curdir, 'dir2', 'dir3', 'dir4',
+    1:                             'dir5', 'dir6')
+    1:         os.makedirs(path)
+       
+       
+       
+       
+    1:     def tearDown(self):
+    1:         path = os.path.join(test_support.TESTFN, 'dir1', 'dir2', 'dir3',
+    1:                             'dir4', 'dir5', 'dir6')
+               # If the tests failed, the bottom-most directory ('../dir6')
+               # may not have been created, so we look for the outermost directory
+               # that exists.
+    1:         while not os.path.exists(path) and path != test_support.TESTFN:
+>>>>>>             path = os.path.dirname(path)
+       
+    1:         os.removedirs(path)
+       
+    2: class DevNullTests (unittest.TestCase):
+    1:     def test_devnull(self):
+    1:         f = file(os.devnull, 'w')
+    1:         f.write('hello')
+    1:         f.close()
+    1:         f = file(os.devnull, 'r')
+    1:         self.assertEqual(f.read(), '')
+    1:         f.close()
+       
+    2: class URandomTests (unittest.TestCase):
+       
+    1:     def test_urandom_length(self):
+    1:         self.assertEqual(len(os.urandom(0)), 0)
+    1:         self.assertEqual(len(os.urandom(1)), 1)
+    1:         self.assertEqual(len(os.urandom(10)), 10)
+    1:         self.assertEqual(len(os.urandom(100)), 100)
+    1:         self.assertEqual(len(os.urandom(1000)), 1000)
+       
+    1:     def test_urandom_value(self):
+    1:         data1 = os.urandom(16)
+    1:         data2 = os.urandom(16)
+    1:         self.assertNotEqual(data1, data2)
+       
+    1:     def get_urandom_subprocess(self, count):
+               # We need to use repr() and eval() to avoid line ending conversions
+               # under Windows.
+    2:         code = '\n'.join((
+    2:             'import os, sys',
+    2:             'data = os.urandom(%s)' % count,
+    2:             'sys.stdout.write(repr(data))',
+    2:             'sys.stdout.flush()',
+    2:             'print >> sys.stderr, (len(data), data)'))
+    2:         cmd_line = [sys.executable, '-c', code]
+    2:         p = subprocess.Popen(cmd_line, stdin=subprocess.PIPE,
+    2:                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    2:         out, err = p.communicate()
+    2:         self.assertEqual(p.wait(), 0, (p.wait(), err))
+    2:         out = eval(out)
+    2:         self.assertEqual(len(out), count, err)
+    2:         return out
+       
+    1:     def test_urandom_subprocess(self):
+    1:         data1 = self.get_urandom_subprocess(16)
+    1:         data2 = self.get_urandom_subprocess(16)
+    1:         self.assertNotEqual(data1, data2)
+       
+       
+    1: HAVE_GETENTROPY = (sysconfig.get_config_var('HAVE_GETENTROPY') == 1)
+       
+    2: @unittest.skipIf(HAVE_GETENTROPY,
+    1:                  "getentropy() does not use a file descriptor")
+    1: class URandomFDTests(unittest.TestCase):
+    1:     @unittest.skipUnless(resource, "test requires the resource module")
+           def test_urandom_failure(self):
+               # Check urandom() failing when it is not able to open /dev/random.
+               # We spawn a new process to make the test more robust (if getrlimit()
+               # failed to restore the file descriptor limit after this, the whole
+               # test suite would crash; this actually happened on the OS X Tiger
+               # buildbot).
+               code = """if 1:
+                   import errno
+                   import os
+                   import resource
+       
+                   soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+                   resource.setrlimit(resource.RLIMIT_NOFILE, (1, hard_limit))
+                   try:
+                       os.urandom(16)
+                   except OSError as e:
+                       assert e.errno == errno.EMFILE, e.errno
+                   else:
+                       raise AssertionError("OSError not raised")
+    1:             """
+    1:         assert_python_ok('-c', code)
+       
+       
+    2: class ExecTests(unittest.TestCase):
+       
+    1:     def test_execvpe_with_bad_arglist(self):
+    1:         self.assertRaises(ValueError, os.execvpe, 'notepad', [], None)
+       
+    1:     def test_execve_invalid_env(self):
+    1:         args = [sys.executable, '-c', 'pass']
+       
+               # null character in the enviroment variable name
+    1:         newenv = os.environ.copy()
+    1:         newenv["FRUIT\0VEGETABLE"] = "cabbage"
+    1:         with self.assertRaises(TypeError):
+    1:             os.execve(args[0], args, newenv)
+       
+               # null character in the enviroment variable value
+    1:         newenv = os.environ.copy()
+    1:         newenv["FRUIT"] = "orange\0VEGETABLE=cabbage"
+    1:         with self.assertRaises(TypeError):
+    1:             os.execve(args[0], args, newenv)
+       
+               # equal character in the enviroment variable name
+    1:         newenv = os.environ.copy()
+    1:         newenv["FRUIT=ORANGE"] = "lemon"
+    1:         with self.assertRaises(ValueError):
+    1:             os.execve(args[0], args, newenv)
+       
+       
+    2: @unittest.skipUnless(sys.platform == "win32", "Win32 specific tests")
+    1: class Win32ErrorTests(unittest.TestCase):
+    1:     def test_rename(self):
+>>>>>>         self.assertRaises(WindowsError, os.rename, test_support.TESTFN, test_support.TESTFN+".bak")
+       
+    1:     def test_remove(self):
+>>>>>>         self.assertRaises(WindowsError, os.remove, test_support.TESTFN)
+       
+    1:     def test_chdir(self):
+>>>>>>         self.assertRaises(WindowsError, os.chdir, test_support.TESTFN)
+       
+    1:     def test_mkdir(self):
+>>>>>>         f = open(test_support.TESTFN, "w")
+>>>>>>         try:
+>>>>>>             self.assertRaises(WindowsError, os.mkdir, test_support.TESTFN)
+               finally:
+>>>>>>             f.close()
+>>>>>>             os.unlink(test_support.TESTFN)
+       
+    1:     def test_utime(self):
+>>>>>>         self.assertRaises(WindowsError, os.utime, test_support.TESTFN, None)
+       
+    1:     def test_chmod(self):
+>>>>>>         self.assertRaises(WindowsError, os.chmod, test_support.TESTFN, 0)
+       
+    2: class TestInvalidFD(unittest.TestCase):
+    1:     singles = ["fchdir", "fdopen", "dup", "fdatasync", "fstat",
+    1:                "fstatvfs", "fsync", "tcgetpgrp", "ttyname"]
+           #singles.append("close")
+           #We omit close because it doesn't raise an exception on some platforms
+    1:     def get_single(f):
+    9:         def helper(self):
+    9:             if  hasattr(os, f):
+    8:                 self.check(getattr(os, f))
+    9:         return helper
+   10:     for f in singles:
+    9:         locals()["test_"+f] = get_single(f)
+       
+    1:     def check(self, f, *args):
+   17:         try:
+   17:             f(test_support.make_bad_fd(), *args)
+   17:         except OSError as e:
+   17:             self.assertEqual(e.errno, errno.EBADF)
+               else:
+>>>>>>             self.fail("%r didn't raise an OSError with a bad file descriptor"
+>>>>>>                       % f)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'isatty'), 'test needs os.isatty()')
+           def test_isatty(self):
+    1:         self.assertEqual(os.isatty(test_support.make_bad_fd()), False)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'closerange'), 'test needs os.closerange()')
+           def test_closerange(self):
+    1:         fd = test_support.make_bad_fd()
+               # Make sure none of the descriptors we are about to close are
+               # currently valid (issue 6542).
+   11:         for i in range(10):
+   10:             try: os.fstat(fd+i)
+   10:             except OSError:
+   10:                 pass
+                   else:
+>>>>>>                 break
+    1:         if i < 2:
+>>>>>>             raise unittest.SkipTest(
+>>>>>>                 "Unable to acquire a range of invalid file descriptors")
+    1:         self.assertEqual(os.closerange(fd, fd + i-1), None)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'dup2'), 'test needs os.dup2()')
+           def test_dup2(self):
+    1:         self.check(os.dup2, 20)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'fchmod'), 'test needs os.fchmod()')
+           def test_fchmod(self):
+    1:         self.check(os.fchmod, 0)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'fchown'), 'test needs os.fchown()')
+           def test_fchown(self):
+    1:         self.check(os.fchown, -1, -1)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'fpathconf'), 'test needs os.fpathconf()')
+           def test_fpathconf(self):
+    1:         self.check(os.fpathconf, "PC_NAME_MAX")
+       
+    1:     @unittest.skipUnless(hasattr(os, 'ftruncate'), 'test needs os.ftruncate()')
+           def test_ftruncate(self):
+    1:         self.check(os.ftruncate, 0)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'lseek'), 'test needs os.lseek()')
+           def test_lseek(self):
+    1:         self.check(os.lseek, 0, 0)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'read'), 'test needs os.read()')
+           def test_read(self):
+    1:         self.check(os.read, 1)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'tcsetpgrp'), 'test needs os.tcsetpgrp()')
+           def test_tcsetpgrpt(self):
+    1:         self.check(os.tcsetpgrp, 0)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'write'), 'test needs os.write()')
+           def test_write(self):
+    1:         self.check(os.write, " ")
+       
+    2: @unittest.skipIf(sys.platform == "win32", "Posix specific tests")
+    1: class PosixUidGidTests(unittest.TestCase):
+    1:     @unittest.skipUnless(hasattr(os, 'setuid'), 'test needs os.setuid()')
+           def test_setuid(self):
+    1:         if os.getuid() != 0:
+    1:             self.assertRaises(os.error, os.setuid, 0)
+    1:         self.assertRaises(OverflowError, os.setuid, 1<<32)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'setgid'), 'test needs os.setgid()')
+           def test_setgid(self):
+    1:         if os.getuid() != 0:
+    1:             self.assertRaises(os.error, os.setgid, 0)
+    1:         self.assertRaises(OverflowError, os.setgid, 1<<32)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'seteuid'), 'test needs os.seteuid()')
+           def test_seteuid(self):
+    1:         if os.getuid() != 0:
+    1:             self.assertRaises(os.error, os.seteuid, 0)
+    1:         self.assertRaises(OverflowError, os.seteuid, 1<<32)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'setegid'), 'test needs os.setegid()')
+           def test_setegid(self):
+    1:         if os.getuid() != 0:
+    1:             self.assertRaises(os.error, os.setegid, 0)
+    1:         self.assertRaises(OverflowError, os.setegid, 1<<32)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'setreuid'), 'test needs os.setreuid()')
+           def test_setreuid(self):
+    1:         if os.getuid() != 0:
+    1:             self.assertRaises(os.error, os.setreuid, 0, 0)
+    1:         self.assertRaises(OverflowError, os.setreuid, 1<<32, 0)
+    1:         self.assertRaises(OverflowError, os.setreuid, 0, 1<<32)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'setreuid'), 'test needs os.setreuid()')
+           def test_setreuid_neg1(self):
+               # Needs to accept -1.  We run this in a subprocess to avoid
+               # altering the test runner's process state (issue8045).
+    1:         subprocess.check_call([
+    1:                 sys.executable, '-c',
+    1:                 'import os,sys;os.setreuid(-1,-1);sys.exit(0)'])
+       
+    1:     @unittest.skipUnless(hasattr(os, 'setregid'), 'test needs os.setregid()')
+           def test_setregid(self):
+    1:         if os.getuid() != 0:
+    1:             self.assertRaises(os.error, os.setregid, 0, 0)
+    1:         self.assertRaises(OverflowError, os.setregid, 1<<32, 0)
+    1:         self.assertRaises(OverflowError, os.setregid, 0, 1<<32)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'setregid'), 'test needs os.setregid()')
+           def test_setregid_neg1(self):
+               # Needs to accept -1.  We run this in a subprocess to avoid
+               # altering the test runner's process state (issue8045).
+    1:         subprocess.check_call([
+    1:                 sys.executable, '-c',
+    1:                 'import os,sys;os.setregid(-1,-1);sys.exit(0)'])
+       
+       
+    2: @unittest.skipUnless(sys.platform == "win32", "Win32 specific tests")
+    1: class Win32KillTests(unittest.TestCase):
+    1:     def _kill(self, sig):
+               # Start sys.executable as a subprocess and communicate from the
+               # subprocess to the parent that the interpreter is ready. When it
+               # becomes ready, send *sig* via os.kill to the subprocess and check
+               # that the return code is equal to *sig*.
+>>>>>>         import ctypes
+>>>>>>         from ctypes import wintypes
+>>>>>>         import msvcrt
+       
+               # Since we can't access the contents of the process' stdout until the
+               # process has exited, use PeekNamedPipe to see what's inside stdout
+               # without waiting. This is done so we can tell that the interpreter
+               # is started and running at a point where it could handle a signal.
+>>>>>>         PeekNamedPipe = ctypes.windll.kernel32.PeekNamedPipe
+>>>>>>         PeekNamedPipe.restype = wintypes.BOOL
+>>>>>>         PeekNamedPipe.argtypes = (wintypes.HANDLE, # Pipe handle
+>>>>>>                                   ctypes.POINTER(ctypes.c_char), # stdout buf
+>>>>>>                                   wintypes.DWORD, # Buffer size
+>>>>>>                                   ctypes.POINTER(wintypes.DWORD), # bytes read
+>>>>>>                                   ctypes.POINTER(wintypes.DWORD), # bytes avail
+>>>>>>                                   ctypes.POINTER(wintypes.DWORD)) # bytes left
+>>>>>>         msg = "running"
+>>>>>>         proc = subprocess.Popen([sys.executable, "-c",
+>>>>>>                                  "import sys;"
+                                        "sys.stdout.write('{}');"
+                                        "sys.stdout.flush();"
+>>>>>>                                  "input()".format(msg)],
+>>>>>>                                 stdout=subprocess.PIPE,
+>>>>>>                                 stderr=subprocess.PIPE,
+>>>>>>                                 stdin=subprocess.PIPE)
+>>>>>>         self.addCleanup(proc.stdout.close)
+>>>>>>         self.addCleanup(proc.stderr.close)
+>>>>>>         self.addCleanup(proc.stdin.close)
+       
+>>>>>>         count, max = 0, 100
+>>>>>>         while count < max and proc.poll() is None:
+                   # Create a string buffer to store the result of stdout from the pipe
+>>>>>>             buf = ctypes.create_string_buffer(len(msg))
+                   # Obtain the text currently in proc.stdout
+                   # Bytes read/avail/left are left as NULL and unused
+>>>>>>             rslt = PeekNamedPipe(msvcrt.get_osfhandle(proc.stdout.fileno()),
+>>>>>>                                  buf, ctypes.sizeof(buf), None, None, None)
+>>>>>>             self.assertNotEqual(rslt, 0, "PeekNamedPipe failed")
+>>>>>>             if buf.value:
+>>>>>>                 self.assertEqual(msg, buf.value)
+>>>>>>                 break
+>>>>>>             time.sleep(0.1)
+>>>>>>             count += 1
+               else:
+>>>>>>             self.fail("Did not receive communication from the subprocess")
+       
+>>>>>>         os.kill(proc.pid, sig)
+>>>>>>         self.assertEqual(proc.wait(), sig)
+       
+    1:     def test_kill_sigterm(self):
+               # SIGTERM doesn't mean anything special, but make sure it works
+>>>>>>         self._kill(signal.SIGTERM)
+       
+    1:     def test_kill_int(self):
+               # os.kill on Windows can take an int which gets set as the exit code
+>>>>>>         self._kill(100)
+       
+    1:     def _kill_with_event(self, event, name):
+>>>>>>         tagname = "test_os_%s" % uuid.uuid1()
+>>>>>>         m = mmap.mmap(-1, 1, tagname)
+>>>>>>         m[0] = '0'
+               # Run a script which has console control handling enabled.
+>>>>>>         proc = subprocess.Popen([sys.executable,
+>>>>>>                    os.path.join(os.path.dirname(__file__),
+>>>>>>                                 "win_console_handler.py"), tagname],
+>>>>>>                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+               # Let the interpreter startup before we send signals. See #3137.
+>>>>>>         count, max = 0, 20
+>>>>>>         while count < max and proc.poll() is None:
+>>>>>>             if m[0] == '1':
+>>>>>>                 break
+>>>>>>             time.sleep(0.5)
+>>>>>>             count += 1
+               else:
+>>>>>>             self.fail("Subprocess didn't finish initialization")
+>>>>>>         os.kill(proc.pid, event)
+               # proc.send_signal(event) could also be done here.
+               # Allow time for the signal to be passed and the process to exit.
+>>>>>>         time.sleep(0.5)
+>>>>>>         if not proc.poll():
+                   # Forcefully kill the process if we weren't able to signal it.
+>>>>>>             os.kill(proc.pid, signal.SIGINT)
+>>>>>>             self.fail("subprocess did not stop on {}".format(name))
+       
+    1:     @unittest.skip("subprocesses aren't inheriting Ctrl+C property")
+           def test_CTRL_C_EVENT(self):
+>>>>>>         from ctypes import wintypes
+>>>>>>         import ctypes
+       
+               # Make a NULL value by creating a pointer with no argument.
+>>>>>>         NULL = ctypes.POINTER(ctypes.c_int)()
+>>>>>>         SetConsoleCtrlHandler = ctypes.windll.kernel32.SetConsoleCtrlHandler
+>>>>>>         SetConsoleCtrlHandler.argtypes = (ctypes.POINTER(ctypes.c_int),
+>>>>>>                                           wintypes.BOOL)
+>>>>>>         SetConsoleCtrlHandler.restype = wintypes.BOOL
+       
+               # Calling this with NULL and FALSE causes the calling process to
+               # handle Ctrl+C, rather than ignore it. This property is inherited
+               # by subprocesses.
+>>>>>>         SetConsoleCtrlHandler(NULL, 0)
+       
+>>>>>>         self._kill_with_event(signal.CTRL_C_EVENT, "CTRL_C_EVENT")
+       
+    1:     def test_CTRL_BREAK_EVENT(self):
+>>>>>>         self._kill_with_event(signal.CTRL_BREAK_EVENT, "CTRL_BREAK_EVENT")
+       
+       
+    2: class SpawnTests(unittest.TestCase):
+    1:     def _test_invalid_env(self, spawn):
+    2:         args = [sys.executable, '-c', 'pass']
+       
+               # null character in the enviroment variable name
+    2:         newenv = os.environ.copy()
+    2:         newenv["FRUIT\0VEGETABLE"] = "cabbage"
+    2:         try:
+    2:             exitcode = spawn(os.P_WAIT, args[0], args, newenv)
+>>>>>>         except TypeError:
+>>>>>>             pass
+               else:
+    2:             self.assertEqual(exitcode, 127)
+       
+               # null character in the enviroment variable value
+    2:         newenv = os.environ.copy()
+    2:         newenv["FRUIT"] = "orange\0VEGETABLE=cabbage"
+    2:         try:
+    2:             exitcode = spawn(os.P_WAIT, args[0], args, newenv)
+>>>>>>         except TypeError:
+>>>>>>             pass
+               else:
+    2:             self.assertEqual(exitcode, 127)
+       
+               # equal character in the enviroment variable name
+    2:         newenv = os.environ.copy()
+    2:         newenv["FRUIT=ORANGE"] = "lemon"
+    2:         try:
+    2:             exitcode = spawn(os.P_WAIT, args[0], args, newenv)
+>>>>>>         except ValueError:
+>>>>>>             pass
+               else:
+    2:             self.assertEqual(exitcode, 127)
+       
+               # equal character in the enviroment variable value
+    2:         filename = test_support.TESTFN
+    2:         self.addCleanup(test_support.unlink, filename)
+    2:         with open(filename, "w") as fp:
+    2:             fp.write('import sys, os\n'
+                            'if os.getenv("FRUIT") != "orange=lemon":\n'
+                            '    raise AssertionError')
+    2:         args = [sys.executable, filename]
+    2:         newenv = os.environ.copy()
+    2:         newenv["FRUIT"] = "orange=lemon"
+    2:         exitcode = spawn(os.P_WAIT, args[0], args, newenv)
+    2:         self.assertEqual(exitcode, 0)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'spawnve'), 'test needs os.spawnve()')
+           def test_spawnve_invalid_env(self):
+    1:         self._test_invalid_env(os.spawnve)
+       
+    1:     @unittest.skipUnless(hasattr(os, 'spawnvpe'), 'test needs os.spawnvpe()')
+           def test_spawnvpe_invalid_env(self):
+    1:         self._test_invalid_env(os.spawnvpe)
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(
+    1:         FileTests,
+    1:         TemporaryFileTests,
+    1:         StatAttributeTests,
+    1:         EnvironTests,
+    1:         WalkTests,
+    1:         MakedirTests,
+    1:         DevNullTests,
+    1:         URandomTests,
+    1:         URandomFDTests,
+    1:         ExecTests,
+    1:         Win32ErrorTests,
+    1:         TestInvalidFD,
+    1:         PosixUidGidTests,
+    1:         Win32KillTests,
+    1:         SpawnTests,
+           )
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

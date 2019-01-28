@@ -1,0 +1,474 @@
+       r"""plistlib.py -- a tool to generate and parse MacOSX .plist files.
+       
+       The PropertyList (.plist) file format is a simple XML pickle supporting
+       basic object types, like dictionaries, lists, numbers and strings.
+       Usually the top level object is a dictionary.
+       
+       To write out a plist file, use the writePlist(rootObject, pathOrFile)
+       function. 'rootObject' is the top level object, 'pathOrFile' is a
+       filename or a (writable) file object.
+       
+       To parse a plist from a file, use the readPlist(pathOrFile) function,
+       with a file name or a (readable) file object as the only argument. It
+       returns the top level object (again, usually a dictionary).
+       
+       To work with plist data in strings, you can use readPlistFromString()
+       and writePlistToString().
+       
+       Values can be strings, integers, floats, booleans, tuples, lists,
+       dictionaries, Data or datetime.datetime objects. String values (including
+       dictionary keys) may be unicode strings -- they will be written out as
+       UTF-8.
+       
+       The <data> plist type is supported through the Data class. This is a
+       thin wrapper around a Python string.
+       
+       Generate Plist example:
+       
+           pl = dict(
+               aString="Doodah",
+               aList=["A", "B", 12, 32.1, [1, 2, 3]],
+               aFloat=0.1,
+               anInt=728,
+               aDict=dict(
+                   anotherString="<hello & hi there!>",
+                   aUnicodeValue=u'M\xe4ssig, Ma\xdf',
+                   aTrueValue=True,
+                   aFalseValue=False,
+               ),
+               someData=Data("<binary gunk>"),
+               someMoreData=Data("<lots of binary gunk>" * 10),
+               aDate=datetime.datetime.fromtimestamp(time.mktime(time.gmtime())),
+           )
+           # unicode keys are possible, but a little awkward to use:
+           pl[u'\xc5benraa'] = "That was a unicode key."
+           writePlist(pl, fileName)
+       
+       Parse Plist example:
+       
+           pl = readPlist(pathOrFile)
+           print pl["aKey"]
+    1: """
+       
+       
+       __all__ = [
+    1:     "readPlist", "writePlist", "readPlistFromString", "writePlistToString",
+    1:     "readPlistFromResource", "writePlistToResource",
+    1:     "Plist", "Data", "Dict"
+       ]
+       # Note: the Plist and Dict classes have been deprecated.
+       
+    1: import binascii
+    1: import datetime
+    1: from cStringIO import StringIO
+    1: import re
+    1: import warnings
+       
+       
+    1: def readPlist(pathOrFile):
+           """Read a .plist file. 'pathOrFile' may either be a file name or a
+           (readable) file object. Return the unpacked root object (which
+           usually is a dictionary).
+           """
+   14:     didOpen = 0
+   14:     if isinstance(pathOrFile, (str, unicode)):
+    4:         pathOrFile = open(pathOrFile)
+    4:         didOpen = 1
+   14:     p = PlistParser()
+   14:     rootObject = p.parse(pathOrFile)
+   14:     if didOpen:
+    4:         pathOrFile.close()
+   14:     return rootObject
+       
+       
+    1: def writePlist(rootObject, pathOrFile):
+           """Write 'rootObject' to a .plist file. 'pathOrFile' may either be a
+           file name or a (writable) file object.
+           """
+  139:     didOpen = 0
+  139:     if isinstance(pathOrFile, (str, unicode)):
+    1:         pathOrFile = open(pathOrFile, "w")
+    1:         didOpen = 1
+  139:     writer = PlistWriter(pathOrFile)
+  139:     writer.writeln("<plist version=\"1.0\">")
+  139:     writer.writeValue(rootObject)
+  110:     writer.writeln("</plist>")
+  110:     if didOpen:
+    1:         pathOrFile.close()
+       
+       
+    1: def readPlistFromString(data):
+           """Read a plist data from a string. Return the root object.
+           """
+    8:     return readPlist(StringIO(data))
+       
+       
+    1: def writePlistToString(rootObject):
+           """Return 'rootObject' as a plist-formatted string.
+           """
+  136:     f = StringIO()
+  136:     writePlist(rootObject, f)
+  107:     return f.getvalue()
+       
+       
+    1: def readPlistFromResource(path, restype='plst', resid=0):
+           """Read plst resource from the resource fork of path.
+           """
+>>>>>>     warnings.warnpy3k("In 3.x, readPlistFromResource is removed.",
+>>>>>>                       stacklevel=2)
+>>>>>>     from Carbon.File import FSRef, FSGetResourceForkName
+>>>>>>     from Carbon.Files import fsRdPerm
+>>>>>>     from Carbon import Res
+>>>>>>     fsRef = FSRef(path)
+>>>>>>     resNum = Res.FSOpenResourceFile(fsRef, FSGetResourceForkName(), fsRdPerm)
+>>>>>>     Res.UseResFile(resNum)
+>>>>>>     plistData = Res.Get1Resource(restype, resid).data
+>>>>>>     Res.CloseResFile(resNum)
+>>>>>>     return readPlistFromString(plistData)
+       
+       
+    1: def writePlistToResource(rootObject, path, restype='plst', resid=0):
+           """Write 'rootObject' as a plst resource to the resource fork of path.
+           """
+>>>>>>     warnings.warnpy3k("In 3.x, writePlistToResource is removed.", stacklevel=2)
+>>>>>>     from Carbon.File import FSRef, FSGetResourceForkName
+>>>>>>     from Carbon.Files import fsRdWrPerm
+>>>>>>     from Carbon import Res
+>>>>>>     plistData = writePlistToString(rootObject)
+>>>>>>     fsRef = FSRef(path)
+>>>>>>     resNum = Res.FSOpenResourceFile(fsRef, FSGetResourceForkName(), fsRdWrPerm)
+>>>>>>     Res.UseResFile(resNum)
+>>>>>>     try:
+>>>>>>         Res.Get1Resource(restype, resid).RemoveResource()
+>>>>>>     except Res.Error:
+>>>>>>         pass
+>>>>>>     res = Res.Resource(plistData)
+>>>>>>     res.AddResource(restype, resid, '')
+>>>>>>     res.WriteResource()
+>>>>>>     Res.CloseResFile(resNum)
+       
+       
+    2: class DumbXMLWriter:
+       
+    1:     def __init__(self, file, indentLevel=0, indent="\t"):
+  139:         self.file = file
+  139:         self.stack = []
+  139:         self.indentLevel = indentLevel
+  139:         self.indent = indent
+       
+    1:     def beginElement(self, element):
+   92:         self.stack.append(element)
+   92:         self.writeln("<%s>" % element)
+   92:         self.indentLevel += 1
+       
+    1:     def endElement(self, element):
+   92:         assert self.indentLevel > 0
+   92:         assert self.stack.pop() == element
+   92:         self.indentLevel -= 1
+   92:         self.writeln("</%s>" % element)
+       
+    1:     def simpleElement(self, element, value=None):
+  381:         if value is not None:
+  369:             value = _escapeAndEncode(value)
+  340:             self.writeln("<%s>%s</%s>" % (element, value, element))
+               else:
+   12:             self.writeln("<%s/>" % element)
+       
+    1:     def writeln(self, line):
+  860:         if line:
+  860:             self.file.write(self.indentLevel * self.indent + line + "\n")
+               else:
+>>>>>>             self.file.write("\n")
+       
+       
+       # Contents should conform to a subset of ISO 8601
+       # (in particular, YYYY '-' MM '-' DD 'T' HH ':' MM ':' SS 'Z'.  Smaller units may be omitted with
+       #  a loss of precision)
+    1: _dateParser = re.compile(r"(?P<year>\d\d\d\d)(?:-(?P<month>\d\d)(?:-(?P<day>\d\d)(?:T(?P<hour>\d\d)(?::(?P<minute>\d\d)(?::(?P<second>\d\d))?)?)?)?)?Z")
+       
+    1: def _dateFromString(s):
+    6:     order = ('year', 'month', 'day', 'hour', 'minute', 'second')
+    6:     gd = _dateParser.match(s).groupdict()
+    6:     lst = []
+   42:     for key in order:
+   36:         val = gd[key]
+   36:         if val is None:
+>>>>>>             break
+   36:         lst.append(int(val))
+    6:     return datetime.datetime(*lst)
+       
+    1: def _dateToString(d):
+    6:     return '%04d-%02d-%02dT%02d:%02d:%02dZ' % (
+    6:         d.year, d.month, d.day,
+    6:         d.hour, d.minute, d.second
+           )
+       
+       
+       # Regex to find any control chars, except for \t \n and \r
+    1: _controlCharPat = re.compile(
+    1:     r"[\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f"
+           r"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f]")
+       
+    1: def _escapeAndEncode(text):
+  369:     m = _controlCharPat.search(text)
+  369:     if m is not None:
+   29:         raise ValueError("strings can't contains control characters; "
+                                "use plistlib.Data instead")
+  340:     text = text.replace("\r\n", "\n")       # convert DOS line endings
+  340:     text = text.replace("\r", "\n")         # convert Mac line endings
+  340:     text = text.replace("&", "&amp;")       # escape '&'
+  340:     text = text.replace("<", "&lt;")        # escape '<'
+  340:     text = text.replace(">", "&gt;")        # escape '>'
+  340:     return text.encode("utf-8")             # encode as UTF-8
+       
+       
+       PLISTHEADER = """\
+       <?xml version="1.0" encoding="UTF-8"?>
+       <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    1: """
+       
+    2: class PlistWriter(DumbXMLWriter):
+       
+    1:     def __init__(self, file, indentLevel=0, indent="\t", writeHeader=1):
+  139:         if writeHeader:
+  139:             file.write(PLISTHEADER)
+  139:         DumbXMLWriter.__init__(self, file, indentLevel, indent)
+       
+    1:     def writeValue(self, value):
+  351:         if isinstance(value, (str, unicode)):
+  172:             self.simpleElement("string", value)
+  179:         elif isinstance(value, bool):
+                   # must switch for bool before int, as bool is a
+                   # subclass of int...
+   12:             if value:
+    6:                 self.simpleElement("true")
+                   else:
+    6:                 self.simpleElement("false")
+  167:         elif isinstance(value, (int, long)):
+   51:             self.simpleElement("integer", "%d" % value)
+  116:         elif isinstance(value, float):
+   18:             self.simpleElement("real", repr(value))
+   98:         elif isinstance(value, dict):
+   32:             self.writeDict(value)
+   66:         elif isinstance(value, Data):
+   21:             self.writeData(value)
+   45:         elif isinstance(value, datetime.datetime):
+    6:             self.simpleElement("date", _dateToString(value))
+   39:         elif isinstance(value, (tuple, list)):
+   39:             self.writeArray(value)
+               else:
+>>>>>>             raise TypeError("unsuported type: %s" % type(value))
+       
+    1:     def writeData(self, data):
+   21:         self.beginElement("data")
+   21:         self.indentLevel -= 1
+   21:         maxlinelength = max(16, 76 - len(self.indent.replace("\t", " " * 8) *
+   21:                                  self.indentLevel))
+  117:         for line in data.asBase64(maxlinelength).split("\n"):
+   96:             if line:
+   75:                 self.writeln(line)
+   21:         self.indentLevel += 1
+   21:         self.endElement("data")
+       
+    1:     def writeDict(self, d):
+   32:         self.beginElement("dict")
+   32:         items = d.items()
+   32:         items.sort()
+  154:         for key, value in items:
+  122:             if not isinstance(key, (str, unicode)):
+>>>>>>                 raise TypeError("keys must be strings")
+  122:             self.simpleElement("key", key)
+  122:             self.writeValue(value)
+   32:         self.endElement("dict")
+       
+    1:     def writeArray(self, array):
+   39:         self.beginElement("array")
+  129:         for value in array:
+   90:             self.writeValue(value)
+   39:         self.endElement("array")
+       
+       
+    2: class _InternalDict(dict):
+       
+           # This class is needed while Dict is scheduled for deprecation:
+           # we only need to warn when a *user* instantiates Dict or when
+           # the "attribute notation for dict keys" is used.
+       
+    1:     def __getattr__(self, attr):
+>>>>>>         try:
+>>>>>>             value = self[attr]
+>>>>>>         except KeyError:
+>>>>>>             raise AttributeError, attr
+>>>>>>         from warnings import warn
+>>>>>>         warn("Attribute access from plist dicts is deprecated, use d[key] "
+>>>>>>              "notation instead", PendingDeprecationWarning, 2)
+>>>>>>         return value
+       
+    1:     def __setattr__(self, attr, value):
+>>>>>>         from warnings import warn
+>>>>>>         warn("Attribute access from plist dicts is deprecated, use d[key] "
+>>>>>>              "notation instead", PendingDeprecationWarning, 2)
+>>>>>>         self[attr] = value
+       
+    1:     def __delattr__(self, attr):
+>>>>>>         try:
+>>>>>>             del self[attr]
+>>>>>>         except KeyError:
+>>>>>>             raise AttributeError, attr
+>>>>>>         from warnings import warn
+>>>>>>         warn("Attribute access from plist dicts is deprecated, use d[key] "
+>>>>>>              "notation instead", PendingDeprecationWarning, 2)
+       
+    2: class Dict(_InternalDict):
+       
+    1:     def __init__(self, **kwargs):
+>>>>>>         from warnings import warn
+>>>>>>         warn("The plistlib.Dict class is deprecated, use builtin dict instead",
+>>>>>>              PendingDeprecationWarning, 2)
+>>>>>>         super(Dict, self).__init__(**kwargs)
+       
+       
+    2: class Plist(_InternalDict):
+       
+           """This class has been deprecated. Use readPlist() and writePlist()
+           functions instead, together with regular dict objects.
+    1:     """
+       
+    1:     def __init__(self, **kwargs):
+>>>>>>         from warnings import warn
+>>>>>>         warn("The Plist class is deprecated, use the readPlist() and "
+>>>>>>              "writePlist() functions instead", PendingDeprecationWarning, 2)
+>>>>>>         super(Plist, self).__init__(**kwargs)
+       
+    1:     def fromFile(cls, pathOrFile):
+               """Deprecated. Use the readPlist() function instead."""
+>>>>>>         rootObject = readPlist(pathOrFile)
+>>>>>>         plist = cls()
+>>>>>>         plist.update(rootObject)
+>>>>>>         return plist
+    1:     fromFile = classmethod(fromFile)
+       
+    1:     def write(self, pathOrFile):
+               """Deprecated. Use the writePlist() function instead."""
+>>>>>>         writePlist(self, pathOrFile)
+       
+       
+    1: def _encodeBase64(s, maxlinelength=76):
+           # copied from base64.encodestring(), with added maxlinelength argument
+   21:     maxbinsize = (maxlinelength//4)*3
+   21:     pieces = []
+   96:     for i in range(0, len(s), maxbinsize):
+   75:         chunk = s[i : i + maxbinsize]
+   75:         pieces.append(binascii.b2a_base64(chunk))
+   21:     return "".join(pieces)
+       
+    2: class Data:
+       
+    1:     """Wrapper for binary data."""
+       
+    1:     def __init__(self, data):
+   42:         self.data = data
+       
+    1:     def fromBase64(cls, data):
+               # base64.decodestring just calls binascii.a2b_base64;
+               # it seems overkill to use both base64 and binascii.
+   21:         return cls(binascii.a2b_base64(data))
+    1:     fromBase64 = classmethod(fromBase64)
+       
+    1:     def asBase64(self, maxlinelength=76):
+   21:         return _encodeBase64(self.data, maxlinelength)
+       
+    1:     def __cmp__(self, other):
+   18:         if isinstance(other, self.__class__):
+   18:             return cmp(self.data, other.data)
+>>>>>>         elif isinstance(other, str):
+>>>>>>             return cmp(self.data, other)
+               else:
+>>>>>>             return cmp(id(self), id(other))
+       
+    1:     def __repr__(self):
+>>>>>>         return "%s(%s)" % (self.__class__.__name__, repr(self.data))
+       
+       
+    2: class PlistParser:
+       
+    1:     def __init__(self):
+   14:         self.stack = []
+   14:         self.currentKey = None
+   14:         self.root = None
+       
+    1:     def parse(self, fileobj):
+   14:         from xml.parsers.expat import ParserCreate
+   14:         parser = ParserCreate()
+   14:         parser.StartElementHandler = self.handleBeginElement
+   14:         parser.EndElementHandler = self.handleEndElement
+   14:         parser.CharacterDataHandler = self.handleData
+   14:         parser.ParseFile(fileobj)
+   14:         return self.root
+       
+    1:     def handleBeginElement(self, element, attrs):
+  392:         self.data = []
+  392:         handler = getattr(self, "begin_" + element, None)
+  392:         if handler is not None:
+   74:             handler(attrs)
+       
+    1:     def handleEndElement(self, element):
+  392:         handler = getattr(self, "end_" + element, None)
+  392:         if handler is not None:
+  378:             handler()
+       
+    1:     def handleData(self, data):
+ 1378:         self.data.append(data)
+       
+    1:     def addObject(self, value):
+  241:         if self.currentKey is not None:
+  137:             self.stack[-1][self.currentKey] = value
+  137:             self.currentKey = None
+  104:         elif not self.stack:
+                   # this is the root object
+   14:             self.root = value
+               else:
+   90:             self.stack[-1].append(value)
+       
+    1:     def getData(self):
+  292:         data = "".join(self.data)
+  292:         try:
+  292:             data = data.encode("ascii")
+   12:         except UnicodeError:
+   12:             pass
+  292:         self.data = []
+  292:         return data
+       
+           # element handlers
+       
+    1:     def begin_dict(self, attrs):
+   35:         d = _InternalDict()
+   35:         self.addObject(d)
+   35:         self.stack.append(d)
+    1:     def end_dict(self):
+   35:         self.stack.pop()
+       
+    1:     def end_key(self):
+  137:         self.currentKey = self.getData()
+       
+    1:     def begin_array(self, attrs):
+   39:         a = []
+   39:         self.addObject(a)
+   39:         self.stack.append(a)
+    1:     def end_array(self):
+   39:         self.stack.pop()
+       
+    1:     def end_true(self):
+    6:         self.addObject(True)
+    1:     def end_false(self):
+    6:         self.addObject(False)
+    1:     def end_integer(self):
+   51:         self.addObject(int(self.getData()))
+    1:     def end_real(self):
+   18:         self.addObject(float(self.getData()))
+    1:     def end_string(self):
+   59:         self.addObject(self.getData())
+    1:     def end_data(self):
+   21:         self.addObject(Data.fromBase64(self.getData()))
+    1:     def end_date(self):
+    6:         self.addObject(_dateFromString(self.getData()))

@@ -1,0 +1,406 @@
+       """Tests for 'site'.
+       
+       Tests assume the initial paths in sys.path once the interpreter has begun
+       executing have not been removed.
+       
+    1: """
+    1: import unittest
+    1: from test.test_support import run_unittest, TESTFN, EnvironmentVarGuard
+    1: from test.test_support import captured_output
+    1: import __builtin__
+    1: import errno
+    1: import os
+    1: import sys
+    1: import re
+    1: import encodings
+    1: import subprocess
+    1: import sysconfig
+    1: from copy import copy
+       
+       # Need to make sure to not import 'site' if someone specified ``-S`` at the
+       # command-line.  Detect this by just making sure 'site' has not been imported
+       # already.
+    1: if "site" in sys.modules:
+    1:     import site
+       else:
+>>>>>>     raise unittest.SkipTest("importation of site.py suppressed")
+       
+       
+    1: OLD_SYS_PATH = None
+       
+       
+    1: def setUpModule():
+           global OLD_SYS_PATH
+    1:     OLD_SYS_PATH = sys.path[:]
+       
+    1:     if site.ENABLE_USER_SITE and not os.path.isdir(site.USER_SITE):
+               # need to add user site directory for tests
+    1:         try:
+    1:             os.makedirs(site.USER_SITE)
+                   # modify sys.path: will be restored by tearDownModule()
+    1:             site.addsitedir(site.USER_SITE)
+>>>>>>         except OSError as exc:
+>>>>>>             if exc.errno in (errno.EACCES, errno.EPERM):
+>>>>>>                 raise unittest.SkipTest('unable to create user site directory (%r): %s'
+>>>>>>                                         % (site.USER_SITE, exc))
+                   else:
+>>>>>>                 raise
+       
+       
+    1: def tearDownModule():
+    1:     sys.path[:] = OLD_SYS_PATH
+       
+       
+    2: class HelperFunctionsTests(unittest.TestCase):
+           """Tests for helper functions.
+       
+           The setting of the encoding (set using sys.setdefaultencoding) used by
+           the Unicode implementation is not tested.
+       
+    1:     """
+       
+    1:     def setUp(self):
+               """Save a copy of sys.path"""
+   11:         self.sys_path = sys.path[:]
+   11:         self.old_base = site.USER_BASE
+   11:         self.old_site = site.USER_SITE
+   11:         self.old_prefixes = site.PREFIXES
+   11:         self.old_vars = copy(sysconfig._CONFIG_VARS)
+       
+    1:     def tearDown(self):
+               """Restore sys.path"""
+   11:         sys.path[:] = self.sys_path
+   11:         site.USER_BASE = self.old_base
+   11:         site.USER_SITE = self.old_site
+   11:         site.PREFIXES = self.old_prefixes
+   11:         sysconfig._CONFIG_VARS = self.old_vars
+       
+    1:     def test_makepath(self):
+               # Test makepath() have an absolute path for its first return value
+               # and a case-normalized version of the absolute path for its
+               # second value.
+    1:         path_parts = ("Beginning", "End")
+    1:         original_dir = os.path.join(*path_parts)
+    1:         abs_dir, norm_dir = site.makepath(*path_parts)
+    1:         self.assertEqual(os.path.abspath(original_dir), abs_dir)
+    1:         if original_dir == os.path.normcase(original_dir):
+    1:             self.assertEqual(abs_dir, norm_dir)
+               else:
+>>>>>>             self.assertEqual(os.path.normcase(abs_dir), norm_dir)
+       
+    1:     def test_init_pathinfo(self):
+    1:         dir_set = site._init_pathinfo()
+   11:         for entry in [site.makepath(path)[1] for path in sys.path
+   18:                         if path and os.path.isdir(path)]:
+    8:             self.assertIn(entry, dir_set,
+    8:                           "%s from sys.path not found in set returned "
+    8:                           "by _init_pathinfo(): %s" % (entry, dir_set))
+       
+    1:     def pth_file_tests(self, pth_file):
+               """Contain common code for testing results of reading a .pth file"""
+    2:         self.assertIn(pth_file.imported, sys.modules,
+    2:                       "%s not in sys.modules" % pth_file.imported)
+    2:         self.assertIn(site.makepath(pth_file.good_dir_path)[0], sys.path)
+    2:         self.assertFalse(os.path.exists(pth_file.bad_dir_path))
+       
+    1:     def test_addpackage(self):
+               # Make sure addpackage() imports if the line starts with 'import',
+               # adds directories to sys.path for any line in the file that is not a
+               # comment or import that is a valid directory name for where the .pth
+               # file resides; invalid directories are not added
+    1:         pth_file = PthFile()
+    1:         pth_file.cleanup(prep=True)  # to make sure that nothing is
+                                             # pre-existing that shouldn't be
+    1:         try:
+    1:             pth_file.create()
+    1:             site.addpackage(pth_file.base_dir, pth_file.filename, set())
+    1:             self.pth_file_tests(pth_file)
+               finally:
+    1:             pth_file.cleanup()
+       
+    1:     def make_pth(self, contents, pth_dir='.', pth_name=TESTFN):
+               # Create a .pth file and return its (abspath, basename).
+    3:         pth_dir = os.path.abspath(pth_dir)
+    3:         pth_basename = pth_name + '.pth'
+    3:         pth_fn = os.path.join(pth_dir, pth_basename)
+    3:         pth_file = open(pth_fn, 'w')
+    6:         self.addCleanup(lambda: os.remove(pth_fn))
+    3:         pth_file.write(contents)
+    3:         pth_file.close()
+    3:         return pth_dir, pth_basename
+       
+    1:     def test_addpackage_import_bad_syntax(self):
+               # Issue 10642
+    1:         pth_dir, pth_fn = self.make_pth("import bad)syntax\n")
+    1:         with captured_output("stderr") as err_out:
+    1:             site.addpackage(pth_dir, pth_fn, set())
+    1:         self.assertRegexpMatches(err_out.getvalue(), "line 1")
+    1:         self.assertRegexpMatches(err_out.getvalue(),
+    1:             re.escape(os.path.join(pth_dir, pth_fn)))
+               # XXX: the previous two should be independent checks so that the
+               # order doesn't matter.  The next three could be a single check
+               # but my regex foo isn't good enough to write it.
+    1:         self.assertRegexpMatches(err_out.getvalue(), 'Traceback')
+    1:         self.assertRegexpMatches(err_out.getvalue(), r'import bad\)syntax')
+    1:         self.assertRegexpMatches(err_out.getvalue(), 'SyntaxError')
+       
+    1:     def test_addpackage_import_bad_exec(self):
+               # Issue 10642
+    1:         pth_dir, pth_fn = self.make_pth("randompath\nimport nosuchmodule\n")
+    1:         with captured_output("stderr") as err_out:
+    1:             site.addpackage(pth_dir, pth_fn, set())
+    1:         self.assertRegexpMatches(err_out.getvalue(), "line 2")
+    1:         self.assertRegexpMatches(err_out.getvalue(),
+    1:             re.escape(os.path.join(pth_dir, pth_fn)))
+               # XXX: ditto previous XXX comment.
+    1:         self.assertRegexpMatches(err_out.getvalue(), 'Traceback')
+    1:         self.assertRegexpMatches(err_out.getvalue(), 'ImportError')
+       
+    1:     @unittest.skipIf(sys.platform == "win32", "Windows does not raise an "
+                             "error for file paths containing null characters")
+           def test_addpackage_import_bad_pth_file(self):
+               # Issue 5258
+    1:         pth_dir, pth_fn = self.make_pth("abc\x00def\n")
+    1:         with captured_output("stderr") as err_out:
+    1:             site.addpackage(pth_dir, pth_fn, set())
+    1:         self.assertRegexpMatches(err_out.getvalue(), "line 1")
+    1:         self.assertRegexpMatches(err_out.getvalue(),
+    1:             re.escape(os.path.join(pth_dir, pth_fn)))
+               # XXX: ditto previous XXX comment.
+    1:         self.assertRegexpMatches(err_out.getvalue(), 'Traceback')
+    1:         self.assertRegexpMatches(err_out.getvalue(), 'TypeError')
+       
+    1:     def test_addsitedir(self):
+               # Same tests for test_addpackage since addsitedir() essentially just
+               # calls addpackage() for every .pth file in the directory
+    1:         pth_file = PthFile()
+    1:         pth_file.cleanup(prep=True) # Make sure that nothing is pre-existing
+                                           # that is tested for
+    1:         try:
+    1:             pth_file.create()
+    1:             site.addsitedir(pth_file.base_dir, set())
+    1:             self.pth_file_tests(pth_file)
+               finally:
+    1:             pth_file.cleanup()
+       
+    1:     @unittest.skipUnless(site.ENABLE_USER_SITE, "requires access to PEP 370 "
+                                 "user-site (site.ENABLE_USER_SITE)")
+           def test_s_option(self):
+    1:         usersite = site.USER_SITE
+    1:         self.assertIn(usersite, sys.path)
+       
+    1:         env = os.environ.copy()
+    1:         rc = subprocess.call([sys.executable, '-c',
+    1:             'import sys; sys.exit(%r in sys.path)' % usersite],
+    1:             env=env)
+    1:         self.assertEqual(rc, 1, "%r is not in sys.path (sys.exit returned %r)"
+    1:                 % (usersite, rc))
+       
+    1:         env = os.environ.copy()
+    1:         rc = subprocess.call([sys.executable, '-s', '-c',
+    1:             'import sys; sys.exit(%r in sys.path)' % usersite],
+    1:             env=env)
+    1:         self.assertEqual(rc, 0)
+       
+    1:         env = os.environ.copy()
+    1:         env["PYTHONNOUSERSITE"] = "1"
+    1:         rc = subprocess.call([sys.executable, '-c',
+    1:             'import sys; sys.exit(%r in sys.path)' % usersite],
+    1:             env=env)
+    1:         self.assertEqual(rc, 0)
+       
+    1:         env = os.environ.copy()
+    1:         env["PYTHONUSERBASE"] = "/tmp"
+    1:         rc = subprocess.call([sys.executable, '-c',
+    1:             'import sys, site; sys.exit(site.USER_BASE.startswith("/tmp"))'],
+    1:             env=env)
+    1:         self.assertEqual(rc, 1)
+       
+    1:     def test_getuserbase(self):
+    1:         site.USER_BASE = None
+    1:         user_base = site.getuserbase()
+       
+               # the call sets site.USER_BASE
+    1:         self.assertEqual(site.USER_BASE, user_base)
+       
+               # let's set PYTHONUSERBASE and see if it uses it
+    1:         site.USER_BASE = None
+    1:         import sysconfig
+    1:         sysconfig._CONFIG_VARS = None
+       
+    1:         with EnvironmentVarGuard() as environ:
+    1:             environ['PYTHONUSERBASE'] = 'xoxo'
+    1:             self.assertTrue(site.getuserbase().startswith('xoxo'),
+    1:                             site.getuserbase())
+       
+    1:     def test_getusersitepackages(self):
+    1:         site.USER_SITE = None
+    1:         site.USER_BASE = None
+    1:         user_site = site.getusersitepackages()
+       
+               # the call sets USER_BASE *and* USER_SITE
+    1:         self.assertEqual(site.USER_SITE, user_site)
+    1:         self.assertTrue(user_site.startswith(site.USER_BASE), user_site)
+       
+    1:     def test_getsitepackages(self):
+    1:         site.PREFIXES = ['xoxo']
+    1:         dirs = site.getsitepackages()
+       
+    1:         if sys.platform in ('os2emx', 'riscos'):
+>>>>>>             self.assertEqual(len(dirs), 1)
+>>>>>>             wanted = os.path.join('xoxo', 'Lib', 'site-packages')
+>>>>>>             self.assertEqual(dirs[0], wanted)
+    1:         elif os.sep == '/':
+                   # OS X, Linux, FreeBSD, etc
+    1:             self.assertEqual(len(dirs), 2)
+    1:             wanted = os.path.join('xoxo', 'lib', 'python' + sys.version[:3],
+    1:                                   'site-packages')
+    1:             self.assertEqual(dirs[0], wanted)
+    1:             wanted = os.path.join('xoxo', 'lib', 'site-python')
+    1:             self.assertEqual(dirs[1], wanted)
+               else:
+                   # other platforms
+>>>>>>             self.assertEqual(len(dirs), 2)
+>>>>>>             self.assertEqual(dirs[0], 'xoxo')
+>>>>>>             wanted = os.path.join('xoxo', 'lib', 'site-packages')
+>>>>>>             self.assertEqual(dirs[1], wanted)
+       
+    2: class PthFile(object):
+    1:     """Helper class for handling testing of .pth files"""
+       
+    1:     def __init__(self, filename_base=TESTFN, imported="time",
+    1:                     good_dirname="__testdir__", bad_dirname="__bad"):
+               """Initialize instance variables"""
+    2:         self.filename = filename_base + ".pth"
+    2:         self.base_dir = os.path.abspath('')
+    2:         self.file_path = os.path.join(self.base_dir, self.filename)
+    2:         self.imported = imported
+    2:         self.good_dirname = good_dirname
+    2:         self.bad_dirname = bad_dirname
+    2:         self.good_dir_path = os.path.join(self.base_dir, self.good_dirname)
+    2:         self.bad_dir_path = os.path.join(self.base_dir, self.bad_dirname)
+       
+    1:     def create(self):
+               """Create a .pth file with a comment, blank lines, an ``import
+               <self.imported>``, a line with self.good_dirname, and a line with
+               self.bad_dirname.
+       
+               Creation of the directory for self.good_dir_path (based off of
+               self.good_dirname) is also performed.
+       
+               Make sure to call self.cleanup() to undo anything done by this method.
+       
+               """
+    2:         FILE = open(self.file_path, 'w')
+    2:         try:
+    2:             print>>FILE, "#import @bad module name"
+    2:             print>>FILE, "\n"
+    2:             print>>FILE, "import %s" % self.imported
+    2:             print>>FILE, self.good_dirname
+    2:             print>>FILE, self.bad_dirname
+               finally:
+    2:             FILE.close()
+    2:         os.mkdir(self.good_dir_path)
+       
+    1:     def cleanup(self, prep=False):
+               """Make sure that the .pth file is deleted, self.imported is not in
+               sys.modules, and that both self.good_dirname and self.bad_dirname are
+               not existing directories."""
+    4:         if os.path.exists(self.file_path):
+    2:             os.remove(self.file_path)
+    4:         if prep:
+    2:             self.imported_module = sys.modules.get(self.imported)
+    2:             if self.imported_module:
+    2:                 del sys.modules[self.imported]
+               else:
+    2:             if self.imported_module:
+    2:                 sys.modules[self.imported] = self.imported_module
+    4:         if os.path.exists(self.good_dir_path):
+    2:             os.rmdir(self.good_dir_path)
+    4:         if os.path.exists(self.bad_dir_path):
+>>>>>>             os.rmdir(self.bad_dir_path)
+       
+    2: class ImportSideEffectTests(unittest.TestCase):
+    1:     """Test side-effects from importing 'site'."""
+       
+    1:     def setUp(self):
+               """Make a copy of sys.path"""
+    8:         self.sys_path = sys.path[:]
+       
+    1:     def tearDown(self):
+               """Restore sys.path"""
+    8:         sys.path[:] = self.sys_path
+       
+    1:     def test_abs__file__(self):
+               # Make sure all imported modules have their __file__ attribute
+               # as an absolute path.
+               # Handled by abs__file__()
+    1:         site.abs__file__()
+    4:         for module in (sys, os, __builtin__):
+    3:             try:
+    3:                 self.assertTrue(os.path.isabs(module.__file__), repr(module))
+    2:             except AttributeError:
+    2:                 continue
+               # We could try everything in sys.modules; however, when regrtest.py
+               # runs something like test_frozen before test_site, then we will
+               # be testing things loaded *after* test_site did path normalization
+       
+    1:     def test_no_duplicate_paths(self):
+               # No duplicate paths should exist in sys.path
+               # Handled by removeduppaths()
+    1:         site.removeduppaths()
+    1:         seen_paths = set()
+   11:         for path in sys.path:
+   10:             self.assertNotIn(path, seen_paths)
+   10:             seen_paths.add(path)
+       
+    1:     @unittest.skip('test not implemented')
+           def test_add_build_dir(self):
+               # Test that the build directory's Modules directory is used when it
+               # should be.
+               # XXX: implement
+>>>>>>         pass
+       
+    1:     def test_setting_quit(self):
+               # 'quit' and 'exit' should be injected into __builtin__
+    1:         self.assertTrue(hasattr(__builtin__, "quit"))
+    1:         self.assertTrue(hasattr(__builtin__, "exit"))
+       
+    1:     def test_setting_copyright(self):
+               # 'copyright' and 'credits' should be in __builtin__
+    1:         self.assertTrue(hasattr(__builtin__, "copyright"))
+    1:         self.assertTrue(hasattr(__builtin__, "credits"))
+       
+    1:     def test_setting_help(self):
+               # 'help' should be set in __builtin__
+    1:         self.assertTrue(hasattr(__builtin__, "help"))
+       
+    1:     def test_aliasing_mbcs(self):
+    1:         if sys.platform == "win32":
+>>>>>>             import locale
+>>>>>>             if locale.getdefaultlocale()[1].startswith('cp'):
+>>>>>>                 for value in encodings.aliases.aliases.itervalues():
+>>>>>>                     if value == "mbcs":
+>>>>>>                         break
+                       else:
+>>>>>>                     self.fail("did not alias mbcs")
+       
+    1:     def test_setdefaultencoding_removed(self):
+               # Make sure sys.setdefaultencoding is gone
+    1:         self.assertTrue(not hasattr(sys, "setdefaultencoding"))
+       
+    1:     def test_sitecustomize_executed(self):
+               # If sitecustomize is available, it should have been imported.
+    1:         if "sitecustomize" not in sys.modules:
+    1:             try:
+    1:                 import sitecustomize
+    1:             except ImportError:
+    1:                 pass
+                   else:
+>>>>>>                 self.fail("sitecustomize not imported automatically")
+       
+    1: def test_main():
+    1:     run_unittest(HelperFunctionsTests, ImportSideEffectTests)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

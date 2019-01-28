@@ -1,0 +1,672 @@
+       """distutils.command.install
+       
+    1: Implements the Distutils 'install' command."""
+       
+    1: from distutils import log
+       
+       # This module should be kept compatible with Python 2.1.
+       
+    1: __revision__ = "$Id$"
+       
+    1: import sys, os, string
+    1: from types import *
+    1: from distutils.core import Command
+    1: from distutils.debug import DEBUG
+    1: from distutils.sysconfig import get_config_vars
+    1: from distutils.errors import DistutilsPlatformError
+    1: from distutils.file_util import write_file
+    1: from distutils.util import convert_path, subst_vars, change_root
+    1: from distutils.util import get_platform
+    1: from distutils.errors import DistutilsOptionError
+    1: from site import USER_BASE
+    1: from site import USER_SITE
+       
+       
+    1: if sys.version < "2.2":
+>>>>>>     WINDOWS_SCHEME = {
+>>>>>>         'purelib': '$base',
+>>>>>>         'platlib': '$base',
+>>>>>>         'headers': '$base/Include/$dist_name',
+>>>>>>         'scripts': '$base/Scripts',
+>>>>>>         'data'   : '$base',
+           }
+       else:
+    1:     WINDOWS_SCHEME = {
+    1:         'purelib': '$base/Lib/site-packages',
+    1:         'platlib': '$base/Lib/site-packages',
+    1:         'headers': '$base/Include/$dist_name',
+    1:         'scripts': '$base/Scripts',
+    1:         'data'   : '$base',
+           }
+       
+    1: INSTALL_SCHEMES = {
+    1:     'unix_prefix': {
+    1:         'purelib': '$base/lib/python$py_version_short/site-packages',
+    1:         'platlib': '$platbase/lib/python$py_version_short/site-packages',
+    1:         'headers': '$base/include/python$py_version_short/$dist_name',
+    1:         'scripts': '$base/bin',
+    1:         'data'   : '$base',
+               },
+    1:     'unix_home': {
+    1:         'purelib': '$base/lib/python',
+    1:         'platlib': '$base/lib/python',
+    1:         'headers': '$base/include/python/$dist_name',
+    1:         'scripts': '$base/bin',
+    1:         'data'   : '$base',
+               },
+    1:     'unix_user': {
+    1:         'purelib': '$usersite',
+    1:         'platlib': '$usersite',
+    1:         'headers': '$userbase/include/python$py_version_short/$dist_name',
+    1:         'scripts': '$userbase/bin',
+    1:         'data'   : '$userbase',
+               },
+    1:     'nt': WINDOWS_SCHEME,
+    1:     'nt_user': {
+    1:         'purelib': '$usersite',
+    1:         'platlib': '$usersite',
+    1:         'headers': '$userbase/Python$py_version_nodot/Include/$dist_name',
+    1:         'scripts': '$userbase/Scripts',
+    1:         'data'   : '$userbase',
+               },
+    1:     'os2': {
+    1:         'purelib': '$base/Lib/site-packages',
+    1:         'platlib': '$base/Lib/site-packages',
+    1:         'headers': '$base/Include/$dist_name',
+    1:         'scripts': '$base/Scripts',
+    1:         'data'   : '$base',
+               },
+    1:     'os2_home': {
+    1:         'purelib': '$usersite',
+    1:         'platlib': '$usersite',
+    1:         'headers': '$userbase/include/python$py_version_short/$dist_name',
+    1:         'scripts': '$userbase/bin',
+    1:         'data'   : '$userbase',
+               },
+           }
+       
+       # The keys to an installation scheme; if any new types of files are to be
+       # installed, be sure to add an entry to every installation scheme above,
+       # and to SCHEME_KEYS here.
+    1: SCHEME_KEYS = ('purelib', 'platlib', 'headers', 'scripts', 'data')
+       
+       
+    2: class install (Command):
+       
+    1:     description = "install everything from build directory"
+       
+           user_options = [
+               # Select installation scheme and set base director(y|ies)
+               ('prefix=', None,
+    1:          "installation prefix"),
+               ('exec-prefix=', None,
+    1:          "(Unix only) prefix for platform-specific files"),
+               ('home=', None,
+    1:          "(Unix only) home directory to install under"),
+    1:         ('user', None,
+    1:          "install in user site-package '%s'" % USER_SITE),
+       
+               # Or, just set the base director(y|ies)
+               ('install-base=', None,
+    1:          "base installation directory (instead of --prefix or --home)"),
+    1:         ('install-platbase=', None,
+    1:          "base installation directory for platform-specific files " +
+    1:          "(instead of --exec-prefix or --home)"),
+               ('root=', None,
+    1:          "install everything relative to this alternate root directory"),
+       
+               # Or, explicitly set the installation scheme
+               ('install-purelib=', None,
+    1:          "installation directory for pure Python module distributions"),
+               ('install-platlib=', None,
+    1:          "installation directory for non-pure module distributions"),
+    1:         ('install-lib=', None,
+    1:          "installation directory for all module distributions " +
+    1:          "(overrides --install-purelib and --install-platlib)"),
+       
+               ('install-headers=', None,
+    1:          "installation directory for C/C++ headers"),
+               ('install-scripts=', None,
+    1:          "installation directory for Python scripts"),
+               ('install-data=', None,
+    1:          "installation directory for data files"),
+       
+               # Byte-compilation options -- see install_lib.py for details, as
+               # these are duplicated from there (but only install_lib does
+               # anything with them).
+    1:         ('compile', 'c', "compile .py to .pyc [default]"),
+    1:         ('no-compile', None, "don't compile .py files"),
+               ('optimize=', 'O',
+    1:          "also compile with optimization: -O1 for \"python -O\", "
+                "-O2 for \"python -OO\", and -O0 to disable [default: -O0]"),
+       
+               # Miscellaneous control options
+               ('force', 'f',
+    1:          "force installation (overwrite any existing files)"),
+               ('skip-build', None,
+    1:          "skip rebuilding everything (for testing/debugging)"),
+       
+               # Where to install documentation (eventually!)
+               #('doc-format=', None, "format of documentation to generate"),
+               #('install-man=', None, "directory for Unix man pages"),
+               #('install-html=', None, "directory for HTML documentation"),
+               #('install-info=', None, "directory for GNU info files"),
+       
+               ('record=', None,
+    1:          "filename in which to record list of installed files"),
+               ]
+       
+    1:     boolean_options = ['compile', 'force', 'skip-build', 'user']
+    1:     negative_opt = {'no-compile' : 'compile'}
+       
+       
+    1:     def initialize_options (self):
+       
+               # High-level options: these select both an installation base
+               # and scheme.
+   12:         self.prefix = None
+   12:         self.exec_prefix = None
+   12:         self.home = None
+   12:         self.user = 0
+       
+               # These select only the installation base; it's up to the user to
+               # specify the installation scheme (currently, that means supplying
+               # the --install-{platlib,purelib,scripts,data} options).
+   12:         self.install_base = None
+   12:         self.install_platbase = None
+   12:         self.root = None
+       
+               # These options are the actual installation directories; if not
+               # supplied by the user, they are filled in using the installation
+               # scheme implied by prefix/exec-prefix/home and the contents of
+               # that installation scheme.
+   12:         self.install_purelib = None     # for pure module distributions
+   12:         self.install_platlib = None     # non-pure (dists w/ extensions)
+   12:         self.install_headers = None     # for C/C++ headers
+   12:         self.install_lib = None         # set to either purelib or platlib
+   12:         self.install_scripts = None
+   12:         self.install_data = None
+   12:         self.install_userbase = USER_BASE
+   12:         self.install_usersite = USER_SITE
+       
+   12:         self.compile = None
+   12:         self.optimize = None
+       
+               # These two are for putting non-packagized distributions into their
+               # own directory and creating a .pth file if it makes sense.
+               # 'extra_path' comes from the setup file; 'install_path_file' can
+               # be turned off if it makes no sense to install a .pth file.  (But
+               # better to install it uselessly than to guess wrong and not
+               # install it when it's necessary and would be used!)  Currently,
+               # 'install_path_file' is always true unless some outsider meddles
+               # with it.
+   12:         self.extra_path = None
+   12:         self.install_path_file = 1
+       
+               # 'force' forces installation, even if target files are not
+               # out-of-date.  'skip_build' skips running the "build" command,
+               # handy if you know it's not necessary.  'warn_dir' (which is *not*
+               # a user option, it's just there so the bdist_* commands can turn
+               # it off) determines whether we warn about installing to a
+               # directory not in sys.path.
+   12:         self.force = 0
+   12:         self.skip_build = 0
+   12:         self.warn_dir = 1
+       
+               # These are only here as a conduit from the 'build' command to the
+               # 'install_*' commands that do the real work.  ('build_base' isn't
+               # actually used anywhere, but it might be useful in future.)  They
+               # are not user options, because if the user told the install
+               # command where the build directory is, that wouldn't affect the
+               # build command.
+   12:         self.build_base = None
+   12:         self.build_lib = None
+       
+               # Not defined yet because we don't know anything about
+               # documentation yet.
+               #self.install_man = None
+               #self.install_html = None
+               #self.install_info = None
+       
+   12:         self.record = None
+       
+       
+           # -- Option finalizing methods -------------------------------------
+           # (This is rather more involved than for most commands,
+           # because this is where the policy for installing third-
+           # party Python modules on various platforms given a wide
+           # array of user input is decided.  Yes, it's quite complex!)
+       
+    1:     def finalize_options (self):
+       
+               # This method (and its pliant slaves, like 'finalize_unix()',
+               # 'finalize_other()', and 'select_scheme()') is where the default
+               # installation directories for modules, extension modules, and
+               # anything else we care to install from a Python module
+               # distribution.  Thus, this code makes a pretty important policy
+               # statement about how third-party stuff is added to a Python
+               # installation!  Note that the actual work of installation is done
+               # by the relatively simple 'install_*' commands; they just take
+               # their orders from the installation directory options determined
+               # here.
+       
+               # Check for errors/inconsistencies in the options; first, stuff
+               # that's wrong on any platform.
+       
+   13:         if ((self.prefix or self.exec_prefix or self.home) and
+    4:             (self.install_base or self.install_platbase)):
+    1:             raise DistutilsOptionError, \
+    1:                   ("must supply either prefix/exec-prefix/home or " +
+    1:                    "install-base/install-platbase -- not both")
+       
+   12:         if self.home and (self.prefix or self.exec_prefix):
+    1:             raise DistutilsOptionError, \
+    1:                   "must supply either home or prefix/exec-prefix -- not both"
+       
+   11:         if self.user and (self.prefix or self.exec_prefix or self.home or
+    1:                 self.install_base or self.install_platbase):
+    1:             raise DistutilsOptionError("can't combine user with prefix, "
+                                              "exec_prefix/home, or install_(plat)base")
+       
+               # Next, stuff that's wrong (or dubious) only on certain platforms.
+   10:         if os.name != "posix":
+>>>>>>             if self.exec_prefix:
+>>>>>>                 self.warn("exec-prefix option ignored on this platform")
+>>>>>>                 self.exec_prefix = None
+       
+               # Now the interesting logic -- so interesting that we farm it out
+               # to other methods.  The goal of these methods is to set the final
+               # values for the install_{lib,scripts,data,...}  options, using as
+               # input a heady brew of prefix, exec_prefix, home, install_base,
+               # install_platbase, user-supplied versions of
+               # install_{purelib,platlib,lib,scripts,data,...}, and the
+               # INSTALL_SCHEME dictionary above.  Phew!
+       
+   10:         self.dump_dirs("pre-finalize_{unix,other}")
+       
+   10:         if os.name == 'posix':
+   10:             self.finalize_unix()
+               else:
+>>>>>>             self.finalize_other()
+       
+   10:         self.dump_dirs("post-finalize_{unix,other}()")
+       
+               # Expand configuration variables, tilde, etc. in self.install_base
+               # and self.install_platbase -- that way, we can use $base or
+               # $platbase in the other installation directories and not worry
+               # about needing recursive variable expansion (shudder).
+       
+   10:         py_version = (string.split(sys.version))[0]
+   10:         (prefix, exec_prefix) = get_config_vars('prefix', 'exec_prefix')
+   10:         self.config_vars = {'dist_name': self.distribution.get_name(),
+   10:                             'dist_version': self.distribution.get_version(),
+   10:                             'dist_fullname': self.distribution.get_fullname(),
+   10:                             'py_version': py_version,
+   10:                             'py_version_short': py_version[0:3],
+   10:                             'py_version_nodot': py_version[0] + py_version[2],
+   10:                             'sys_prefix': prefix,
+   10:                             'prefix': prefix,
+   10:                             'sys_exec_prefix': exec_prefix,
+   10:                             'exec_prefix': exec_prefix,
+   10:                             'userbase': self.install_userbase,
+   10:                             'usersite': self.install_usersite,
+                                  }
+   10:         self.expand_basedirs()
+       
+   10:         self.dump_dirs("post-expand_basedirs()")
+       
+               # Now define config vars for the base directories so we can expand
+               # everything else.
+   10:         self.config_vars['base'] = self.install_base
+   10:         self.config_vars['platbase'] = self.install_platbase
+       
+   10:         if DEBUG:
+    1:             from pprint import pprint
+    1:             print "config vars:"
+    1:             pprint(self.config_vars)
+       
+               # Expand "~" and configuration variables in the installation
+               # directories.
+   10:         self.expand_dirs()
+       
+   10:         self.dump_dirs("post-expand_dirs()")
+       
+               # Create directories in the home dir:
+   10:         if self.user:
+    1:             self.create_home_path()
+       
+               # Pick the actual directory to install all modules to: either
+               # install_purelib or install_platlib, depending on whether this
+               # module distribution is pure or not.  Of course, if the user
+               # already specified install_lib, use their selection.
+   10:         if self.install_lib is None:
+   10:             if self.distribution.ext_modules: # has extensions: non-pure
+    1:                 self.install_lib = self.install_platlib
+                   else:
+    9:                 self.install_lib = self.install_purelib
+       
+       
+               # Convert directories from Unix /-separated syntax to the local
+               # convention.
+   10:         self.convert_paths('lib', 'purelib', 'platlib',
+   10:                            'scripts', 'data', 'headers',
+   10:                            'userbase', 'usersite')
+       
+               # Well, we're not actually fully completely finalized yet: we still
+               # have to deal with 'extra_path', which is the hack for allowing
+               # non-packagized module distributions (hello, Numerical Python!) to
+               # get their own directories.
+   10:         self.handle_extra_path()
+   10:         self.install_libbase = self.install_lib # needed for .pth file
+   10:         self.install_lib = os.path.join(self.install_lib, self.extra_dirs)
+       
+               # If a new root directory was supplied, make all the installation
+               # dirs relative to it.
+   10:         if self.root is not None:
+    4:             self.change_roots('libbase', 'lib', 'purelib', 'platlib',
+    4:                               'scripts', 'data', 'headers')
+       
+   10:         self.dump_dirs("after prepending root")
+       
+               # Find out the build directories, ie. where to install from.
+   10:         self.set_undefined_options('build',
+   10:                                    ('build_base', 'build_base'),
+   10:                                    ('build_lib', 'build_lib'))
+       
+               # Punt on doc directories for now -- after all, we're punting on
+               # documentation completely!
+       
+           # finalize_options ()
+       
+       
+    1:     def dump_dirs (self, msg):
+   50:         if DEBUG:
+    5:             from distutils.fancy_getopt import longopt_xlate
+    5:             print msg + ":"
+  100:             for opt in self.user_options:
+   95:                 opt_name = opt[0]
+   95:                 if opt_name[-1] == "=":
+   70:                     opt_name = opt_name[0:-1]
+   95:                 if opt_name in self.negative_opt:
+    5:                     opt_name = string.translate(self.negative_opt[opt_name],
+    5:                                                 longopt_xlate)
+    5:                     val = not getattr(self, opt_name)
+                       else:
+   90:                     opt_name = string.translate(opt_name, longopt_xlate)
+   90:                     val = getattr(self, opt_name)
+   95:                 print "  %s: %s" % (opt_name, val)
+       
+       
+    1:     def finalize_unix (self):
+       
+   10:         if self.install_base is not None or self.install_platbase is not None:
+>>>>>>             if ((self.install_lib is None and
+>>>>>>                  self.install_purelib is None and
+>>>>>>                  self.install_platlib is None) or
+>>>>>>                 self.install_headers is None or
+>>>>>>                 self.install_scripts is None or
+>>>>>>                 self.install_data is None):
+>>>>>>                 raise DistutilsOptionError, \
+>>>>>>                       ("install-base or install-platbase supplied, but "
+                             "installation scheme is incomplete")
+>>>>>>             return
+       
+   10:         if self.user:
+    1:             if self.install_userbase is None:
+>>>>>>                 raise DistutilsPlatformError(
+>>>>>>                     "User base directory is not specified")
+    1:             self.install_base = self.install_platbase = self.install_userbase
+    1:             self.select_scheme("unix_user")
+    9:         elif self.home is not None:
+    1:             self.install_base = self.install_platbase = self.home
+    1:             self.select_scheme("unix_home")
+               else:
+    8:             if self.prefix is None:
+    8:                 if self.exec_prefix is not None:
+>>>>>>                     raise DistutilsOptionError, \
+>>>>>>                           "must not supply exec-prefix without prefix"
+       
+    8:                 self.prefix = os.path.normpath(sys.prefix)
+    8:                 self.exec_prefix = os.path.normpath(sys.exec_prefix)
+       
+                   else:
+>>>>>>                 if self.exec_prefix is None:
+>>>>>>                     self.exec_prefix = self.prefix
+       
+    8:             self.install_base = self.prefix
+    8:             self.install_platbase = self.exec_prefix
+    8:             self.select_scheme("unix_prefix")
+       
+           # finalize_unix ()
+       
+       
+    1:     def finalize_other (self):          # Windows and Mac OS for now
+       
+>>>>>>         if self.user:
+>>>>>>             if self.install_userbase is None:
+>>>>>>                 raise DistutilsPlatformError(
+>>>>>>                     "User base directory is not specified")
+>>>>>>             self.install_base = self.install_platbase = self.install_userbase
+>>>>>>             self.select_scheme(os.name + "_user")
+>>>>>>         elif self.home is not None:
+>>>>>>             self.install_base = self.install_platbase = self.home
+>>>>>>             self.select_scheme("unix_home")
+               else:
+>>>>>>             if self.prefix is None:
+>>>>>>                 self.prefix = os.path.normpath(sys.prefix)
+       
+>>>>>>             self.install_base = self.install_platbase = self.prefix
+>>>>>>             try:
+>>>>>>                 self.select_scheme(os.name)
+>>>>>>             except KeyError:
+>>>>>>                 raise DistutilsPlatformError, \
+>>>>>>                       "I don't know how to install stuff on '%s'" % os.name
+       
+           # finalize_other ()
+       
+       
+    1:     def select_scheme (self, name):
+               # it's the caller's problem if they supply a bad name!
+   10:         scheme = INSTALL_SCHEMES[name]
+   60:         for key in SCHEME_KEYS:
+   50:             attrname = 'install_' + key
+   50:             if getattr(self, attrname) is None:
+   50:                 setattr(self, attrname, scheme[key])
+       
+       
+    1:     def _expand_attrs (self, attrs):
+  110:         for attr in attrs:
+   90:             val = getattr(self, attr)
+   90:             if val is not None:
+   74:                 if os.name == 'posix' or os.name == 'nt':
+   74:                     val = os.path.expanduser(val)
+   74:                 val = subst_vars(val, self.config_vars)
+   74:                 setattr(self, attr, val)
+       
+       
+    1:     def expand_basedirs (self):
+   10:         self._expand_attrs(['install_base',
+   10:                             'install_platbase',
+   10:                             'root'])
+       
+    1:     def expand_dirs (self):
+   10:         self._expand_attrs(['install_purelib',
+   10:                             'install_platlib',
+   10:                             'install_lib',
+   10:                             'install_headers',
+   10:                             'install_scripts',
+   10:                             'install_data',])
+       
+       
+    1:     def convert_paths (self, *names):
+   90:         for name in names:
+   80:             attr = "install_" + name
+   80:             setattr(self, attr, convert_path(getattr(self, attr)))
+       
+       
+    1:     def handle_extra_path (self):
+       
+   14:         if self.extra_path is None:
+   12:             self.extra_path = self.distribution.extra_path
+       
+   14:         if self.extra_path is not None:
+    3:             if type(self.extra_path) is StringType:
+    2:                 self.extra_path = string.split(self.extra_path, ',')
+       
+    3:             if len(self.extra_path) == 1:
+    1:                 path_file = extra_dirs = self.extra_path[0]
+    2:             elif len(self.extra_path) == 2:
+    1:                 (path_file, extra_dirs) = self.extra_path
+                   else:
+    1:                 raise DistutilsOptionError, \
+    1:                       ("'extra_path' option must be a list, tuple, or "
+                             "comma-separated string with 1 or 2 elements")
+       
+                   # convert to local form in case Unix notation used (as it
+                   # should be in setup scripts)
+    2:             extra_dirs = convert_path(extra_dirs)
+       
+               else:
+   11:             path_file = None
+   11:             extra_dirs = ''
+       
+               # XXX should we warn if path_file and not extra_dirs? (in which
+               # case the path file would be harmless but pointless)
+   13:         self.path_file = path_file
+   13:         self.extra_dirs = extra_dirs
+       
+           # handle_extra_path ()
+       
+       
+    1:     def change_roots (self, *names):
+   32:         for name in names:
+   28:             attr = "install_" + name
+   28:             setattr(self, attr, change_root(self.root, getattr(self, attr)))
+       
+    1:     def create_home_path(self):
+               """Create directories under ~
+               """
+    1:         if not self.user:
+>>>>>>             return
+    1:         home = convert_path(os.path.expanduser("~"))
+   15:         for name, path in self.config_vars.iteritems():
+   14:             if path.startswith(home) and not os.path.isdir(path):
+    2:                 self.debug_print("os.makedirs('%s', 0700)" % path)
+    2:                 os.makedirs(path, 0700)
+       
+           # -- Command execution methods -------------------------------------
+       
+    1:     def run (self):
+       
+               # Obviously have to build before we can install
+    4:         if not self.skip_build:
+    4:             self.run_command('build')
+                   # If we built for any other platform, we can't install.
+    3:             build_plat = self.distribution.get_command_obj('build').plat_name
+                   # check warn_dir - it is a clue that the 'install' is happening
+                   # internally, and not to sys.path, so we don't check the platform
+                   # matches what we are running.
+    3:             if self.warn_dir and build_plat != get_platform():
+>>>>>>                 raise DistutilsPlatformError("Can't install when "
+                                                    "cross-compiling")
+       
+               # Run all sub-commands (at least those that need to be run)
+   11:         for cmd_name in self.get_sub_commands():
+    8:             self.run_command(cmd_name)
+       
+    3:         if self.path_file:
+>>>>>>             self.create_path_file()
+       
+               # write list of installed files, if requested.
+    3:         if self.record:
+    2:             outputs = self.get_outputs()
+    2:             if self.root:               # strip any package prefix
+    2:                 root_len = len(self.root)
+   10:                 for counter in xrange(len(outputs)):
+    8:                     outputs[counter] = outputs[counter][root_len:]
+    2:             self.execute(write_file,
+    2:                          (self.record, outputs),
+    2:                          "writing list of installed files to '%s'" %
+    2:                          self.record)
+       
+    3:         sys_path = map(os.path.normpath, sys.path)
+    3:         sys_path = map(os.path.normcase, sys_path)
+    3:         install_lib = os.path.normcase(os.path.normpath(self.install_lib))
+    3:         if (self.warn_dir and
+    2:             not (self.path_file and self.install_path_file) and
+    2:             install_lib not in sys_path):
+    2:             log.debug(("modules installed to '%s', which is not in "
+                              "Python's module search path (sys.path) -- "
+                              "you'll have to change the search path yourself"),
+    2:                        self.install_lib)
+       
+           # run ()
+       
+    1:     def create_path_file (self):
+>>>>>>         filename = os.path.join(self.install_libbase,
+>>>>>>                                 self.path_file + ".pth")
+>>>>>>         if self.install_path_file:
+>>>>>>             self.execute(write_file,
+>>>>>>                          (filename, [self.extra_dirs]),
+>>>>>>                          "creating %s" % filename)
+               else:
+>>>>>>             self.warn("path file '%s' not created" % filename)
+       
+       
+           # -- Reporting methods ---------------------------------------------
+       
+    1:     def get_outputs (self):
+               # Assemble the outputs of all the sub-commands.
+    2:         outputs = []
+    8:         for cmd_name in self.get_sub_commands():
+    6:             cmd = self.get_finalized_command(cmd_name)
+                   # Add the contents of cmd.get_outputs(), ensuring
+                   # that outputs doesn't contain duplicate entries
+   14:             for filename in cmd.get_outputs():
+    8:                 if filename not in outputs:
+    8:                     outputs.append(filename)
+       
+    2:         if self.path_file and self.install_path_file:
+>>>>>>             outputs.append(os.path.join(self.install_libbase,
+>>>>>>                                         self.path_file + ".pth"))
+       
+    2:         return outputs
+       
+    1:     def get_inputs (self):
+               # XXX gee, this looks familiar ;-(
+>>>>>>         inputs = []
+>>>>>>         for cmd_name in self.get_sub_commands():
+>>>>>>             cmd = self.get_finalized_command(cmd_name)
+>>>>>>             inputs.extend(cmd.get_inputs())
+       
+>>>>>>         return inputs
+       
+       
+           # -- Predicates for sub-command list -------------------------------
+       
+    1:     def has_lib (self):
+               """Return true if the current distribution has any Python
+               modules to install."""
+    5:         return (self.distribution.has_pure_modules() or
+>>>>>>                 self.distribution.has_ext_modules())
+       
+    1:     def has_headers (self):
+    5:         return self.distribution.has_headers()
+       
+    1:     def has_scripts (self):
+    5:         return self.distribution.has_scripts()
+       
+    1:     def has_data (self):
+    5:         return self.distribution.has_data_files()
+       
+       
+           # 'sub_commands': a list of commands this command might have to run to
+           # get its work done.  See cmd.py for more info.
+    1:     sub_commands = [('install_lib',     has_lib),
+    1:                     ('install_headers', has_headers),
+    1:                     ('install_scripts', has_scripts),
+    1:                     ('install_data',    has_data),
+    6:                     ('install_egg_info', lambda self:True),
+                          ]
+       
+       # class install

@@ -1,0 +1,457 @@
+       """distutils.cmd
+       
+       Provides the Command class, the base class for the command classes
+       in the distutils.command package.
+    2: """
+       
+    2: __revision__ = "$Id$"
+       
+    2: import sys, os, re
+    2: from distutils.errors import DistutilsOptionError
+    2: from distutils import util, dir_util, file_util, archive_util, dep_util
+    2: from distutils import log
+       
+    4: class Command:
+           """Abstract base class for defining command classes, the "worker bees"
+           of the Distutils.  A useful analogy for command classes is to think of
+           them as subroutines with local variables called "options".  The options
+           are "declared" in 'initialize_options()' and "defined" (given their
+           final values, aka "finalized") in 'finalize_options()', both of which
+           must be defined by every command class.  The distinction between the
+           two is necessary because option values might come from the outside
+           world (command line, config file, ...), and any options dependent on
+           other options must be computed *after* these outside influences have
+           been processed -- hence 'finalize_options()'.  The "body" of the
+           subroutine, where it does all its work based on the values of its
+           options, is the 'run()' method, which must also be implemented by every
+           command class.
+    2:     """
+       
+           # 'sub_commands' formalizes the notion of a "family" of commands,
+           # eg. "install" as the parent with sub-commands "install_lib",
+           # "install_headers", etc.  The parent of a family of commands
+           # defines 'sub_commands' as a class attribute; it's a list of
+           #    (command_name : string, predicate : unbound_method | string | None)
+           # tuples, where 'predicate' is a method of the parent command that
+           # determines whether the corresponding command is applicable in the
+           # current situation.  (Eg. we "install_headers" is only applicable if
+           # we have any C header files to install.)  If 'predicate' is None,
+           # that command is always applicable.
+           #
+           # 'sub_commands' is usually defined at the *end* of a class, because
+           # predicates can be unbound methods, so they must already have been
+           # defined.  The canonical example is the "install" command.
+    2:     sub_commands = []
+       
+       
+           # -- Creation/initialization methods -------------------------------
+       
+    2:     def __init__(self, dist):
+               """Create and initialize a new Command object.  Most importantly,
+               invokes the 'initialize_options()' method, which is the real
+               initializer and depends on the actual command being
+               instantiated.
+               """
+               # late import because of mutual dependence between these classes
+  210:         from distutils.dist import Distribution
+       
+  210:         if not isinstance(dist, Distribution):
+>>>>>>             raise TypeError, "dist must be a Distribution instance"
+  210:         if self.__class__ is Command:
+>>>>>>             raise RuntimeError, "Command is an abstract class"
+       
+  210:         self.distribution = dist
+  210:         self.initialize_options()
+       
+               # Per-command versions of the global flags, so that the user can
+               # customize Distutils' behaviour command-by-command and let some
+               # commands fall back on the Distribution's behaviour.  None means
+               # "not defined, check self.distribution's copy", while 0 or 1 mean
+               # false and true (duh).  Note that this means figuring out the real
+               # value of each flag is a touch complicated -- hence "self._dry_run"
+               # will be handled by __getattr__, below.
+               # XXX This needs to be fixed.
+  210:         self._dry_run = None
+       
+               # verbose is largely ignored, but needs to be set for
+               # backwards compatibility (I think)?
+  210:         self.verbose = dist.verbose
+       
+               # Some commands define a 'self.force' option to ignore file
+               # timestamps, but methods defined *here* assume that
+               # 'self.force' exists for all commands.  So define it here
+               # just to be safe.
+  210:         self.force = None
+       
+               # The 'help' flag is just used for command-line parsing, so
+               # none of that complicated bureaucracy is needed.
+  210:         self.help = 0
+       
+               # 'finalized' records whether or not 'finalize_options()' has been
+               # called.  'finalize_options()' itself should not pay attention to
+               # this flag: it is the business of 'ensure_finalized()', which
+               # always calls 'finalize_options()', to respect/update it.
+  210:         self.finalized = 0
+       
+           # XXX A more explicit way to customize dry_run would be better.
+    2:     def __getattr__(self, attr):
+  448:         if attr == 'dry_run':
+  218:             myval = getattr(self, "_" + attr)
+  218:             if myval is None:
+  218:                 return getattr(self.distribution, attr)
+                   else:
+>>>>>>                 return myval
+               else:
+  230:             raise AttributeError, attr
+       
+    2:     def ensure_finalized(self):
+  245:         if not self.finalized:
+  152:             self.finalize_options()
+  245:         self.finalized = 1
+       
+           # Subclasses must define:
+           #   initialize_options()
+           #     provide default values for all options; may be customized by
+           #     setup script, by options from config file(s), or by command-line
+           #     options
+           #   finalize_options()
+           #     decide on the final values for all options; this is called
+           #     after all possible intervention from the outside world
+           #     (command-line, option file, etc.) has been processed
+           #   run()
+           #     run the command: do whatever it is we're here to do,
+           #     controlled by the command's various option values
+       
+    2:     def initialize_options(self):
+               """Set default values for all the options that this command
+               supports.  Note that these defaults may be overridden by other
+               commands, by the setup script, by config files, or by the
+               command-line.  Thus, this is not the place to code dependencies
+               between options; generally, 'initialize_options()' implementations
+               are just a bunch of "self.foo = None" assignments.
+       
+               This method must be implemented by all command classes.
+               """
+>>>>>>         raise RuntimeError, \
+>>>>>>               "abstract method -- subclass %s must override" % self.__class__
+       
+    2:     def finalize_options(self):
+               """Set final values for all the options that this command supports.
+               This is always called as late as possible, ie.  after any option
+               assignments from the command-line or from other commands have been
+               done.  Thus, this is the place to code option dependencies: if
+               'foo' depends on 'bar', then it is safe to set 'foo' from 'bar' as
+               long as 'foo' still has the same value it was assigned in
+               'initialize_options()'.
+       
+               This method must be implemented by all command classes.
+               """
+>>>>>>         raise RuntimeError, \
+>>>>>>               "abstract method -- subclass %s must override" % self.__class__
+       
+       
+    2:     def dump_options(self, header=None, indent=""):
+    1:         from distutils.fancy_getopt import longopt_xlate
+    1:         if header is None:
+    1:             header = "command options for '%s':" % self.get_command_name()
+    1:         self.announce(indent + header, level=log.INFO)
+    1:         indent = indent + "  "
+    3:         for (option, _, _) in self.user_options:
+    2:             option = option.translate(longopt_xlate)
+    2:             if option[-1] == "=":
+>>>>>>                 option = option[:-1]
+    2:             value = getattr(self, option)
+    2:             self.announce(indent + "%s = %s" % (option, value),
+    2:                           level=log.INFO)
+       
+    2:     def run(self):
+               """A command's raison d'etre: carry out the action it exists to
+               perform, controlled by the options initialized in
+               'initialize_options()', customized by other commands, the setup
+               script, the command-line, and config files, and finalized in
+               'finalize_options()'.  All terminal output and filesystem
+               interaction should be done by 'run()'.
+       
+               This method must be implemented by all command classes.
+               """
+>>>>>>         raise RuntimeError, \
+>>>>>>               "abstract method -- subclass %s must override" % self.__class__
+       
+    2:     def announce(self, msg, level=1):
+               """If the current verbosity level is of greater than or equal to
+               'level' print 'msg' to stdout.
+               """
+   32:         log.log(level, msg)
+       
+    2:     def debug_print(self, msg):
+               """Print 'msg' to stdout if the global DEBUG (taken from the
+               DISTUTILS_DEBUG environment variable) flag is true.
+               """
+    4:         from distutils.debug import DEBUG
+    4:         if DEBUG:
+    1:             print msg
+    1:             sys.stdout.flush()
+       
+       
+           # -- Option validation methods -------------------------------------
+           # (these are very handy in writing the 'finalize_options()' method)
+           #
+           # NB. the general philosophy here is to ensure that a particular option
+           # value meets certain type and value constraints.  If not, we try to
+           # force it into conformance (eg. if we expect a list but have a string,
+           # split the string on comma and/or whitespace).  If we can't force the
+           # option into conformance, raise DistutilsOptionError.  Thus, command
+           # classes need do nothing more than (eg.)
+           #   self.ensure_string_list('foo')
+           # and they can be guaranteed that thereafter, self.foo will be
+           # a list of strings.
+       
+    2:     def _ensure_stringlike(self, option, what, default=None):
+    7:         val = getattr(self, option)
+    7:         if val is None:
+    1:             setattr(self, option, default)
+    1:             return default
+    6:         elif not isinstance(val, str):
+    1:             raise DistutilsOptionError, \
+    1:                   "'%s' must be a %s (got `%s`)" % (option, what, val)
+    5:         return val
+       
+    2:     def ensure_string(self, option, default=None):
+               """Ensure that 'option' is a string; if not defined, set it to
+               'default'.
+               """
+    3:         self._ensure_stringlike(option, "string", default)
+       
+    2:     def ensure_string_list(self, option):
+               """Ensure that 'option' is a list of strings.  If 'option' is
+               currently a string, we split it either on /,\s*/ or /\s+/, so
+               "foo bar baz", "foo,bar,baz", and "foo,   bar baz" all become
+               ["foo", "bar", "baz"].
+               """
+   79:         val = getattr(self, option)
+   79:         if val is None:
+   58:             return
+   21:         elif isinstance(val, str):
+    5:             setattr(self, option, re.split(r',\s*|\s+', val))
+               else:
+   16:             if isinstance(val, list):
+                       # checks if all elements are str
+   14:                 ok = 1
+   32:                 for element in val:
+   20:                     if not isinstance(element, str):
+    2:                         ok = 0
+    2:                         break
+                   else:
+    2:                 ok = 0
+       
+   16:             if not ok:
+    4:                 raise DistutilsOptionError, \
+    4:                     "'%s' must be a list of strings (got %r)" % \
+    4:                         (option, val)
+       
+       
+           def _ensure_tested_string(self, option, tester,
+    2:                               what, error_fmt, default=None):
+    4:         val = self._ensure_stringlike(option, what, default)
+    4:         if val is not None and not tester(val):
+    2:             raise DistutilsOptionError, \
+    2:                   ("error in '%s' option: " + error_fmt) % (option, val)
+       
+    2:     def ensure_filename(self, option):
+               """Ensure that 'option' is the name of an existing file."""
+    2:         self._ensure_tested_string(option, os.path.isfile,
+    2:                                    "filename",
+    2:                                    "'%s' does not exist or is not a file")
+       
+    2:     def ensure_dirname(self, option):
+    2:         self._ensure_tested_string(option, os.path.isdir,
+    2:                                    "directory name",
+    2:                                    "'%s' does not exist or is not a directory")
+       
+       
+           # -- Convenience methods for commands ------------------------------
+       
+    2:     def get_command_name(self):
+   34:         if hasattr(self, 'command_name'):
+>>>>>>             return self.command_name
+               else:
+   34:             return self.__class__.__name__
+       
+    2:     def set_undefined_options(self, src_cmd, *option_pairs):
+               """Set the values of any "undefined" options from corresponding
+               option values in some other command object.  "Undefined" here means
+               "is None", which is the convention used to indicate that an option
+               has not been changed between 'initialize_options()' and
+               'finalize_options()'.  Usually called from 'finalize_options()' for
+               options that depend on some other command rather than another
+               option of the same command.  'src_cmd' is the other command from
+               which option values will be taken (a command object will be created
+               for it if necessary); the remaining arguments are
+               '(src_option,dst_option)' tuples which mean "take the value of
+               'src_option' in the 'src_cmd' command object, and copy it to
+               'dst_option' in the current command object".
+               """
+       
+               # Option_pairs: list of (src_option, dst_option) tuples
+       
+   94:         src_cmd_obj = self.distribution.get_command_obj(src_cmd)
+   94:         src_cmd_obj.ensure_finalized()
+  421:         for (src_option, dst_option) in option_pairs:
+  327:             if getattr(self, dst_option) is None:
+  291:                 setattr(self, dst_option,
+  291:                         getattr(src_cmd_obj, src_option))
+       
+       
+    2:     def get_finalized_command(self, command, create=1):
+               """Wrapper around Distribution's 'get_command_obj()' method: find
+               (create if necessary and 'create' is true) the command object for
+               'command', call its 'ensure_finalized()' method, and return the
+               finalized command object.
+               """
+   68:         cmd_obj = self.distribution.get_command_obj(command, create)
+   68:         cmd_obj.ensure_finalized()
+   68:         return cmd_obj
+       
+           # XXX rename to 'get_reinitialized_command()'? (should do the
+           # same in dist.py, if so)
+    2:     def reinitialize_command(self, command, reinit_subcommands=0):
+    1:         return self.distribution.reinitialize_command(
+    1:             command, reinit_subcommands)
+       
+    2:     def run_command(self, command):
+               """Run some other command: uses the 'run_command()' method of
+               Distribution, which creates and finalizes the command object if
+               necessary and then invokes its 'run()' method.
+               """
+   44:         self.distribution.run_command(command)
+       
+    2:     def get_sub_commands(self):
+               """Determine the sub-commands that are relevant in the current
+               distribution (ie., that need to be run).  This is based on the
+               'sub_commands' class attribute: each tuple in that list may include
+               a method that we call to determine if the subcommand needs to be
+               run for the current distribution.  Return a list of command names.
+               """
+   29:         commands = []
+   96:         for (cmd_name, method) in self.sub_commands:
+   67:             if method is None or method(self):
+   39:                 commands.append(cmd_name)
+   29:         return commands
+       
+       
+           # -- External world manipulation -----------------------------------
+       
+    2:     def warn(self, msg):
+   29:         log.warn("warning: %s: %s\n" %
+   29:                 (self.get_command_name(), msg))
+       
+    2:     def execute(self, func, args, msg=None, level=1):
+   14:         util.execute(func, args, msg, dry_run=self.dry_run)
+       
+    2:     def mkpath(self, name, mode=0777):
+   36:         dir_util.mkpath(name, mode, dry_run=self.dry_run)
+       
+           def copy_file(self, infile, outfile,
+    2:                    preserve_mode=1, preserve_times=1, link=None, level=1):
+               """Copy a file respecting verbose, dry-run and force flags.  (The
+               former two default to whatever is in the Distribution object, and
+               the latter defaults to false for commands that don't define it.)"""
+       
+   71:         return file_util.copy_file(
+   71:             infile, outfile,
+   71:             preserve_mode, preserve_times,
+   71:             not self.force,
+   71:             link,
+   71:             dry_run=self.dry_run)
+       
+           def copy_tree(self, infile, outfile,
+    2:                    preserve_mode=1, preserve_times=1, preserve_symlinks=0,
+    2:                    level=1):
+               """Copy an entire directory tree respecting verbose, dry-run,
+               and force flags.
+               """
+    6:         return dir_util.copy_tree(
+    6:             infile, outfile,
+    6:             preserve_mode,preserve_times,preserve_symlinks,
+    6:             not self.force,
+    6:             dry_run=self.dry_run)
+       
+    2:     def move_file (self, src, dst, level=1):
+               """Move a file respecting dry-run flag."""
+>>>>>>         return file_util.move_file(src, dst, dry_run = self.dry_run)
+       
+    2:     def spawn (self, cmd, search_path=1, level=1):
+               """Spawn an external command respecting dry-run flag."""
+>>>>>>         from distutils.spawn import spawn
+>>>>>>         spawn(cmd, search_path, dry_run= self.dry_run)
+       
+    2:     def make_archive(self, base_name, format, root_dir=None, base_dir=None,
+    2:                      owner=None, group=None):
+   17:         return archive_util.make_archive(base_name, format, root_dir,
+   17:                                          base_dir, dry_run=self.dry_run,
+   17:                                          owner=owner, group=group)
+       
+           def make_file(self, infiles, outfile, func, args,
+    2:                   exec_msg=None, skip_msg=None, level=1):
+               """Special case of 'execute()' for operations that process one or
+               more input files and generate one output file.  Works just like
+               'execute()', except the operation is skipped and a different
+               message printed if 'outfile' already exists and is newer than all
+               files listed in 'infiles'.  If the command defined 'self.force',
+               and it is true, then the command is unconditionally run -- does no
+               timestamp checks.
+               """
+    2:         if skip_msg is None:
+    2:             skip_msg = "skipping %s (inputs unchanged)" % outfile
+       
+               # Allow 'infiles' to be a single string
+    2:         if isinstance(infiles, str):
+    1:             infiles = (infiles,)
+    1:         elif not isinstance(infiles, (list, tuple)):
+    1:             raise TypeError, \
+    1:                   "'infiles' must be a string, or a list or tuple of strings"
+       
+    1:         if exec_msg is None:
+    1:             exec_msg = "generating %s from %s" % \
+    1:                        (outfile, ', '.join(infiles))
+       
+               # If 'outfile' must be regenerated (either because it doesn't
+               # exist, is out-of-date, or the 'force' flag is true) then
+               # perform the action that presumably regenerates it
+    1:         if self.force or dep_util.newer_group(infiles, outfile):
+    1:             self.execute(func, args, exec_msg, level)
+       
+               # Otherwise, print the "skip" message
+               else:
+>>>>>>             log.debug(skip_msg)
+       
+       # XXX 'install_misc' class not currently used -- it was the base class for
+       # both 'install_scripts' and 'install_data', but they outgrew it.  It might
+       # still be useful for 'install_headers', though, so I'm keeping it around
+       # for the time being.
+       
+    4: class install_misc(Command):
+           """Common base class for installing some files in a subdirectory.
+           Currently used by install_data and install_scripts.
+    2:     """
+       
+    2:     user_options = [('install-dir=', 'd', "directory to install the files to")]
+       
+    2:     def initialize_options (self):
+>>>>>>         self.install_dir = None
+>>>>>>         self.outfiles = []
+       
+    2:     def _install_dir_from(self, dirname):
+>>>>>>         self.set_undefined_options('install', (dirname, 'install_dir'))
+       
+    2:     def _copy_files(self, filelist):
+>>>>>>         self.outfiles = []
+>>>>>>         if not filelist:
+>>>>>>             return
+>>>>>>         self.mkpath(self.install_dir)
+>>>>>>         for f in filelist:
+>>>>>>             self.copy_file(f, self.install_dir)
+>>>>>>             self.outfiles.append(os.path.join(self.install_dir, f))
+       
+    2:     def get_outputs(self):
+>>>>>>         return self.outfiles

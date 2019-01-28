@@ -1,0 +1,158 @@
+    1: """Tests for distutils.unixccompiler."""
+    1: import os
+    1: import sys
+    1: import unittest
+    1: from test.test_support import EnvironmentVarGuard, run_unittest
+       
+    1: from distutils import sysconfig
+    1: from distutils.unixccompiler import UnixCCompiler
+       
+    2: class UnixCCompilerTestCase(unittest.TestCase):
+       
+    1:     def setUp(self):
+    3:         self._backup_platform = sys.platform
+    3:         self._backup_get_config_var = sysconfig.get_config_var
+    6:         class CompilerWrapper(UnixCCompiler):
+    3:             def rpath_foo(self):
+   12:                 return self.runtime_library_dir_option('/foo')
+    3:         self.cc = CompilerWrapper()
+       
+    1:     def tearDown(self):
+    3:         sys.platform = self._backup_platform
+    3:         sysconfig.get_config_var = self._backup_get_config_var
+       
+    1:     @unittest.skipIf(sys.platform == 'win32', "can't test on Windows")
+           def test_runtime_libdir_option(self):
+               # Issue#5900
+               #
+               # Ensure RUNPATH is added to extension modules with RPATH if
+               # GNU ld is used
+       
+               # darwin
+    1:         sys.platform = 'darwin'
+    1:         self.assertEqual(self.cc.rpath_foo(), '-L/foo')
+       
+               # hp-ux
+    1:         sys.platform = 'hp-ux'
+    1:         old_gcv = sysconfig.get_config_var
+    1:         def gcv(v):
+    1:             return 'xxx'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), ['+s', '-L/foo'])
+       
+    1:         def gcv(v):
+    1:             return 'gcc'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), ['-Wl,+s', '-L/foo'])
+       
+    1:         def gcv(v):
+    1:             return 'g++'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), ['-Wl,+s', '-L/foo'])
+       
+    1:         sysconfig.get_config_var = old_gcv
+       
+               # irix646
+    1:         sys.platform = 'irix646'
+    1:         self.assertEqual(self.cc.rpath_foo(), ['-rpath', '/foo'])
+       
+               # osf1V5
+    1:         sys.platform = 'osf1V5'
+    1:         self.assertEqual(self.cc.rpath_foo(), ['-rpath', '/foo'])
+       
+               # GCC GNULD
+    1:         sys.platform = 'bar'
+    1:         def gcv(v):
+    1:             if v == 'CC':
+    1:                 return 'gcc'
+>>>>>>             elif v == 'GNULD':
+>>>>>>                 return 'yes'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), '-Wl,-R/foo')
+       
+               # GCC non-GNULD
+    1:         sys.platform = 'bar'
+    1:         def gcv(v):
+    1:             if v == 'CC':
+    1:                 return 'gcc'
+>>>>>>             elif v == 'GNULD':
+>>>>>>                 return 'no'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), '-Wl,-R/foo')
+       
+               # GCC GNULD with fully qualified configuration prefix
+               # see #7617
+    1:         sys.platform = 'bar'
+    1:         def gcv(v):
+    1:             if v == 'CC':
+    1:                 return 'x86_64-pc-linux-gnu-gcc-4.4.2'
+>>>>>>             elif v == 'GNULD':
+>>>>>>                 return 'yes'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), '-Wl,-R/foo')
+       
+       
+               # non-GCC GNULD
+    1:         sys.platform = 'bar'
+    1:         def gcv(v):
+    1:             if v == 'CC':
+    1:                 return 'cc'
+>>>>>>             elif v == 'GNULD':
+>>>>>>                 return 'yes'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), '-R/foo')
+       
+               # non-GCC non-GNULD
+    1:         sys.platform = 'bar'
+    1:         def gcv(v):
+    1:             if v == 'CC':
+    1:                 return 'cc'
+>>>>>>             elif v == 'GNULD':
+>>>>>>                 return 'no'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), '-R/foo')
+       
+               # AIX C/C++ linker
+    1:         sys.platform = 'aix'
+    1:         def gcv(v):
+    1:             return 'xxx'
+    1:         sysconfig.get_config_var = gcv
+    1:         self.assertEqual(self.cc.rpath_foo(), '-R/foo')
+       
+    1:     @unittest.skipUnless(sys.platform == 'darwin', 'test only relevant for OS X')
+           def test_osx_cc_overrides_ldshared(self):
+               # Issue #18080:
+               # ensure that setting CC env variable also changes default linker
+    1:         def gcv(v):
+    1:             if v == 'LDSHARED':
+>>>>>>                 return 'gcc-4.2 -bundle -undefined dynamic_lookup '
+    1:             return 'gcc-4.2'
+    1:         sysconfig.get_config_var = gcv
+    1:         with EnvironmentVarGuard() as env:
+    1:             env['CC'] = 'my_cc'
+    1:             del env['LDSHARED']
+    1:             sysconfig.customize_compiler(self.cc)
+    1:         self.assertEqual(self.cc.linker_so[0], 'my_cc')
+       
+    1:     @unittest.skipUnless(sys.platform == 'darwin', 'test only relevant for OS X')
+           def test_osx_explicit_ldshared(self):
+               # Issue #18080:
+               # ensure that setting CC env variable does not change
+               #   explicit LDSHARED setting for linker
+    1:         def gcv(v):
+    1:             if v == 'LDSHARED':
+>>>>>>                 return 'gcc-4.2 -bundle -undefined dynamic_lookup '
+    1:             return 'gcc-4.2'
+    1:         sysconfig.get_config_var = gcv
+    1:         with EnvironmentVarGuard() as env:
+    1:             env['CC'] = 'my_cc'
+    1:             env['LDSHARED'] = 'my_ld -bundle -dynamic'
+    1:             sysconfig.customize_compiler(self.cc)
+    1:         self.assertEqual(self.cc.linker_so[0], 'my_ld')
+       
+       
+    1: def test_suite():
+    1:     return unittest.makeSuite(UnixCCompilerTestCase)
+       
+    1: if __name__ == "__main__":
+>>>>>>     run_unittest(test_suite())

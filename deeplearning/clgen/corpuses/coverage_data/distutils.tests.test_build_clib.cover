@@ -1,0 +1,143 @@
+    1: """Tests for distutils.command.build_clib."""
+    1: import unittest
+    1: import os
+    1: import sys
+       
+    1: from test.test_support import run_unittest
+       
+    1: from distutils.command.build_clib import build_clib
+    1: from distutils.errors import DistutilsSetupError
+    1: from distutils.tests import support
+    1: from distutils.spawn import find_executable
+       
+    2: class BuildCLibTestCase(support.TempdirManager,
+    1:                         support.LoggingSilencer,
+    1:                         unittest.TestCase):
+       
+    1:     def test_check_library_dist(self):
+    1:         pkg_dir, dist = self.create_dist()
+    1:         cmd = build_clib(dist)
+       
+               # 'libraries' option must be a list
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_library_list, 'foo')
+       
+               # each element of 'libraries' must a 2-tuple
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_library_list,
+    1:                           ['foo1', 'foo2'])
+       
+               # first element of each tuple in 'libraries'
+               # must be a string (the library name)
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_library_list,
+    1:                           [(1, 'foo1'), ('name', 'foo2')])
+       
+               # library name may not contain directory separators
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_library_list,
+    1:                           [('name', 'foo1'),
+    1:                            ('another/name', 'foo2')])
+       
+               # second element of each tuple must be a dictionary (build info)
+    1:         self.assertRaises(DistutilsSetupError, cmd.check_library_list,
+    1:                           [('name', {}),
+    1:                            ('another', 'foo2')])
+       
+               # those work
+    1:         libs = [('name', {}), ('name', {'ok': 'good'})]
+    1:         cmd.check_library_list(libs)
+       
+    1:     def test_get_source_files(self):
+    1:         pkg_dir, dist = self.create_dist()
+    1:         cmd = build_clib(dist)
+       
+               # "in 'libraries' option 'sources' must be present and must be
+               # a list of source filenames
+    1:         cmd.libraries = [('name', {})]
+    1:         self.assertRaises(DistutilsSetupError, cmd.get_source_files)
+       
+    1:         cmd.libraries = [('name', {'sources': 1})]
+    1:         self.assertRaises(DistutilsSetupError, cmd.get_source_files)
+       
+    1:         cmd.libraries = [('name', {'sources': ['a', 'b']})]
+    1:         self.assertEqual(cmd.get_source_files(), ['a', 'b'])
+       
+    1:         cmd.libraries = [('name', {'sources': ('a', 'b')})]
+    1:         self.assertEqual(cmd.get_source_files(), ['a', 'b'])
+       
+    1:         cmd.libraries = [('name', {'sources': ('a', 'b')}),
+    1:                          ('name2', {'sources': ['c', 'd']})]
+    1:         self.assertEqual(cmd.get_source_files(), ['a', 'b', 'c', 'd'])
+       
+    1:     def test_build_libraries(self):
+       
+    1:         pkg_dir, dist = self.create_dist()
+    1:         cmd = build_clib(dist)
+    2:         class FakeCompiler:
+    1:             def compile(*args, **kw):
+    4:                 pass
+    1:             create_static_lib = compile
+       
+    1:         cmd.compiler = FakeCompiler()
+       
+               # build_libraries is also doing a bit of typo checking
+    1:         lib = [('name', {'sources': 'notvalid'})]
+    1:         self.assertRaises(DistutilsSetupError, cmd.build_libraries, lib)
+       
+    1:         lib = [('name', {'sources': list()})]
+    1:         cmd.build_libraries(lib)
+       
+    1:         lib = [('name', {'sources': tuple()})]
+    1:         cmd.build_libraries(lib)
+       
+    1:     def test_finalize_options(self):
+    1:         pkg_dir, dist = self.create_dist()
+    1:         cmd = build_clib(dist)
+       
+    1:         cmd.include_dirs = 'one-dir'
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.include_dirs, ['one-dir'])
+       
+    1:         cmd.include_dirs = None
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.include_dirs, [])
+       
+    1:         cmd.distribution.libraries = 'WONTWORK'
+    1:         self.assertRaises(DistutilsSetupError, cmd.finalize_options)
+       
+    1:     @unittest.skipIf(sys.platform == 'win32', "can't test on Windows")
+           def test_run(self):
+    1:         pkg_dir, dist = self.create_dist()
+    1:         cmd = build_clib(dist)
+       
+    1:         foo_c = os.path.join(pkg_dir, 'foo.c')
+    1:         self.write_file(foo_c, 'int main(void) { return 1;}\n')
+    1:         cmd.libraries = [('foo', {'sources': [foo_c]})]
+       
+    1:         build_temp = os.path.join(pkg_dir, 'build')
+    1:         os.mkdir(build_temp)
+    1:         cmd.build_temp = build_temp
+    1:         cmd.build_clib = build_temp
+       
+               # before we run the command, we want to make sure
+               # all commands are present on the system
+               # by creating a compiler and checking its executables
+    1:         from distutils.ccompiler import new_compiler
+    1:         from distutils.sysconfig import customize_compiler
+       
+    1:         compiler = new_compiler()
+    1:         customize_compiler(compiler)
+    9:         for ccmd in compiler.executables.values():
+    8:             if ccmd is None:
+    1:                 continue
+    7:             if find_executable(ccmd[0]) is None:
+>>>>>>                 self.skipTest('The %r command is not found' % ccmd[0])
+       
+               # this should work
+    1:         cmd.run()
+       
+               # let's check the result
+    1:         self.assertIn('libfoo.a', os.listdir(build_temp))
+       
+    1: def test_suite():
+    1:     return unittest.makeSuite(BuildCLibTestCase)
+       
+    1: if __name__ == "__main__":
+>>>>>>     run_unittest(test_suite())

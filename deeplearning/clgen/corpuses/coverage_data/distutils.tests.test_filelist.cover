@@ -1,0 +1,299 @@
+    1: """Tests for distutils.filelist."""
+    1: import os
+    1: import re
+    1: import unittest
+    1: from distutils import debug
+    1: from distutils.log import WARN
+    1: from distutils.errors import DistutilsTemplateError
+    1: from distutils.filelist import glob_to_re, translate_pattern, FileList
+       
+    1: from test.test_support import captured_stdout, run_unittest
+    1: from distutils.tests import support
+       
+       MANIFEST_IN = """\
+       include ok
+       include xo
+       exclude xo
+       include foo.tmp
+       include buildout.cfg
+       global-include *.x
+       global-include *.txt
+       global-exclude *.tmp
+       recursive-include f *.oo
+       recursive-exclude global *.x
+       graft dir
+       prune dir3
+    1: """
+       
+       
+    1: def make_local_path(s):
+           """Converts '/' in a string to os.sep"""
+   48:     return s.replace('/', os.sep)
+       
+       
+    2: class FileListTestCase(support.LoggingSilencer,
+    1:                        unittest.TestCase):
+       
+    1:     def assertNoWarnings(self):
+    8:         self.assertEqual(self.get_logs(WARN), [])
+    8:         self.clear_logs()
+       
+    1:     def assertWarnings(self):
+    8:         self.assertGreater(len(self.get_logs(WARN)), 0)
+    8:         self.clear_logs()
+       
+    1:     def test_glob_to_re(self):
+    1:         sep = os.sep
+    1:         if os.sep == '\\':
+>>>>>>             sep = re.escape(os.sep)
+       
+    1:         for glob, regex in (
+                   # simple cases
+    1:             ('foo*', r'foo[^%(sep)s]*\Z(?ms)'),
+    1:             ('foo?', r'foo[^%(sep)s]\Z(?ms)'),
+    1:             ('foo??', r'foo[^%(sep)s][^%(sep)s]\Z(?ms)'),
+                   # special cases
+    1:             (r'foo\\*', r'foo\\\\[^%(sep)s]*\Z(?ms)'),
+    1:             (r'foo\\\*', r'foo\\\\\\[^%(sep)s]*\Z(?ms)'),
+    1:             ('foo????', r'foo[^%(sep)s][^%(sep)s][^%(sep)s][^%(sep)s]\Z(?ms)'),
+    8:             (r'foo\\??', r'foo\\\\[^%(sep)s][^%(sep)s]\Z(?ms)')):
+    7:             regex = regex % {'sep': sep}
+    7:             self.assertEqual(glob_to_re(glob), regex)
+       
+    1:     def test_process_template_line(self):
+               # testing  all MANIFEST.in template patterns
+    1:         file_list = FileList()
+    1:         l = make_local_path
+       
+               # simulated file list
+    1:         file_list.allfiles = ['foo.tmp', 'ok', 'xo', 'four.txt',
+    1:                               'buildout.cfg',
+                                     # filelist does not filter out VCS directories,
+                                     # it's sdist that does
+    1:                               l('.hg/last-message.txt'),
+    1:                               l('global/one.txt'),
+    1:                               l('global/two.txt'),
+    1:                               l('global/files.x'),
+    1:                               l('global/here.tmp'),
+    1:                               l('f/o/f.oo'),
+    1:                               l('dir/graft-one'),
+    1:                               l('dir/dir2/graft2'),
+    1:                               l('dir3/ok'),
+    1:                               l('dir3/sub/ok.txt'),
+                                    ]
+       
+   14:         for line in MANIFEST_IN.split('\n'):
+   13:             if line.strip() == '':
+    1:                 continue
+   12:             file_list.process_template_line(line)
+       
+    1:         wanted = ['ok',
+    1:                   'buildout.cfg',
+    1:                   'four.txt',
+    1:                   l('.hg/last-message.txt'),
+    1:                   l('global/one.txt'),
+    1:                   l('global/two.txt'),
+    1:                   l('f/o/f.oo'),
+    1:                   l('dir/graft-one'),
+    1:                   l('dir/dir2/graft2'),
+                        ]
+       
+    1:         self.assertEqual(file_list.files, wanted)
+       
+    1:     def test_debug_print(self):
+    1:         file_list = FileList()
+    1:         with captured_stdout() as stdout:
+    1:             file_list.debug_print('xxx')
+    1:         self.assertEqual(stdout.getvalue(), '')
+       
+    1:         debug.DEBUG = True
+    1:         try:
+    1:             with captured_stdout() as stdout:
+    1:                 file_list.debug_print('xxx')
+    1:             self.assertEqual(stdout.getvalue(), 'xxx\n')
+               finally:
+    1:             debug.DEBUG = False
+       
+    1:     def test_set_allfiles(self):
+    1:         file_list = FileList()
+    1:         files = ['a', 'b', 'c']
+    1:         file_list.set_allfiles(files)
+    1:         self.assertEqual(file_list.allfiles, files)
+       
+    1:     def test_remove_duplicates(self):
+    1:         file_list = FileList()
+    1:         file_list.files = ['a', 'b', 'a', 'g', 'c', 'g']
+               # files must be sorted beforehand (sdist does it)
+    1:         file_list.sort()
+    1:         file_list.remove_duplicates()
+    1:         self.assertEqual(file_list.files, ['a', 'b', 'c', 'g'])
+       
+    1:     def test_translate_pattern(self):
+               # not regex
+    1:         self.assertTrue(hasattr(
+    1:             translate_pattern('a', anchor=True, is_regex=False),
+    1:             'search'))
+       
+               # is a regex
+    1:         regex = re.compile('a')
+    1:         self.assertEqual(
+    1:             translate_pattern(regex, anchor=True, is_regex=True),
+    1:             regex)
+       
+               # plain string flagged as regex
+    1:         self.assertTrue(hasattr(
+    1:             translate_pattern('a', anchor=True, is_regex=True),
+    1:             'search'))
+       
+               # glob support
+    1:         self.assertTrue(translate_pattern(
+    1:             '*.py', anchor=True, is_regex=False).search('filelist.py'))
+       
+    1:     def test_exclude_pattern(self):
+               # return False if no match
+    1:         file_list = FileList()
+    1:         self.assertFalse(file_list.exclude_pattern('*.py'))
+       
+               # return True if files match
+    1:         file_list = FileList()
+    1:         file_list.files = ['a.py', 'b.py']
+    1:         self.assertTrue(file_list.exclude_pattern('*.py'))
+       
+               # test excludes
+    1:         file_list = FileList()
+    1:         file_list.files = ['a.py', 'a.txt']
+    1:         file_list.exclude_pattern('*.py')
+    1:         self.assertEqual(file_list.files, ['a.txt'])
+       
+    1:     def test_include_pattern(self):
+               # return False if no match
+    1:         file_list = FileList()
+    1:         file_list.set_allfiles([])
+    1:         self.assertFalse(file_list.include_pattern('*.py'))
+       
+               # return True if files match
+    1:         file_list = FileList()
+    1:         file_list.set_allfiles(['a.py', 'b.txt'])
+    1:         self.assertTrue(file_list.include_pattern('*.py'))
+       
+               # test * matches all files
+    1:         file_list = FileList()
+    1:         self.assertIsNone(file_list.allfiles)
+    1:         file_list.set_allfiles(['a.py', 'b.txt'])
+    1:         file_list.include_pattern('*')
+    1:         self.assertEqual(file_list.allfiles, ['a.py', 'b.txt'])
+       
+    1:     def test_process_template(self):
+    1:         l = make_local_path
+               # invalid lines
+    1:         file_list = FileList()
+    1:         for action in ('include', 'exclude', 'global-include',
+                              'global-exclude', 'recursive-include',
+   10:                        'recursive-exclude', 'graft', 'prune', 'blarg'):
+    9:             self.assertRaises(DistutilsTemplateError,
+    9:                               file_list.process_template_line, action)
+       
+               # include
+    1:         file_list = FileList()
+    1:         file_list.set_allfiles(['a.py', 'b.txt', l('d/c.py')])
+       
+    1:         file_list.process_template_line('include *.py')
+    1:         self.assertEqual(file_list.files, ['a.py'])
+    1:         self.assertNoWarnings()
+       
+    1:         file_list.process_template_line('include *.rb')
+    1:         self.assertEqual(file_list.files, ['a.py'])
+    1:         self.assertWarnings()
+       
+               # exclude
+    1:         file_list = FileList()
+    1:         file_list.files = ['a.py', 'b.txt', l('d/c.py')]
+       
+    1:         file_list.process_template_line('exclude *.py')
+    1:         self.assertEqual(file_list.files, ['b.txt', l('d/c.py')])
+    1:         self.assertNoWarnings()
+       
+    1:         file_list.process_template_line('exclude *.rb')
+    1:         self.assertEqual(file_list.files, ['b.txt', l('d/c.py')])
+    1:         self.assertWarnings()
+       
+               # global-include
+    1:         file_list = FileList()
+    1:         file_list.set_allfiles(['a.py', 'b.txt', l('d/c.py')])
+       
+    1:         file_list.process_template_line('global-include *.py')
+    1:         self.assertEqual(file_list.files, ['a.py', l('d/c.py')])
+    1:         self.assertNoWarnings()
+       
+    1:         file_list.process_template_line('global-include *.rb')
+    1:         self.assertEqual(file_list.files, ['a.py', l('d/c.py')])
+    1:         self.assertWarnings()
+       
+               # global-exclude
+    1:         file_list = FileList()
+    1:         file_list.files = ['a.py', 'b.txt', l('d/c.py')]
+       
+    1:         file_list.process_template_line('global-exclude *.py')
+    1:         self.assertEqual(file_list.files, ['b.txt'])
+    1:         self.assertNoWarnings()
+       
+    1:         file_list.process_template_line('global-exclude *.rb')
+    1:         self.assertEqual(file_list.files, ['b.txt'])
+    1:         self.assertWarnings()
+       
+               # recursive-include
+    1:         file_list = FileList()
+    1:         file_list.set_allfiles(['a.py', l('d/b.py'), l('d/c.txt'),
+    1:                                 l('d/d/e.py')])
+       
+    1:         file_list.process_template_line('recursive-include d *.py')
+    1:         self.assertEqual(file_list.files, [l('d/b.py'), l('d/d/e.py')])
+    1:         self.assertNoWarnings()
+       
+    1:         file_list.process_template_line('recursive-include e *.py')
+    1:         self.assertEqual(file_list.files, [l('d/b.py'), l('d/d/e.py')])
+    1:         self.assertWarnings()
+       
+               # recursive-exclude
+    1:         file_list = FileList()
+    1:         file_list.files = ['a.py', l('d/b.py'), l('d/c.txt'), l('d/d/e.py')]
+       
+    1:         file_list.process_template_line('recursive-exclude d *.py')
+    1:         self.assertEqual(file_list.files, ['a.py', l('d/c.txt')])
+    1:         self.assertNoWarnings()
+       
+    1:         file_list.process_template_line('recursive-exclude e *.py')
+    1:         self.assertEqual(file_list.files, ['a.py', l('d/c.txt')])
+    1:         self.assertWarnings()
+       
+               # graft
+    1:         file_list = FileList()
+    1:         file_list.set_allfiles(['a.py', l('d/b.py'), l('d/d/e.py'),
+    1:                                 l('f/f.py')])
+       
+    1:         file_list.process_template_line('graft d')
+    1:         self.assertEqual(file_list.files, [l('d/b.py'), l('d/d/e.py')])
+    1:         self.assertNoWarnings()
+       
+    1:         file_list.process_template_line('graft e')
+    1:         self.assertEqual(file_list.files, [l('d/b.py'), l('d/d/e.py')])
+    1:         self.assertWarnings()
+       
+               # prune
+    1:         file_list = FileList()
+    1:         file_list.files = ['a.py', l('d/b.py'), l('d/d/e.py'), l('f/f.py')]
+       
+    1:         file_list.process_template_line('prune d')
+    1:         self.assertEqual(file_list.files, ['a.py', l('f/f.py')])
+    1:         self.assertNoWarnings()
+       
+    1:         file_list.process_template_line('prune e')
+    1:         self.assertEqual(file_list.files, ['a.py', l('f/f.py')])
+    1:         self.assertWarnings()
+       
+       
+    1: def test_suite():
+    1:     return unittest.makeSuite(FileListTestCase)
+       
+    1: if __name__ == "__main__":
+>>>>>>     run_unittest(test_suite())

@@ -5,8 +5,8 @@ import sys
 import tempfile
 from absl import app
 
-import deeplearning.clgen.errors
-from deeplearning.clgen.corpuses import atomizers
+import errors
+import atomizers
 
 
 # The set of multichar tokens for the OpenCL programming language.
@@ -70,11 +70,6 @@ def test_AsciiCharacterAtomizer_AtomizeString():
   assert list(c.AtomizeString('abcabc')) == [1, 2, 3, 1, 2, 3]
 
 
-def test_AsciiCharacterAtomizer_AtomizeString_vocab_error():
-  c = atomizers.AsciiCharacterAtomizer({'a': 1, 'b': 2, 'c': 3})
-  with pytest.raises(deeplearning.clgen.errors.VocabError):
-    c.AtomizeString('abcdeabc')
-
 
 def test_AsciiCharacterAtomizer_DeatomizeIndices():
   c = atomizers.AsciiCharacterAtomizer({'a': 1, 'b': 2, 'c': 3})
@@ -91,10 +86,6 @@ __kernel void A(__global float* a, const int b, const double c) {
   assert c.DeatomizeIndices(c.AtomizeString(text)) == text
 
 
-def test_AsciiCharacterAtomizer_DeatomizeIndices_error():
-  c = atomizers.AsciiCharacterAtomizer({'a': 1, 'b': 2, 'c': 3})
-  with pytest.raises(deeplearning.clgen.errors.VocabError):
-    c.DeatomizeIndices([1, 2, 5, 10, 0])
 
 
 # GreedyAtomizer

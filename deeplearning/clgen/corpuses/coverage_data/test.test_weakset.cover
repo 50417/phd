@@ -1,0 +1,456 @@
+    1: import unittest
+    1: from test import test_support
+    1: from weakref import proxy, ref, WeakSet
+    1: import operator
+    1: import copy
+    1: import string
+    1: import os
+    1: from random import randrange, shuffle
+    1: import sys
+    1: import warnings
+    1: import collections
+    1: import gc
+    1: import contextlib
+       
+       
+    2: class Foo:
+    1:     pass
+       
+    2: class SomeClass(object):
+    1:     def __init__(self, value):
+ 3032:         self.value = value
+    1:     def __eq__(self, other):
+  955:         if type(other) != type(self):
+>>>>>>             return False
+  955:         return other.value == self.value
+       
+    1:     def __ne__(self, other):
+>>>>>>         return not self.__eq__(other)
+       
+    1:     def __hash__(self):
+ 2128:         return hash((SomeClass, self.value))
+       
+    2: class RefCycle(object):
+    1:     def __init__(self):
+ 2000:         self.cycle = self
+       
+    2: class TestWeakSet(unittest.TestCase):
+       
+    1:     def setUp(self):
+               # need to keep references to them
+  172:         self.items = [SomeClass(c) for c in ('a', 'b', 'c')]
+  172:         self.items2 = [SomeClass(c) for c in ('x', 'y', 'z')]
+ 2279:         self.letters = [SomeClass(c) for c in string.ascii_letters]
+  129:         self.ab_items = [SomeClass(c) for c in 'ab']
+  258:         self.abcde_items = [SomeClass(c) for c in 'abcde']
+  172:         self.def_items = [SomeClass(c) for c in 'def']
+   43:         self.ab_weakset = WeakSet(self.ab_items)
+   43:         self.abcde_weakset = WeakSet(self.abcde_items)
+   43:         self.def_weakset = WeakSet(self.def_items)
+   43:         self.s = WeakSet(self.items)
+   43:         self.d = dict.fromkeys(self.items)
+   43:         self.obj = SomeClass('F')
+   43:         self.fs = WeakSet([self.obj])
+       
+    1:     def test_methods(self):
+    1:         weaksetmethods = dir(WeakSet)
+   55:         for method in dir(set):
+   54:             if method == 'test_c_api' or method.startswith('_'):
+   37:                 continue
+   17:             self.assertIn(method, weaksetmethods,
+   17:                          "WeakSet missing method " + method)
+       
+    1:     def test_new_or_init(self):
+    1:         self.assertRaises(TypeError, WeakSet, [], 2)
+       
+    1:     def test_len(self):
+    1:         self.assertEqual(len(self.s), len(self.d))
+    1:         self.assertEqual(len(self.fs), 1)
+    1:         del self.obj
+    1:         self.assertEqual(len(self.fs), 0)
+       
+    1:     def test_contains(self):
+   53:         for c in self.letters:
+   52:             self.assertEqual(c in self.s, c in self.d)
+               # 1 is not weakref'able, but that TypeError is caught by __contains__
+    1:         self.assertNotIn(1, self.s)
+    1:         self.assertIn(self.obj, self.fs)
+    1:         del self.obj
+    1:         self.assertNotIn(SomeClass('F'), self.fs)
+       
+    1:     def test_union(self):
+    1:         u = self.s.union(self.items2)
+   53:         for c in self.letters:
+   52:             self.assertEqual(c in u, c in self.d or c in self.items2)
+    1:         self.assertEqual(self.s, WeakSet(self.items))
+    1:         self.assertEqual(type(u), WeakSet)
+    1:         self.assertRaises(TypeError, self.s.union, [[]])
+    6:         for C in set, frozenset, dict.fromkeys, list, tuple:
+    5:             x = WeakSet(self.items + self.items2)
+    5:             c = C(self.items2)
+    5:             self.assertEqual(self.s.union(c), x)
+    5:             del c
+    1:         self.assertEqual(len(u), len(self.items) + len(self.items2))
+    1:         self.items2.pop()
+    1:         gc.collect()
+    1:         self.assertEqual(len(u), len(self.items) + len(self.items2))
+       
+    1:     def test_or(self):
+    1:         i = self.s.union(self.items2)
+    1:         self.assertEqual(self.s | set(self.items2), i)
+    1:         self.assertEqual(self.s | frozenset(self.items2), i)
+       
+    1:     def test_intersection(self):
+    1:         s = WeakSet(self.letters)
+    1:         i = s.intersection(self.items2)
+   53:         for c in self.letters:
+   52:             self.assertEqual(c in i, c in self.items2 and c in self.letters)
+    1:         self.assertEqual(s, WeakSet(self.letters))
+    1:         self.assertEqual(type(i), WeakSet)
+    6:         for C in set, frozenset, dict.fromkeys, list, tuple:
+    5:             x = WeakSet([])
+    5:             self.assertEqual(i.intersection(C(self.items)), x)
+    1:         self.assertEqual(len(i), len(self.items2))
+    1:         self.items2.pop()
+    1:         gc.collect()
+    1:         self.assertEqual(len(i), len(self.items2))
+       
+    1:     def test_isdisjoint(self):
+    1:         self.assertTrue(self.s.isdisjoint(WeakSet(self.items2)))
+    1:         self.assertTrue(not self.s.isdisjoint(WeakSet(self.letters)))
+       
+    1:     def test_and(self):
+    1:         i = self.s.intersection(self.items2)
+    1:         self.assertEqual(self.s & set(self.items2), i)
+    1:         self.assertEqual(self.s & frozenset(self.items2), i)
+       
+    1:     def test_difference(self):
+    1:         i = self.s.difference(self.items2)
+   53:         for c in self.letters:
+   52:             self.assertEqual(c in i, c in self.d and c not in self.items2)
+    1:         self.assertEqual(self.s, WeakSet(self.items))
+    1:         self.assertEqual(type(i), WeakSet)
+    1:         self.assertRaises(TypeError, self.s.difference, [[]])
+       
+    1:     def test_sub(self):
+    1:         i = self.s.difference(self.items2)
+    1:         self.assertEqual(self.s - set(self.items2), i)
+    1:         self.assertEqual(self.s - frozenset(self.items2), i)
+       
+    1:     def test_symmetric_difference(self):
+    1:         i = self.s.symmetric_difference(self.items2)
+   53:         for c in self.letters:
+   52:             self.assertEqual(c in i, (c in self.d) ^ (c in self.items2))
+    1:         self.assertEqual(self.s, WeakSet(self.items))
+    1:         self.assertEqual(type(i), WeakSet)
+    1:         self.assertRaises(TypeError, self.s.symmetric_difference, [[]])
+    1:         self.assertEqual(len(i), len(self.items) + len(self.items2))
+    1:         self.items2.pop()
+    1:         gc.collect()
+    1:         self.assertEqual(len(i), len(self.items) + len(self.items2))
+       
+    1:     def test_xor(self):
+    1:         i = self.s.symmetric_difference(self.items2)
+    1:         self.assertEqual(self.s ^ set(self.items2), i)
+    1:         self.assertEqual(self.s ^ frozenset(self.items2), i)
+       
+    1:     def test_sub_and_super(self):
+    1:         self.assertTrue(self.ab_weakset <= self.abcde_weakset)
+    1:         self.assertTrue(self.abcde_weakset <= self.abcde_weakset)
+    1:         self.assertTrue(self.abcde_weakset >= self.ab_weakset)
+    1:         self.assertFalse(self.abcde_weakset <= self.def_weakset)
+    1:         self.assertFalse(self.abcde_weakset >= self.def_weakset)
+    1:         self.assertTrue(set('a').issubset('abc'))
+    1:         self.assertTrue(set('abc').issuperset('a'))
+    1:         self.assertFalse(set('a').issubset('cbs'))
+    1:         self.assertFalse(set('cbs').issuperset('a'))
+       
+    1:     def test_lt(self):
+    1:         self.assertTrue(self.ab_weakset < self.abcde_weakset)
+    1:         self.assertFalse(self.abcde_weakset < self.def_weakset)
+    1:         self.assertFalse(self.ab_weakset < self.ab_weakset)
+    1:         self.assertFalse(WeakSet() < WeakSet())
+       
+    1:     def test_gt(self):
+    1:         self.assertTrue(self.abcde_weakset > self.ab_weakset)
+    1:         self.assertFalse(self.abcde_weakset > self.def_weakset)
+    1:         self.assertFalse(self.ab_weakset > self.ab_weakset)
+    1:         self.assertFalse(WeakSet() > WeakSet())
+       
+    1:     def test_gc(self):
+               # Create a nest of cycles to exercise overall ref count check
+ 1002:         s = WeakSet(Foo() for i in range(1000))
+    1:         for elem in s:
+>>>>>>             elem.cycle = s
+>>>>>>             elem.sub = elem
+>>>>>>             elem.set = WeakSet([elem])
+       
+    1:     def test_subclass_with_custom_hash(self):
+               # Bug #1257731
+    2:         class H(WeakSet):
+    1:             def __hash__(self):
+    5:                 return int(id(self) & 0x7fffffff)
+    1:         s=H()
+    1:         f=set()
+    1:         f.add(s)
+    1:         self.assertIn(s, f)
+    1:         f.remove(s)
+    1:         f.add(s)
+    1:         f.discard(s)
+       
+    1:     def test_init(self):
+    1:         s = WeakSet()
+    1:         s.__init__(self.items)
+    1:         self.assertEqual(s, self.s)
+    1:         s.__init__(self.items2)
+    1:         self.assertEqual(s, WeakSet(self.items2))
+    1:         self.assertRaises(TypeError, s.__init__, s, 2);
+    1:         self.assertRaises(TypeError, s.__init__, 1);
+       
+    1:     def test_constructor_identity(self):
+    1:         s = WeakSet(self.items)
+    1:         t = WeakSet(s)
+    1:         self.assertNotEqual(id(s), id(t))
+       
+    1:     def test_hash(self):
+    1:         self.assertRaises(TypeError, hash, self.s)
+       
+    1:     def test_clear(self):
+    1:         self.s.clear()
+    1:         self.assertEqual(self.s, WeakSet([]))
+    1:         self.assertEqual(len(self.s), 0)
+       
+    1:     def test_copy(self):
+    1:         dup = self.s.copy()
+    1:         self.assertEqual(self.s, dup)
+    1:         self.assertNotEqual(id(self.s), id(dup))
+       
+    1:     def test_add(self):
+    1:         x = SomeClass('Q')
+    1:         self.s.add(x)
+    1:         self.assertIn(x, self.s)
+    1:         dup = self.s.copy()
+    1:         self.s.add(x)
+    1:         self.assertEqual(self.s, dup)
+    1:         self.assertRaises(TypeError, self.s.add, [])
+    1:         self.fs.add(Foo())
+    1:         self.assertTrue(len(self.fs) == 1)
+    1:         self.fs.add(self.obj)
+    1:         self.assertTrue(len(self.fs) == 1)
+       
+    1:     def test_remove(self):
+    1:         x = SomeClass('a')
+    1:         self.s.remove(x)
+    1:         self.assertNotIn(x, self.s)
+    1:         self.assertRaises(KeyError, self.s.remove, x)
+    1:         self.assertRaises(TypeError, self.s.remove, [])
+       
+    1:     def test_discard(self):
+    1:         a, q = SomeClass('a'), SomeClass('Q')
+    1:         self.s.discard(a)
+    1:         self.assertNotIn(a, self.s)
+    1:         self.s.discard(q)
+    1:         self.assertRaises(TypeError, self.s.discard, [])
+       
+    1:     def test_pop(self):
+    4:         for i in range(len(self.s)):
+    3:             elem = self.s.pop()
+    3:             self.assertNotIn(elem, self.s)
+    1:         self.assertRaises(KeyError, self.s.pop)
+       
+    1:     def test_update(self):
+    1:         retval = self.s.update(self.items2)
+    1:         self.assertEqual(retval, None)
+    7:         for c in (self.items + self.items2):
+    6:             self.assertIn(c, self.s)
+    1:         self.assertRaises(TypeError, self.s.update, [[]])
+       
+    1:     def test_update_set(self):
+    1:         self.s.update(set(self.items2))
+    7:         for c in (self.items + self.items2):
+    6:             self.assertIn(c, self.s)
+       
+    1:     def test_ior(self):
+    1:         self.s |= set(self.items2)
+    7:         for c in (self.items + self.items2):
+    6:             self.assertIn(c, self.s)
+       
+    1:     def test_intersection_update(self):
+    1:         retval = self.s.intersection_update(self.items2)
+    1:         self.assertEqual(retval, None)
+    7:         for c in (self.items + self.items2):
+    6:             if c in self.items2 and c in self.items:
+>>>>>>                 self.assertIn(c, self.s)
+                   else:
+    6:                 self.assertNotIn(c, self.s)
+    1:         self.assertRaises(TypeError, self.s.intersection_update, [[]])
+       
+    1:     def test_iand(self):
+    1:         self.s &= set(self.items2)
+    7:         for c in (self.items + self.items2):
+    6:             if c in self.items2 and c in self.items:
+>>>>>>                 self.assertIn(c, self.s)
+                   else:
+    6:                 self.assertNotIn(c, self.s)
+       
+    1:     def test_difference_update(self):
+    1:         retval = self.s.difference_update(self.items2)
+    1:         self.assertEqual(retval, None)
+    7:         for c in (self.items + self.items2):
+    6:             if c in self.items and c not in self.items2:
+    3:                 self.assertIn(c, self.s)
+                   else:
+    3:                 self.assertNotIn(c, self.s)
+    1:         self.assertRaises(TypeError, self.s.difference_update, [[]])
+    1:         self.assertRaises(TypeError, self.s.symmetric_difference_update, [[]])
+       
+    1:     def test_isub(self):
+    1:         self.s -= set(self.items2)
+    7:         for c in (self.items + self.items2):
+    6:             if c in self.items and c not in self.items2:
+    3:                 self.assertIn(c, self.s)
+                   else:
+    3:                 self.assertNotIn(c, self.s)
+       
+    1:     def test_symmetric_difference_update(self):
+    1:         retval = self.s.symmetric_difference_update(self.items2)
+    1:         self.assertEqual(retval, None)
+    7:         for c in (self.items + self.items2):
+    6:             if (c in self.items) ^ (c in self.items2):
+    6:                 self.assertIn(c, self.s)
+                   else:
+>>>>>>                 self.assertNotIn(c, self.s)
+    1:         self.assertRaises(TypeError, self.s.symmetric_difference_update, [[]])
+       
+    1:     def test_ixor(self):
+    1:         self.s ^= set(self.items2)
+    7:         for c in (self.items + self.items2):
+    6:             if (c in self.items) ^ (c in self.items2):
+    6:                 self.assertIn(c, self.s)
+                   else:
+>>>>>>                 self.assertNotIn(c, self.s)
+       
+    1:     def test_inplace_on_self(self):
+    1:         t = self.s.copy()
+    1:         t |= t
+    1:         self.assertEqual(t, self.s)
+    1:         t &= t
+    1:         self.assertEqual(t, self.s)
+    1:         t -= t
+    1:         self.assertEqual(t, WeakSet())
+    1:         t = self.s.copy()
+    1:         t ^= t
+    1:         self.assertEqual(t, WeakSet())
+       
+    1:     def test_eq(self):
+               # issue 5964
+    1:         self.assertTrue(self.s == self.s)
+    1:         self.assertTrue(self.s == WeakSet(self.items))
+    1:         self.assertFalse(self.s == set(self.items))
+    1:         self.assertFalse(self.s == list(self.items))
+    1:         self.assertFalse(self.s == tuple(self.items))
+    1:         self.assertFalse(self.s == 1)
+       
+    1:     def test_ne(self):
+    1:         self.assertTrue(self.s != set(self.items))
+    1:         s1 = WeakSet()
+    1:         s2 = WeakSet()
+    1:         self.assertFalse(s1 != s2)
+       
+    1:     def test_weak_destroy_while_iterating(self):
+               # Issue #7105: iterators shouldn't crash when a key is implicitly removed
+               # Create new items to be sure no-one else holds a reference
+    4:         items = [SomeClass(c) for c in ('a', 'b', 'c')]
+    1:         s = WeakSet(items)
+    1:         it = iter(s)
+    1:         next(it)             # Trigger internal iteration
+               # Destroy an item
+    1:         del items[-1]
+    1:         gc.collect()    # just in case
+               # We have removed either the first consumed items, or another one
+    1:         self.assertIn(len(list(it)), [len(items), len(items) - 1])
+    1:         del it
+               # The removal has been committed
+    1:         self.assertEqual(len(s), len(items))
+       
+    1:     def test_weak_destroy_and_mutate_while_iterating(self):
+               # Issue #7105: iterators shouldn't crash when a key is implicitly removed
+   53:         items = [SomeClass(c) for c in string.ascii_letters]
+    1:         s = WeakSet(items)
+    1:         @contextlib.contextmanager
+               def testcontext():
+    5:             try:
+    5:                 it = iter(s)
+    5:                 next(it)
+                       # Schedule an item for removal and recreate it
+    5:                 u = SomeClass(str(items.pop()))
+    5:                 gc.collect()      # just in case
+    5:                 yield u
+                   finally:
+    5:                 it = None           # should commit all removals
+       
+    1:         with testcontext() as u:
+    1:             self.assertNotIn(u, s)
+    1:         with testcontext() as u:
+    1:             self.assertRaises(KeyError, s.remove, u)
+    1:         self.assertNotIn(u, s)
+    1:         with testcontext() as u:
+    1:             s.add(u)
+    1:         self.assertIn(u, s)
+    1:         t = s.copy()
+    1:         with testcontext() as u:
+    1:             s.update(t)
+    1:         self.assertEqual(len(s), len(t))
+    1:         with testcontext() as u:
+    1:             s.clear()
+    1:         self.assertEqual(len(s), 0)
+       
+    1:     def test_len_cycles(self):
+    1:         N = 20
+   21:         items = [RefCycle() for i in range(N)]
+    1:         s = WeakSet(items)
+    1:         del items
+    1:         it = iter(s)
+    1:         try:
+    1:             next(it)
+>>>>>>         except StopIteration:
+>>>>>>             pass
+    1:         gc.collect()
+    1:         n1 = len(s)
+    1:         del it
+    1:         gc.collect()
+    1:         n2 = len(s)
+               # one item may be kept alive inside the iterator
+    1:         self.assertIn(n1, (0, 1))
+    1:         self.assertEqual(n2, 0)
+       
+    1:     def test_len_race(self):
+               # Extended sanity checks for len() in the face of cyclic collection
+    1:         self.addCleanup(gc.set_threshold, *gc.get_threshold())
+  100:         for th in range(1, 100):
+   99:             N = 20
+   99:             gc.collect(0)
+   99:             gc.set_threshold(th, th, th)
+ 2079:             items = [RefCycle() for i in range(N)]
+   99:             s = WeakSet(items)
+   99:             del items
+                   # All items will be collected at next garbage collection pass
+   99:             it = iter(s)
+   99:             try:
+   99:                 next(it)
+>>>>>>             except StopIteration:
+>>>>>>                 pass
+   99:             n1 = len(s)
+   99:             del it
+   99:             n2 = len(s)
+   99:             self.assertGreaterEqual(n1, 0)
+   99:             self.assertLessEqual(n1, N)
+   99:             self.assertGreaterEqual(n2, 0)
+   99:             self.assertLessEqual(n2, n1)
+       
+       
+    1: def test_main(verbose=None):
+    1:     test_support.run_unittest(TestWeakSet)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main(verbose=True)

@@ -1,0 +1,344 @@
+       #
+       # Module implementing synchronization primitives
+       #
+       # multiprocessing/synchronize.py
+       #
+       # Copyright (c) 2006-2008, R Oudkerk
+       # All rights reserved.
+       #
+       # Redistribution and use in source and binary forms, with or without
+       # modification, are permitted provided that the following conditions
+       # are met:
+       #
+       # 1. Redistributions of source code must retain the above copyright
+       #    notice, this list of conditions and the following disclaimer.
+       # 2. Redistributions in binary form must reproduce the above copyright
+       #    notice, this list of conditions and the following disclaimer in the
+       #    documentation and/or other materials provided with the distribution.
+       # 3. Neither the name of author nor the names of any contributors may be
+       #    used to endorse or promote products derived from this software
+       #    without specific prior written permission.
+       #
+       # THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS "AS IS" AND
+       # ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+       # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+       # ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+       # FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+       # DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+       # OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+       # HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+       # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+       # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+       # SUCH DAMAGE.
+       #
+       
+       __all__ = [
+    1:     'Lock', 'RLock', 'Semaphore', 'BoundedSemaphore', 'Condition', 'Event'
+           ]
+       
+    1: import threading
+    1: import os
+    1: import sys
+       
+    1: from time import time as _time, sleep as _sleep
+       
+    1: import _multiprocessing
+    1: from multiprocessing.process import current_process
+    1: from multiprocessing.util import Finalize, register_after_fork, debug
+    1: from multiprocessing.forking import assert_spawning, Popen
+       
+       # Try to import the mp.synchronize module cleanly, if it fails
+       # raise ImportError for platforms lacking a working sem_open implementation.
+       # See issue 3770
+    1: try:
+    1:     from _multiprocessing import SemLock
+>>>>>> except (ImportError):
+>>>>>>     raise ImportError("This platform lacks a functioning sem_open" +
+                             " implementation, therefore, the required" +
+>>>>>>                       " synchronization primitives needed will not" +
+>>>>>>                       " function, see issue 3770.")
+       
+       #
+       # Constants
+       #
+       
+    1: RECURSIVE_MUTEX, SEMAPHORE = range(2)
+    1: SEM_VALUE_MAX = _multiprocessing.SemLock.SEM_VALUE_MAX
+       
+       #
+       # Base class for semaphores and mutexes; wraps `_multiprocessing.SemLock`
+       #
+       
+    2: class SemLock(object):
+       
+    1:     def __init__(self, kind, value, maxvalue):
+  175:         sl = self._semlock = _multiprocessing.SemLock(kind, value, maxvalue)
+  175:         debug('created semlock with handle %s' % sl.handle)
+  175:         self._make_methods()
+       
+  175:         if sys.platform != 'win32':
+  175:             def _after_fork(obj):
+>>>>>>                 obj._semlock._after_fork()
+  175:             register_after_fork(self, _after_fork)
+       
+    1:     def _make_methods(self):
+  175:         self.acquire = self._semlock.acquire
+  175:         self.release = self._semlock.release
+       
+    1:     def __enter__(self):
+    1:         return self._semlock.__enter__()
+       
+    1:     def __exit__(self, *args):
+    1:         return self._semlock.__exit__(*args)
+       
+    1:     def __getstate__(self):
+>>>>>>         assert_spawning(self)
+>>>>>>         sl = self._semlock
+>>>>>>         return (Popen.duplicate_for_child(sl.handle), sl.kind, sl.maxvalue)
+       
+    1:     def __setstate__(self, state):
+>>>>>>         self._semlock = _multiprocessing.SemLock._rebuild(*state)
+>>>>>>         debug('recreated blocker with handle %r' % state[0])
+>>>>>>         self._make_methods()
+       
+       #
+       # Semaphore
+       #
+       
+    2: class Semaphore(SemLock):
+       
+    1:     def __init__(self, value=1):
+   43:         SemLock.__init__(self, SEMAPHORE, value, SEM_VALUE_MAX)
+       
+    1:     def get_value(self):
+   24:         return self._semlock._get_value()
+       
+    1:     def __repr__(self):
+>>>>>>         try:
+>>>>>>             value = self._semlock._get_value()
+>>>>>>         except Exception:
+>>>>>>             value = 'unknown'
+>>>>>>         return '<Semaphore(value=%s)>' % value
+       
+       #
+       # Bounded semaphore
+       #
+       
+    2: class BoundedSemaphore(Semaphore):
+       
+    1:     def __init__(self, value=1):
+   11:         SemLock.__init__(self, SEMAPHORE, value, value)
+       
+    1:     def __repr__(self):
+>>>>>>         try:
+>>>>>>             value = self._semlock._get_value()
+>>>>>>         except Exception:
+>>>>>>             value = 'unknown'
+>>>>>>         return '<BoundedSemaphore(value=%s, maxvalue=%s)>' % \
+>>>>>>                (value, self._semlock.maxvalue)
+       
+       #
+       # Non-recursive lock
+       #
+       
+    2: class Lock(SemLock):
+       
+    1:     def __init__(self):
+   98:         SemLock.__init__(self, SEMAPHORE, 1, 1)
+       
+    1:     def __repr__(self):
+>>>>>>         try:
+>>>>>>             if self._semlock._is_mine():
+>>>>>>                 name = current_process().name
+>>>>>>                 if threading.current_thread().name != 'MainThread':
+>>>>>>                     name += '|' + threading.current_thread().name
+>>>>>>             elif self._semlock._get_value() == 1:
+>>>>>>                 name = 'None'
+>>>>>>             elif self._semlock._count() > 0:
+>>>>>>                 name = 'SomeOtherThread'
+                   else:
+>>>>>>                 name = 'SomeOtherProcess'
+>>>>>>         except Exception:
+>>>>>>             name = 'unknown'
+>>>>>>         return '<Lock(owner=%s)>' % name
+       
+       #
+       # Recursive lock
+       #
+       
+    2: class RLock(SemLock):
+       
+    1:     def __init__(self):
+   23:         SemLock.__init__(self, RECURSIVE_MUTEX, 1, 1)
+       
+    1:     def __repr__(self):
+>>>>>>         try:
+>>>>>>             if self._semlock._is_mine():
+>>>>>>                 name = current_process().name
+>>>>>>                 if threading.current_thread().name != 'MainThread':
+>>>>>>                     name += '|' + threading.current_thread().name
+>>>>>>                 count = self._semlock._count()
+>>>>>>             elif self._semlock._get_value() == 1:
+>>>>>>                 name, count = 'None', 0
+>>>>>>             elif self._semlock._count() > 0:
+>>>>>>                 name, count = 'SomeOtherThread', 'nonzero'
+                   else:
+>>>>>>                 name, count = 'SomeOtherProcess', 'nonzero'
+>>>>>>         except Exception:
+>>>>>>             name, count = 'unknown', 'unknown'
+>>>>>>         return '<RLock(%s, %s)>' % (name, count)
+       
+       #
+       # Condition variable
+       #
+       
+    2: class Condition(object):
+       
+    1:     def __init__(self, lock=None):
+   10:         self._lock = lock or RLock()
+   10:         self._sleeping_count = Semaphore(0)
+   10:         self._woken_count = Semaphore(0)
+   10:         self._wait_semaphore = Semaphore(0)
+   10:         self._make_methods()
+       
+    1:     def __getstate__(self):
+>>>>>>         assert_spawning(self)
+>>>>>>         return (self._lock, self._sleeping_count,
+>>>>>>                 self._woken_count, self._wait_semaphore)
+       
+    1:     def __setstate__(self, state):
+               (self._lock, self._sleeping_count,
+>>>>>>          self._woken_count, self._wait_semaphore) = state
+>>>>>>         self._make_methods()
+       
+    1:     def __enter__(self):
+>>>>>>         return self._lock.__enter__()
+       
+    1:     def __exit__(self, *args):
+>>>>>>         return self._lock.__exit__(*args)
+       
+    1:     def _make_methods(self):
+   10:         self.acquire = self._lock.acquire
+   10:         self.release = self._lock.release
+       
+    1:     def __repr__(self):
+>>>>>>         try:
+>>>>>>             num_waiters = (self._sleeping_count._semlock._get_value() -
+>>>>>>                            self._woken_count._semlock._get_value())
+>>>>>>         except Exception:
+>>>>>>             num_waiters = 'unknown'
+>>>>>>         return '<Condition(%s, %s)>' % (self._lock, num_waiters)
+       
+    1:     def wait(self, timeout=None):
+   14:         assert self._lock._semlock._is_mine(), \
+>>>>>>                'must acquire() condition before using wait()'
+       
+               # indicate that this thread is going to sleep
+   14:         self._sleeping_count.release()
+       
+               # release lock
+   14:         count = self._lock._semlock._count()
+   28:         for i in xrange(count):
+   14:             self._lock.release()
+       
+   14:         try:
+                   # wait for notification or timeout
+   14:             self._wait_semaphore.acquire(True, timeout)
+               finally:
+                   # indicate that this thread has woken
+   14:             self._woken_count.release()
+       
+                   # reacquire lock
+   28:             for i in xrange(count):
+   14:                 self._lock.acquire()
+       
+    1:     def notify(self):
+    2:         assert self._lock._semlock._is_mine(), 'lock is not owned'
+    2:         assert not self._wait_semaphore.acquire(False)
+       
+               # to take account of timeouts since last notify() we subtract
+               # woken_count from sleeping_count and rezero woken_count
+    2:         while self._woken_count.acquire(False):
+>>>>>>             res = self._sleeping_count.acquire(False)
+>>>>>>             assert res
+       
+    2:         if self._sleeping_count.acquire(False): # try grabbing a sleeper
+    2:             self._wait_semaphore.release()      # wake up one sleeper
+    2:             self._woken_count.acquire()         # wait for the sleeper to wake
+       
+                   # rezero _wait_semaphore in case a timeout just happened
+    2:             self._wait_semaphore.acquire(False)
+       
+    1:     def notify_all(self):
+    4:         assert self._lock._semlock._is_mine(), 'lock is not owned'
+    4:         assert not self._wait_semaphore.acquire(False)
+       
+               # to take account of timeouts since last notify*() we subtract
+               # woken_count from sleeping_count and rezero woken_count
+   12:         while self._woken_count.acquire(False):
+    8:             res = self._sleeping_count.acquire(False)
+    8:             assert res
+       
+    4:         sleepers = 0
+   11:         while self._sleeping_count.acquire(False):
+    7:             self._wait_semaphore.release()        # wake up one sleeper
+    7:             sleepers += 1
+       
+    4:         if sleepers:
+    9:             for i in xrange(sleepers):
+    7:                 self._woken_count.acquire()       # wait for a sleeper to wake
+       
+                   # rezero wait_semaphore in case some timeouts just happened
+    2:             while self._wait_semaphore.acquire(False):
+>>>>>>                 pass
+       
+       #
+       # Event
+       #
+       
+    2: class Event(object):
+       
+    1:     def __init__(self):
+    6:         self._cond = Condition(Lock())
+    6:         self._flag = Semaphore(0)
+       
+    1:     def is_set(self):
+    2:         self._cond.acquire()
+    2:         try:
+    2:             if self._flag.acquire(False):
+    1:                 self._flag.release()
+    1:                 return True
+    1:             return False
+               finally:
+    2:             self._cond.release()
+       
+    1:     def set(self):
+    3:         self._cond.acquire()
+    3:         try:
+    3:             self._flag.acquire(False)
+    3:             self._flag.release()
+    3:             self._cond.notify_all()
+               finally:
+    3:             self._cond.release()
+       
+    1:     def clear(self):
+    1:         self._cond.acquire()
+    1:         try:
+    1:             self._flag.acquire(False)
+               finally:
+    1:             self._cond.release()
+       
+    1:     def wait(self, timeout=None):
+    7:         self._cond.acquire()
+    7:         try:
+    7:             if self._flag.acquire(False):
+    2:                 self._flag.release()
+                   else:
+    5:                 self._cond.wait(timeout)
+       
+    7:             if self._flag.acquire(False):
+    5:                 self._flag.release()
+    5:                 return True
+    2:             return False
+               finally:
+    7:             self._cond.release()

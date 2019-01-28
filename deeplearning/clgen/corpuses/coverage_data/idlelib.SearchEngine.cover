@@ -1,0 +1,233 @@
+    1: '''Define SearchEngine for search dialogs.'''
+    1: import re
+    1: from Tkinter import StringVar, BooleanVar, TclError
+    1: import tkMessageBox
+       
+    1: def get(root):
+           '''Return the singleton SearchEngine instance for the process.
+       
+           The single SearchEngine saves settings between dialog instances.
+           If there is not a SearchEngine already, make one.
+           '''
+    2:     if not hasattr(root, "_searchengine"):
+    1:         root._searchengine = SearchEngine(root)
+               # This creates a cycle that persists until root is deleted.
+    2:     return root._searchengine
+       
+    2: class SearchEngine:
+    1:     """Handles searching a text widget for Find, Replace, and Grep."""
+       
+    1:     def __init__(self, root):
+               '''Initialize Variables that save search state.
+       
+               The dialogs bind these to the UI elements present in the dialogs.
+               '''
+    7:         self.root = root  # need for report_error()
+    7:         self.patvar = StringVar(root, '')   # search pattern
+    7:         self.revar = BooleanVar(root, False)   # regular expression?
+    7:         self.casevar = BooleanVar(root, False)   # match case?
+    7:         self.wordvar = BooleanVar(root, False)   # match whole word?
+    7:         self.wrapvar = BooleanVar(root, True)   # wrap around buffer?
+    7:         self.backvar = BooleanVar(root, False)   # search backwards?
+       
+           # Access methods
+       
+    1:     def getpat(self):
+   17:         return self.patvar.get()
+       
+    1:     def setpat(self, pat):
+    8:         self.patvar.set(pat)
+       
+    1:     def isre(self):
+   12:         return self.revar.get()
+       
+    1:     def iscase(self):
+    5:         return self.casevar.get()
+       
+    1:     def isword(self):
+   10:         return self.wordvar.get()
+       
+    1:     def iswrap(self):
+    2:         return self.wrapvar.get()
+       
+    1:     def isback(self):
+    9:         return self.backvar.get()
+       
+           # Higher level access methods
+       
+    1:     def setcookedpat(self, pat):
+               "Set pattern after escaping if re."
+               # called only in SearchDialog.py: 66
+    2:         if self.isre():
+    1:             pat = re.escape(pat)
+    2:         self.setpat(pat)
+       
+    1:     def getcookedpat(self):
+    8:         pat = self.getpat()
+    8:         if not self.isre():  # if True, see setcookedpat
+    6:             pat = re.escape(pat)
+    8:         if self.isword():
+    1:             pat = r"\b%s\b" % pat
+    8:         return pat
+       
+    1:     def getprog(self):
+               "Return compiled cooked search pattern."
+    5:         pat = self.getpat()
+    5:         if not pat:
+    2:             self.report_error(pat, "Empty regular expression")
+    2:             return None
+    3:         pat = self.getcookedpat()
+    3:         flags = 0
+    3:         if not self.iscase():
+    1:             flags = flags | re.IGNORECASE
+    3:         try:
+    3:             prog = re.compile(pat, flags)
+    1:         except re.error as what:
+    1:             args = what.args
+    1:             msg = args[0]
+    1:             col = args[1] if len(args) >= 2 else -1
+    1:             self.report_error(pat, msg, col)
+    1:             return None
+    2:         return prog
+       
+    1:     def report_error(self, pat, msg, col=-1):
+               # Derived class could override this with something fancier
+    5:         msg = "Error: " + str(msg)
+    5:         if pat:
+    3:             msg = msg + "\nPattern: " + str(pat)
+    5:         if col >= 0:
+    1:             msg = msg + "\nOffset: " + str(col)
+    5:         tkMessageBox.showerror("Regular expression error",
+    5:                                msg, master=self.root)
+       
+    1:     def search_text(self, text, prog=None, ok=0):
+               '''Return (lineno, matchobj) or None for forward/backward search.
+       
+               This function calls the right function with the right arguments.
+               It directly return the result of that call.
+       
+               Text is a text widget. Prog is a precompiled pattern.
+               The ok parameter is a bit complicated as it has two effects.
+       
+               If there is a selection, the search begin at either end,
+               depending on the direction setting and ok, with ok meaning that
+               the search starts with the selection. Otherwise, search begins
+               at the insert mark.
+       
+               To aid progress, the search functions do not return an empty
+               match at the starting position unless ok is True.
+               '''
+       
+    8:         if not prog:
+    1:             prog = self.getprog()
+    1:             if not prog:
+    1:                 return None # Compilation failed -- stop
+    7:         wrap = self.wrapvar.get()
+    7:         first, last = get_selection(text)
+    7:         if self.isback():
+    3:             if ok:
+    1:                 start = last
+                   else:
+    2:                 start = first
+    3:             line, col = get_line_col(start)
+    3:             res = self.search_backward(text, prog, line, col, wrap, ok)
+               else:
+    4:             if ok:
+    1:                 start = first
+                   else:
+    3:                 start = last
+    4:             line, col = get_line_col(start)
+    4:             res = self.search_forward(text, prog, line, col, wrap, ok)
+    7:         return res
+       
+    1:     def search_forward(self, text, prog, line, col, wrap, ok=0):
+    7:         wrapped = 0
+    7:         startline = line
+    7:         chars = text.get("%d.0" % line, "%d.0" % (line+1))
+   17:         while chars:
+   16:             m = prog.search(chars[:-1], col)
+   16:             if m:
+    5:                 if ok or m.end() > col:
+    5:                     return line, m
+   11:             line = line + 1
+   11:             if wrapped and line > startline:
+    1:                 break
+   10:             col = 0
+   10:             ok = 1
+   10:             chars = text.get("%d.0" % line, "%d.0" % (line+1))
+   10:             if not chars and wrap:
+    2:                 wrapped = 1
+    2:                 wrap = 0
+    2:                 line = 1
+    2:                 chars = text.get("1.0", "2.0")
+    2:         return None
+       
+    1:     def search_backward(self, text, prog, line, col, wrap, ok=0):
+    7:         wrapped = 0
+    7:         startline = line
+    7:         chars = text.get("%d.0" % line, "%d.0" % (line+1))
+    7:         while 1:
+   17:             m = search_reverse(prog, chars[:-1], col)
+   17:             if m:
+    5:                 if ok or m.start() < col:
+    5:                     return line, m
+   12:             line = line - 1
+   12:             if wrapped and line < startline:
+    1:                 break
+   11:             ok = 1
+   11:             if line <= 0:
+    3:                 if not wrap:
+    1:                     break
+    2:                 wrapped = 1
+    2:                 wrap = 0
+    2:                 pos = text.index("end-1c")
+    2:                 line, col = map(int, pos.split("."))
+   10:             chars = text.get("%d.0" % line, "%d.0" % (line+1))
+   10:             col = len(chars) - 1
+    2:         return None
+       
+    1: def search_reverse(prog, chars, col):
+           '''Search backwards and return an re match object or None.
+       
+           This is done by searching forwards until there is no match.
+           Prog: compiled re object with a search method returning a match.
+           Chars: line of text, without \\n.
+           Col: stop index for the search; the limit for match.end().
+           '''
+   22:     m = prog.search(chars)
+   22:     if not m:
+   10:         return None
+   12:     found = None
+   12:     i, j = m.span()  # m.start(), m.end() == match slice indexes
+   23:     while i < col and j <= col:
+   16:         found = m
+   16:         if i == j:
+    3:             j = j+1
+   16:         m = prog.search(chars, j)
+   16:         if not m:
+    5:             break
+   11:         i, j = m.span()
+   12:     return found
+       
+    1: def get_selection(text):
+           '''Return tuple of 'line.col' indexes from selection or insert mark.
+           '''
+    9:     try:
+    9:         first = text.index("sel.first")
+    5:         last = text.index("sel.last")
+    4:     except TclError:
+    4:         first = last = None
+    9:     if not first:
+    4:         first = text.index("insert")
+    9:     if not last:
+    4:         last = first
+    9:     return first, last
+       
+    1: def get_line_col(index):
+           '''Return (line, col) tuple of ints from 'line.col' string.'''
+   11:     line, col = map(int, index.split(".")) # Fails on invalid index
+    9:     return line, col
+       
+    1: if __name__ == "__main__":
+>>>>>>     import unittest
+>>>>>>     unittest.main('idlelib.idle_test.test_searchengine', verbosity=2, exit=False)

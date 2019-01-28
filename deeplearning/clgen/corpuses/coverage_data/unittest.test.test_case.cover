@@ -1,0 +1,1171 @@
+    1: import difflib
+    1: import pprint
+    1: import pickle
+    1: import re
+    1: import sys
+       
+    1: from copy import deepcopy
+    1: from test import test_support
+       
+    1: import unittest
+       
+    1: from unittest.test.support import (
+           TestEquality, TestHashing, LoggingResult, ResultWithNoStartTestRunStopTestRun
+       )
+       
+       
+    2: class Test(object):
+    1:     "Keep these TestCase classes out of the main namespace"
+       
+    2:     class Foo(unittest.TestCase):
+    1:         def runTest(self): pass
+    1:         def test1(self): pass
+       
+    2:     class Bar(Foo):
+    1:         def test2(self): pass
+       
+    2:     class LoggingTestCase(unittest.TestCase):
+    1:         """A test case which logs its calls."""
+       
+    1:         def __init__(self, events):
+    8:             super(Test.LoggingTestCase, self).__init__('test')
+    8:             self.events = events
+       
+    1:         def setUp(self):
+    8:             self.events.append('setUp')
+       
+    1:         def test(self):
+    6:             self.events.append('test')
+       
+    1:         def tearDown(self):
+    6:             self.events.append('tearDown')
+       
+       
+    2: class Test_TestCase(unittest.TestCase, TestEquality, TestHashing):
+       
+           ### Set up attributes used by inherited tests
+           ################################################################
+       
+           # Used by TestHashing.test_hash and TestEquality.test_eq
+    1:     eq_pairs = [(Test.Foo('test1'), Test.Foo('test1'))]
+       
+           # Used by TestEquality.test_ne
+    1:     ne_pairs = [(Test.Foo('test1'), Test.Foo('runTest'))
+    1:                ,(Test.Foo('test1'), Test.Bar('test1'))
+    1:                ,(Test.Foo('test1'), Test.Bar('test2'))]
+       
+           ################################################################
+           ### /Set up attributes used by inherited tests
+       
+       
+           # "class TestCase([methodName])"
+           # ...
+           # "Each instance of TestCase will run a single test method: the
+           # method named methodName."
+           # ...
+           # "methodName defaults to "runTest"."
+           #
+           # Make sure it really is optional, and that it defaults to the proper
+           # thing.
+    1:     def test_init__no_test_name(self):
+    2:         class Test(unittest.TestCase):
+    1:             def runTest(self): raise TypeError()
+    1:             def test(self): pass
+       
+    1:         self.assertEqual(Test().id()[-13:], '.Test.runTest')
+       
+           # "class TestCase([methodName])"
+           # ...
+           # "Each instance of TestCase will run a single test method: the
+           # method named methodName."
+    1:     def test_init__test_name__valid(self):
+    2:         class Test(unittest.TestCase):
+    1:             def runTest(self): raise TypeError()
+    1:             def test(self): pass
+       
+    1:         self.assertEqual(Test('test').id()[-10:], '.Test.test')
+       
+           # "class TestCase([methodName])"
+           # ...
+           # "Each instance of TestCase will run a single test method: the
+           # method named methodName."
+    1:     def test_init__test_name__invalid(self):
+    2:         class Test(unittest.TestCase):
+    1:             def runTest(self): raise TypeError()
+    1:             def test(self): pass
+       
+    1:         try:
+    1:             Test('testfoo')
+    1:         except ValueError:
+    1:             pass
+               else:
+>>>>>>             self.fail("Failed to raise ValueError")
+       
+           # "Return the number of tests represented by the this test object. For
+           # TestCase instances, this will always be 1"
+    1:     def test_countTestCases(self):
+    2:         class Foo(unittest.TestCase):
+    1:             def test(self): pass
+       
+    1:         self.assertEqual(Foo('test').countTestCases(), 1)
+       
+           # "Return the default type of test result object to be used to run this
+           # test. For TestCase instances, this will always be
+           # unittest.TestResult;  subclasses of TestCase should
+           # override this as necessary."
+    1:     def test_defaultTestResult(self):
+    2:         class Foo(unittest.TestCase):
+    1:             def runTest(self):
+>>>>>>                 pass
+       
+    1:         result = Foo().defaultTestResult()
+    1:         self.assertEqual(type(result), unittest.TestResult)
+       
+           # "When a setUp() method is defined, the test runner will run that method
+           # prior to each test. Likewise, if a tearDown() method is defined, the
+           # test runner will invoke that method after each test. In the example,
+           # setUp() was used to create a fresh sequence for each test."
+           #
+           # Make sure the proper call order is maintained, even if setUp() raises
+           # an exception.
+    1:     def test_run_call_order__error_in_setUp(self):
+    1:         events = []
+    1:         result = LoggingResult(events)
+       
+    2:         class Foo(Test.LoggingTestCase):
+    1:             def setUp(self):
+    1:                 super(Foo, self).setUp()
+    1:                 raise RuntimeError('raised by Foo.setUp')
+       
+    1:         Foo(events).run(result)
+    1:         expected = ['startTest', 'setUp', 'addError', 'stopTest']
+    1:         self.assertEqual(events, expected)
+       
+           # "With a temporary result stopTestRun is called when setUp errors.
+    1:     def test_run_call_order__error_in_setUp_default_result(self):
+    1:         events = []
+       
+    2:         class Foo(Test.LoggingTestCase):
+    1:             def defaultTestResult(self):
+    1:                 return LoggingResult(self.events)
+       
+    1:             def setUp(self):
+    1:                 super(Foo, self).setUp()
+    1:                 raise RuntimeError('raised by Foo.setUp')
+       
+    1:         Foo(events).run()
+    1:         expected = ['startTestRun', 'startTest', 'setUp', 'addError',
+    1:                     'stopTest', 'stopTestRun']
+    1:         self.assertEqual(events, expected)
+       
+           # "When a setUp() method is defined, the test runner will run that method
+           # prior to each test. Likewise, if a tearDown() method is defined, the
+           # test runner will invoke that method after each test. In the example,
+           # setUp() was used to create a fresh sequence for each test."
+           #
+           # Make sure the proper call order is maintained, even if the test raises
+           # an error (as opposed to a failure).
+    1:     def test_run_call_order__error_in_test(self):
+    1:         events = []
+    1:         result = LoggingResult(events)
+       
+    2:         class Foo(Test.LoggingTestCase):
+    1:             def test(self):
+    1:                 super(Foo, self).test()
+    1:                 raise RuntimeError('raised by Foo.test')
+       
+    1:         expected = ['startTest', 'setUp', 'test', 'addError', 'tearDown',
+    1:                     'stopTest']
+    1:         Foo(events).run(result)
+    1:         self.assertEqual(events, expected)
+       
+           # "With a default result, an error in the test still results in stopTestRun
+           # being called."
+    1:     def test_run_call_order__error_in_test_default_result(self):
+    1:         events = []
+       
+    2:         class Foo(Test.LoggingTestCase):
+    1:             def defaultTestResult(self):
+    1:                 return LoggingResult(self.events)
+       
+    1:             def test(self):
+    1:                 super(Foo, self).test()
+    1:                 raise RuntimeError('raised by Foo.test')
+       
+    1:         expected = ['startTestRun', 'startTest', 'setUp', 'test', 'addError',
+    1:                     'tearDown', 'stopTest', 'stopTestRun']
+    1:         Foo(events).run()
+    1:         self.assertEqual(events, expected)
+       
+           # "When a setUp() method is defined, the test runner will run that method
+           # prior to each test. Likewise, if a tearDown() method is defined, the
+           # test runner will invoke that method after each test. In the example,
+           # setUp() was used to create a fresh sequence for each test."
+           #
+           # Make sure the proper call order is maintained, even if the test signals
+           # a failure (as opposed to an error).
+    1:     def test_run_call_order__failure_in_test(self):
+    1:         events = []
+    1:         result = LoggingResult(events)
+       
+    2:         class Foo(Test.LoggingTestCase):
+    1:             def test(self):
+    1:                 super(Foo, self).test()
+    1:                 self.fail('raised by Foo.test')
+       
+    1:         expected = ['startTest', 'setUp', 'test', 'addFailure', 'tearDown',
+    1:                     'stopTest']
+    1:         Foo(events).run(result)
+    1:         self.assertEqual(events, expected)
+       
+           # "When a test fails with a default result stopTestRun is still called."
+    1:     def test_run_call_order__failure_in_test_default_result(self):
+       
+    2:         class Foo(Test.LoggingTestCase):
+    1:             def defaultTestResult(self):
+    1:                 return LoggingResult(self.events)
+    1:             def test(self):
+    1:                 super(Foo, self).test()
+    1:                 self.fail('raised by Foo.test')
+       
+    1:         expected = ['startTestRun', 'startTest', 'setUp', 'test', 'addFailure',
+    1:                     'tearDown', 'stopTest', 'stopTestRun']
+    1:         events = []
+    1:         Foo(events).run()
+    1:         self.assertEqual(events, expected)
+       
+           # "When a setUp() method is defined, the test runner will run that method
+           # prior to each test. Likewise, if a tearDown() method is defined, the
+           # test runner will invoke that method after each test. In the example,
+           # setUp() was used to create a fresh sequence for each test."
+           #
+           # Make sure the proper call order is maintained, even if tearDown() raises
+           # an exception.
+    1:     def test_run_call_order__error_in_tearDown(self):
+    1:         events = []
+    1:         result = LoggingResult(events)
+       
+    2:         class Foo(Test.LoggingTestCase):
+    1:             def tearDown(self):
+    1:                 super(Foo, self).tearDown()
+    1:                 raise RuntimeError('raised by Foo.tearDown')
+       
+    1:         Foo(events).run(result)
+    1:         expected = ['startTest', 'setUp', 'test', 'tearDown', 'addError',
+    1:                     'stopTest']
+    1:         self.assertEqual(events, expected)
+       
+           # "When tearDown errors with a default result stopTestRun is still called."
+    1:     def test_run_call_order__error_in_tearDown_default_result(self):
+       
+    2:         class Foo(Test.LoggingTestCase):
+    1:             def defaultTestResult(self):
+    1:                 return LoggingResult(self.events)
+    1:             def tearDown(self):
+    1:                 super(Foo, self).tearDown()
+    1:                 raise RuntimeError('raised by Foo.tearDown')
+       
+    1:         events = []
+    1:         Foo(events).run()
+    1:         expected = ['startTestRun', 'startTest', 'setUp', 'test', 'tearDown',
+    1:                     'addError', 'stopTest', 'stopTestRun']
+    1:         self.assertEqual(events, expected)
+       
+           # "TestCase.run() still works when the defaultTestResult is a TestResult
+           # that does not support startTestRun and stopTestRun.
+    1:     def test_run_call_order_default_result(self):
+       
+    2:         class Foo(unittest.TestCase):
+    1:             def defaultTestResult(self):
+    1:                 return ResultWithNoStartTestRunStopTestRun()
+    1:             def test(self):
+    1:                 pass
+       
+    1:         Foo('test').run()
+       
+           # "This class attribute gives the exception raised by the test() method.
+           # If a test framework needs to use a specialized exception, possibly to
+           # carry additional information, it must subclass this exception in
+           # order to ``play fair'' with the framework.  The initial value of this
+           # attribute is AssertionError"
+    1:     def test_failureException__default(self):
+    2:         class Foo(unittest.TestCase):
+    1:             def test(self):
+>>>>>>                 pass
+       
+    1:         self.assertIs(Foo('test').failureException, AssertionError)
+       
+           # "This class attribute gives the exception raised by the test() method.
+           # If a test framework needs to use a specialized exception, possibly to
+           # carry additional information, it must subclass this exception in
+           # order to ``play fair'' with the framework."
+           #
+           # Make sure TestCase.run() respects the designated failureException
+    1:     def test_failureException__subclassing__explicit_raise(self):
+    1:         events = []
+    1:         result = LoggingResult(events)
+       
+    2:         class Foo(unittest.TestCase):
+    1:             def test(self):
+    1:                 raise RuntimeError()
+       
+    1:             failureException = RuntimeError
+       
+    1:         self.assertIs(Foo('test').failureException, RuntimeError)
+       
+       
+    1:         Foo('test').run(result)
+    1:         expected = ['startTest', 'addFailure', 'stopTest']
+    1:         self.assertEqual(events, expected)
+       
+           # "This class attribute gives the exception raised by the test() method.
+           # If a test framework needs to use a specialized exception, possibly to
+           # carry additional information, it must subclass this exception in
+           # order to ``play fair'' with the framework."
+           #
+           # Make sure TestCase.run() respects the designated failureException
+    1:     def test_failureException__subclassing__implicit_raise(self):
+    1:         events = []
+    1:         result = LoggingResult(events)
+       
+    2:         class Foo(unittest.TestCase):
+    1:             def test(self):
+    1:                 self.fail("foo")
+       
+    1:             failureException = RuntimeError
+       
+    1:         self.assertIs(Foo('test').failureException, RuntimeError)
+       
+       
+    1:         Foo('test').run(result)
+    1:         expected = ['startTest', 'addFailure', 'stopTest']
+    1:         self.assertEqual(events, expected)
+       
+           # "The default implementation does nothing."
+    1:     def test_setUp(self):
+    2:         class Foo(unittest.TestCase):
+    1:             def runTest(self):
+>>>>>>                 pass
+       
+               # ... and nothing should happen
+    1:         Foo().setUp()
+       
+           # "The default implementation does nothing."
+    1:     def test_tearDown(self):
+    2:         class Foo(unittest.TestCase):
+    1:             def runTest(self):
+>>>>>>                 pass
+       
+               # ... and nothing should happen
+    1:         Foo().tearDown()
+       
+           # "Return a string identifying the specific test case."
+           #
+           # Because of the vague nature of the docs, I'm not going to lock this
+           # test down too much. Really all that can be asserted is that the id()
+           # will be a string (either 8-byte or unicode -- again, because the docs
+           # just say "string")
+    1:     def test_id(self):
+    2:         class Foo(unittest.TestCase):
+    1:             def runTest(self):
+>>>>>>                 pass
+       
+    1:         self.assertIsInstance(Foo().id(), basestring)
+       
+           # "If result is omitted or None, a temporary result object is created
+           # and used, but is not made available to the caller. As TestCase owns the
+           # temporary result startTestRun and stopTestRun are called.
+       
+    1:     def test_run__uses_defaultTestResult(self):
+    1:         events = []
+       
+    2:         class Foo(unittest.TestCase):
+    1:             def test(self):
+    1:                 events.append('test')
+       
+    1:             def defaultTestResult(self):
+    1:                 return LoggingResult(events)
+       
+               # Make run() find a result object on its own
+    1:         Foo('test').run()
+       
+    1:         expected = ['startTestRun', 'startTest', 'test', 'addSuccess',
+    1:             'stopTest', 'stopTestRun']
+    1:         self.assertEqual(events, expected)
+       
+    1:     def testShortDescriptionWithoutDocstring(self):
+    1:         self.assertIsNone(self.shortDescription())
+       
+    1:     @unittest.skipIf(sys.flags.optimize >= 2,
+    1:                      "Docstrings are omitted with -O2 and above")
+           def testShortDescriptionWithOneLineDocstring(self):
+               """Tests shortDescription() for a method with a docstring."""
+    1:         self.assertEqual(
+    1:                 self.shortDescription(),
+    1:                 'Tests shortDescription() for a method with a docstring.')
+       
+    1:     @unittest.skipIf(sys.flags.optimize >= 2,
+    1:                      "Docstrings are omitted with -O2 and above")
+           def testShortDescriptionWithMultiLineDocstring(self):
+               """Tests shortDescription() for a method with a longer docstring.
+       
+               This method ensures that only the first line of a docstring is
+               returned used in the short description, no matter how long the
+               whole thing is.
+               """
+    1:         self.assertEqual(
+    1:                 self.shortDescription(),
+    1:                  'Tests shortDescription() for a method with a longer '
+                        'docstring.')
+       
+    1:     def testAddTypeEqualityFunc(self):
+    2:         class SadSnake(object):
+    1:             """Dummy class for test_addTypeEqualityFunc."""
+    1:         s1, s2 = SadSnake(), SadSnake()
+    1:         self.assertNotEqual(s1, s2)
+    1:         def AllSnakesCreatedEqual(a, b, msg=None):
+    1:             return type(a) is type(b) is SadSnake
+    1:         self.addTypeEqualityFunc(SadSnake, AllSnakesCreatedEqual)
+    1:         self.assertEqual(s1, s2)
+               # No this doesn't clean up and remove the SadSnake equality func
+               # from this TestCase instance but since its a local nothing else
+               # will ever notice that.
+       
+    1:     def testAssertIs(self):
+    1:         thing = object()
+    1:         self.assertIs(thing, thing)
+    1:         self.assertRaises(self.failureException, self.assertIs, thing, object())
+       
+    1:     def testAssertIsNot(self):
+    1:         thing = object()
+    1:         self.assertIsNot(thing, object())
+    1:         self.assertRaises(self.failureException, self.assertIsNot, thing, thing)
+       
+    1:     def testAssertIsInstance(self):
+    1:         thing = []
+    1:         self.assertIsInstance(thing, list)
+    1:         self.assertRaises(self.failureException, self.assertIsInstance,
+    1:                           thing, dict)
+       
+    1:     def testAssertNotIsInstance(self):
+    1:         thing = []
+    1:         self.assertNotIsInstance(thing, dict)
+    1:         self.assertRaises(self.failureException, self.assertNotIsInstance,
+    1:                           thing, list)
+       
+    1:     def testAssertIn(self):
+    1:         animals = {'monkey': 'banana', 'cow': 'grass', 'seal': 'fish'}
+       
+    1:         self.assertIn('a', 'abc')
+    1:         self.assertIn(2, [1, 2, 3])
+    1:         self.assertIn('monkey', animals)
+       
+    1:         self.assertNotIn('d', 'abc')
+    1:         self.assertNotIn(0, [1, 2, 3])
+    1:         self.assertNotIn('otter', animals)
+       
+    1:         self.assertRaises(self.failureException, self.assertIn, 'x', 'abc')
+    1:         self.assertRaises(self.failureException, self.assertIn, 4, [1, 2, 3])
+    1:         self.assertRaises(self.failureException, self.assertIn, 'elephant',
+    1:                           animals)
+       
+    1:         self.assertRaises(self.failureException, self.assertNotIn, 'c', 'abc')
+    1:         self.assertRaises(self.failureException, self.assertNotIn, 1, [1, 2, 3])
+    1:         self.assertRaises(self.failureException, self.assertNotIn, 'cow',
+    1:                           animals)
+       
+    1:     def testAssertDictContainsSubset(self):
+    1:         self.assertDictContainsSubset({}, {})
+    1:         self.assertDictContainsSubset({}, {'a': 1})
+    1:         self.assertDictContainsSubset({'a': 1}, {'a': 1})
+    1:         self.assertDictContainsSubset({'a': 1}, {'a': 1, 'b': 2})
+    1:         self.assertDictContainsSubset({'a': 1, 'b': 2}, {'a': 1, 'b': 2})
+       
+    1:         with self.assertRaises(self.failureException):
+    1:             self.assertDictContainsSubset({1: "one"}, {})
+       
+    1:         with self.assertRaises(self.failureException):
+    1:             self.assertDictContainsSubset({'a': 2}, {'a': 1})
+       
+    1:         with self.assertRaises(self.failureException):
+    1:             self.assertDictContainsSubset({'c': 1}, {'a': 1})
+       
+    1:         with self.assertRaises(self.failureException):
+    1:             self.assertDictContainsSubset({'a': 1, 'c': 1}, {'a': 1})
+       
+    1:         with self.assertRaises(self.failureException):
+    1:             self.assertDictContainsSubset({'a': 1, 'c': 1}, {'a': 1})
+       
+    1:         with test_support.check_warnings(("", UnicodeWarning)):
+  257:             one = ''.join(chr(i) for i in range(255))
+                   # this used to cause a UnicodeDecodeError constructing the failure msg
+    1:             with self.assertRaises(self.failureException):
+    1:                 self.assertDictContainsSubset({'foo': one}, {'foo': u'\uFFFD'})
+       
+    1:     def testAssertEqual(self):
+               equal_pairs = [
+    1:                 ((), ()),
+    1:                 ({}, {}),
+    1:                 ([], []),
+    1:                 (set(), set()),
+    1:                 (frozenset(), frozenset())]
+    6:         for a, b in equal_pairs:
+                   # This mess of try excepts is to test the assertEqual behavior
+                   # itself.
+    5:             try:
+    5:                 self.assertEqual(a, b)
+>>>>>>             except self.failureException:
+>>>>>>                 self.fail('assertEqual(%r, %r) failed' % (a, b))
+    5:             try:
+    5:                 self.assertEqual(a, b, msg='foo')
+>>>>>>             except self.failureException:
+>>>>>>                 self.fail('assertEqual(%r, %r) with msg= failed' % (a, b))
+    5:             try:
+    5:                 self.assertEqual(a, b, 'foo')
+>>>>>>             except self.failureException:
+>>>>>>                 self.fail('assertEqual(%r, %r) with third parameter failed' %
+>>>>>>                           (a, b))
+       
+               unequal_pairs = [
+    1:                ((), []),
+    1:                ({}, set()),
+    1:                (set([4,1]), frozenset([4,2])),
+    1:                (frozenset([4,5]), set([2,3])),
+    1:                (set([3,4]), set([5,4]))]
+    6:         for a, b in unequal_pairs:
+    5:             self.assertRaises(self.failureException, self.assertEqual, a, b)
+    5:             self.assertRaises(self.failureException, self.assertEqual, a, b,
+    5:                               'foo')
+    5:             self.assertRaises(self.failureException, self.assertEqual, a, b,
+    5:                               msg='foo')
+       
+    1:     def testEquality(self):
+    1:         self.assertListEqual([], [])
+    1:         self.assertTupleEqual((), ())
+    1:         self.assertSequenceEqual([], ())
+       
+    1:         a = [0, 'a', []]
+    1:         b = []
+    1:         self.assertRaises(unittest.TestCase.failureException,
+    1:                           self.assertListEqual, a, b)
+    1:         self.assertRaises(unittest.TestCase.failureException,
+    1:                           self.assertListEqual, tuple(a), tuple(b))
+    1:         self.assertRaises(unittest.TestCase.failureException,
+    1:                           self.assertSequenceEqual, a, tuple(b))
+       
+    1:         b.extend(a)
+    1:         self.assertListEqual(a, b)
+    1:         self.assertTupleEqual(tuple(a), tuple(b))
+    1:         self.assertSequenceEqual(a, tuple(b))
+    1:         self.assertSequenceEqual(tuple(a), b)
+       
+    1:         self.assertRaises(self.failureException, self.assertListEqual,
+    1:                           a, tuple(b))
+    1:         self.assertRaises(self.failureException, self.assertTupleEqual,
+    1:                           tuple(a), b)
+    1:         self.assertRaises(self.failureException, self.assertListEqual, None, b)
+    1:         self.assertRaises(self.failureException, self.assertTupleEqual, None,
+    1:                           tuple(b))
+    1:         self.assertRaises(self.failureException, self.assertSequenceEqual,
+    1:                           None, tuple(b))
+    1:         self.assertRaises(self.failureException, self.assertListEqual, 1, 1)
+    1:         self.assertRaises(self.failureException, self.assertTupleEqual, 1, 1)
+    1:         self.assertRaises(self.failureException, self.assertSequenceEqual,
+    1:                           1, 1)
+       
+    1:         self.assertDictEqual({}, {})
+       
+    1:         c = { 'x': 1 }
+    1:         d = {}
+    1:         self.assertRaises(unittest.TestCase.failureException,
+    1:                           self.assertDictEqual, c, d)
+       
+    1:         d.update(c)
+    1:         self.assertDictEqual(c, d)
+       
+    1:         d['x'] = 0
+    1:         self.assertRaises(unittest.TestCase.failureException,
+    1:                           self.assertDictEqual, c, d, 'These are unequal')
+       
+    1:         self.assertRaises(self.failureException, self.assertDictEqual, None, d)
+    1:         self.assertRaises(self.failureException, self.assertDictEqual, [], d)
+    1:         self.assertRaises(self.failureException, self.assertDictEqual, 1, 1)
+       
+    1:     def testAssertSequenceEqualMaxDiff(self):
+    1:         self.assertEqual(self.maxDiff, 80*8)
+    1:         seq1 = 'a' + 'x' * 80**2
+    1:         seq2 = 'b' + 'x' * 80**2
+    1:         diff = '\n'.join(difflib.ndiff(pprint.pformat(seq1).splitlines(),
+    1:                                        pprint.pformat(seq2).splitlines()))
+               # the +1 is the leading \n added by assertSequenceEqual
+    1:         omitted = unittest.case.DIFF_OMITTED % (len(diff) + 1,)
+       
+    1:         self.maxDiff = len(diff)//2
+    1:         try:
+    1:             self.assertSequenceEqual(seq1, seq2)
+    1:         except self.failureException as e:
+    1:             msg = e.args[0]
+               else:
+>>>>>>             self.fail('assertSequenceEqual did not fail.')
+    1:         self.assertLess(len(msg), len(diff))
+    1:         self.assertIn(omitted, msg)
+       
+    1:         self.maxDiff = len(diff) * 2
+    1:         try:
+    1:             self.assertSequenceEqual(seq1, seq2)
+    1:         except self.failureException as e:
+    1:             msg = e.args[0]
+               else:
+>>>>>>             self.fail('assertSequenceEqual did not fail.')
+    1:         self.assertGreater(len(msg), len(diff))
+    1:         self.assertNotIn(omitted, msg)
+       
+    1:         self.maxDiff = None
+    1:         try:
+    1:             self.assertSequenceEqual(seq1, seq2)
+    1:         except self.failureException as e:
+    1:             msg = e.args[0]
+               else:
+>>>>>>             self.fail('assertSequenceEqual did not fail.')
+    1:         self.assertGreater(len(msg), len(diff))
+    1:         self.assertNotIn(omitted, msg)
+       
+    1:     def testTruncateMessage(self):
+    1:         self.maxDiff = 1
+    1:         message = self._truncateMessage('foo', 'bar')
+    1:         omitted = unittest.case.DIFF_OMITTED % len('bar')
+    1:         self.assertEqual(message, 'foo' + omitted)
+       
+    1:         self.maxDiff = None
+    1:         message = self._truncateMessage('foo', 'bar')
+    1:         self.assertEqual(message, 'foobar')
+       
+    1:         self.maxDiff = 4
+    1:         message = self._truncateMessage('foo', 'bar')
+    1:         self.assertEqual(message, 'foobar')
+       
+    1:     def testAssertDictEqualTruncates(self):
+    1:         test = unittest.TestCase('assertEqual')
+    1:         def truncate(msg, diff):
+    1:             return 'foo'
+    1:         test._truncateMessage = truncate
+    1:         try:
+    1:             test.assertDictEqual({}, {1: 0})
+    1:         except self.failureException as e:
+    1:             self.assertEqual(str(e), 'foo')
+               else:
+>>>>>>             self.fail('assertDictEqual did not fail')
+       
+    1:     def testAssertMultiLineEqualTruncates(self):
+    1:         test = unittest.TestCase('assertEqual')
+    1:         def truncate(msg, diff):
+    1:             return 'foo'
+    1:         test._truncateMessage = truncate
+    1:         try:
+    1:             test.assertMultiLineEqual('foo', 'bar')
+    1:         except self.failureException as e:
+    1:             self.assertEqual(str(e), 'foo')
+               else:
+>>>>>>             self.fail('assertMultiLineEqual did not fail')
+       
+    1:     def testAssertEqual_diffThreshold(self):
+               # check threshold value
+    1:         self.assertEqual(self._diffThreshold, 2**16)
+               # disable madDiff to get diff markers
+    1:         self.maxDiff = None
+       
+               # set a lower threshold value and add a cleanup to restore it
+    1:         old_threshold = self._diffThreshold
+    1:         self._diffThreshold = 2**8
+    2:         self.addCleanup(lambda: setattr(self, '_diffThreshold', old_threshold))
+       
+               # under the threshold: diff marker (^) in error message
+    1:         s = u'x' * (2**7)
+    1:         with self.assertRaises(self.failureException) as cm:
+    1:             self.assertEqual(s + 'a', s + 'b')
+    1:         self.assertIn('^', str(cm.exception))
+    1:         self.assertEqual(s + 'a', s + 'a')
+       
+               # over the threshold: diff not used and marker (^) not in error message
+    1:         s = u'x' * (2**9)
+               # if the path that uses difflib is taken, _truncateMessage will be
+               # called -- replace it with explodingTruncation to verify that this
+               # doesn't happen
+    1:         def explodingTruncation(message, diff):
+>>>>>>             raise SystemError('this should not be raised')
+    1:         old_truncate = self._truncateMessage
+    1:         self._truncateMessage = explodingTruncation
+    2:         self.addCleanup(lambda: setattr(self, '_truncateMessage', old_truncate))
+       
+    1:         s1, s2 = s + 'a', s + 'b'
+    1:         with self.assertRaises(self.failureException) as cm:
+    1:             self.assertEqual(s1, s2)
+    1:         self.assertNotIn('^', str(cm.exception))
+    1:         self.assertEqual(str(cm.exception), '%r != %r' % (s1, s2))
+    1:         self.assertEqual(s + 'a', s + 'a')
+       
+    1:     def testAssertItemsEqual(self):
+    1:         a = object()
+    1:         self.assertItemsEqual([1, 2, 3], [3, 2, 1])
+    1:         self.assertItemsEqual(['foo', 'bar', 'baz'], ['bar', 'baz', 'foo'])
+    1:         self.assertItemsEqual([a, a, 2, 2, 3], (a, 2, 3, a, 2))
+    1:         self.assertItemsEqual([1, "2", "a", "a"], ["a", "2", True, "a"])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [1, 2] + [3] * 100, [1] * 100 + [2, 3])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [1, "2", "a", "a"], ["a", "2", True, 1])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [10], [10, 11])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [10, 11], [10])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [10, 11, 10], [10, 11])
+       
+               # Test that sequences of unhashable objects can be tested for sameness:
+    1:         self.assertItemsEqual([[1, 2], [3, 4], 0], [False, [3, 4], [1, 2]])
+               # Test that iterator of unhashable objects can be tested for sameness:
+    1:         self.assertItemsEqual(iter([1, 2, [], 3, 4]),
+    1:                               iter([1, 2, [], 3, 4]))
+       
+               # hashable types, but not orderable
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [], [divmod, 'x', 1, 5j, 2j, frozenset()])
+               # comparing dicts
+    1:         self.assertItemsEqual([{'a': 1}, {'b': 2}], [{'b': 2}, {'a': 1}])
+               # comparing heterogenous non-hashable sequences
+    1:         self.assertItemsEqual([1, 'x', divmod, []], [divmod, [], 'x', 1])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [], [divmod, [], 'x', 1, 5j, 2j, set()])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [[1]], [[2]])
+       
+               # Same elements, but not same sequence length
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [1, 1, 2], [2, 1])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [1, 1, "2", "a", "a"], ["2", "2", True, "a"])
+    1:         self.assertRaises(self.failureException, self.assertItemsEqual,
+    1:                           [1, {'b': 2}, None, True], [{'b': 2}, True, None])
+       
+               # Same elements which don't reliably compare, in
+               # different order, see issue 10242
+    1:         a = [{2,4}, {1,2}]
+    1:         b = a[::-1]
+    1:         self.assertItemsEqual(a, b)
+       
+               # test utility functions supporting assertItemsEqual()
+       
+    1:         diffs = set(unittest.util._count_diff_all_purpose('aaabccd', 'abbbcce'))
+    1:         expected = {(3,1,'a'), (1,3,'b'), (1,0,'d'), (0,1,'e')}
+    1:         self.assertEqual(diffs, expected)
+       
+    1:         diffs = unittest.util._count_diff_all_purpose([[]], [])
+    1:         self.assertEqual(diffs, [(1, 0, [])])
+       
+    1:         diffs = set(unittest.util._count_diff_hashable('aaabccd', 'abbbcce'))
+    1:         expected = {(3,1,'a'), (1,3,'b'), (1,0,'d'), (0,1,'e')}
+    1:         self.assertEqual(diffs, expected)
+       
+    1:     def testAssertSetEqual(self):
+    1:         set1 = set()
+    1:         set2 = set()
+    1:         self.assertSetEqual(set1, set2)
+       
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, None, set2)
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, [], set2)
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, set1, None)
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, set1, [])
+       
+    1:         set1 = set(['a'])
+    1:         set2 = set()
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, set1, set2)
+       
+    1:         set1 = set(['a'])
+    1:         set2 = set(['a'])
+    1:         self.assertSetEqual(set1, set2)
+       
+    1:         set1 = set(['a'])
+    1:         set2 = set(['a', 'b'])
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, set1, set2)
+       
+    1:         set1 = set(['a'])
+    1:         set2 = frozenset(['a', 'b'])
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, set1, set2)
+       
+    1:         set1 = set(['a', 'b'])
+    1:         set2 = frozenset(['a', 'b'])
+    1:         self.assertSetEqual(set1, set2)
+       
+    1:         set1 = set()
+    1:         set2 = "foo"
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, set1, set2)
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, set2, set1)
+       
+               # make sure any string formatting is tuple-safe
+    1:         set1 = set([(0, 1), (2, 3)])
+    1:         set2 = set([(4, 5)])
+    1:         self.assertRaises(self.failureException, self.assertSetEqual, set1, set2)
+       
+    1:     def testInequality(self):
+               # Try ints
+    1:         self.assertGreater(2, 1)
+    1:         self.assertGreaterEqual(2, 1)
+    1:         self.assertGreaterEqual(1, 1)
+    1:         self.assertLess(1, 2)
+    1:         self.assertLessEqual(1, 2)
+    1:         self.assertLessEqual(1, 1)
+    1:         self.assertRaises(self.failureException, self.assertGreater, 1, 2)
+    1:         self.assertRaises(self.failureException, self.assertGreater, 1, 1)
+    1:         self.assertRaises(self.failureException, self.assertGreaterEqual, 1, 2)
+    1:         self.assertRaises(self.failureException, self.assertLess, 2, 1)
+    1:         self.assertRaises(self.failureException, self.assertLess, 1, 1)
+    1:         self.assertRaises(self.failureException, self.assertLessEqual, 2, 1)
+       
+               # Try Floats
+    1:         self.assertGreater(1.1, 1.0)
+    1:         self.assertGreaterEqual(1.1, 1.0)
+    1:         self.assertGreaterEqual(1.0, 1.0)
+    1:         self.assertLess(1.0, 1.1)
+    1:         self.assertLessEqual(1.0, 1.1)
+    1:         self.assertLessEqual(1.0, 1.0)
+    1:         self.assertRaises(self.failureException, self.assertGreater, 1.0, 1.1)
+    1:         self.assertRaises(self.failureException, self.assertGreater, 1.0, 1.0)
+    1:         self.assertRaises(self.failureException, self.assertGreaterEqual, 1.0, 1.1)
+    1:         self.assertRaises(self.failureException, self.assertLess, 1.1, 1.0)
+    1:         self.assertRaises(self.failureException, self.assertLess, 1.0, 1.0)
+    1:         self.assertRaises(self.failureException, self.assertLessEqual, 1.1, 1.0)
+       
+               # Try Strings
+    1:         self.assertGreater('bug', 'ant')
+    1:         self.assertGreaterEqual('bug', 'ant')
+    1:         self.assertGreaterEqual('ant', 'ant')
+    1:         self.assertLess('ant', 'bug')
+    1:         self.assertLessEqual('ant', 'bug')
+    1:         self.assertLessEqual('ant', 'ant')
+    1:         self.assertRaises(self.failureException, self.assertGreater, 'ant', 'bug')
+    1:         self.assertRaises(self.failureException, self.assertGreater, 'ant', 'ant')
+    1:         self.assertRaises(self.failureException, self.assertGreaterEqual, 'ant', 'bug')
+    1:         self.assertRaises(self.failureException, self.assertLess, 'bug', 'ant')
+    1:         self.assertRaises(self.failureException, self.assertLess, 'ant', 'ant')
+    1:         self.assertRaises(self.failureException, self.assertLessEqual, 'bug', 'ant')
+       
+               # Try Unicode
+    1:         self.assertGreater(u'bug', u'ant')
+    1:         self.assertGreaterEqual(u'bug', u'ant')
+    1:         self.assertGreaterEqual(u'ant', u'ant')
+    1:         self.assertLess(u'ant', u'bug')
+    1:         self.assertLessEqual(u'ant', u'bug')
+    1:         self.assertLessEqual(u'ant', u'ant')
+    1:         self.assertRaises(self.failureException, self.assertGreater, u'ant', u'bug')
+    1:         self.assertRaises(self.failureException, self.assertGreater, u'ant', u'ant')
+    1:         self.assertRaises(self.failureException, self.assertGreaterEqual, u'ant',
+    1:                           u'bug')
+    1:         self.assertRaises(self.failureException, self.assertLess, u'bug', u'ant')
+    1:         self.assertRaises(self.failureException, self.assertLess, u'ant', u'ant')
+    1:         self.assertRaises(self.failureException, self.assertLessEqual, u'bug', u'ant')
+       
+               # Try Mixed String/Unicode
+    1:         self.assertGreater('bug', u'ant')
+    1:         self.assertGreater(u'bug', 'ant')
+    1:         self.assertGreaterEqual('bug', u'ant')
+    1:         self.assertGreaterEqual(u'bug', 'ant')
+    1:         self.assertGreaterEqual('ant', u'ant')
+    1:         self.assertGreaterEqual(u'ant', 'ant')
+    1:         self.assertLess('ant', u'bug')
+    1:         self.assertLess(u'ant', 'bug')
+    1:         self.assertLessEqual('ant', u'bug')
+    1:         self.assertLessEqual(u'ant', 'bug')
+    1:         self.assertLessEqual('ant', u'ant')
+    1:         self.assertLessEqual(u'ant', 'ant')
+    1:         self.assertRaises(self.failureException, self.assertGreater, 'ant', u'bug')
+    1:         self.assertRaises(self.failureException, self.assertGreater, u'ant', 'bug')
+    1:         self.assertRaises(self.failureException, self.assertGreater, 'ant', u'ant')
+    1:         self.assertRaises(self.failureException, self.assertGreater, u'ant', 'ant')
+    1:         self.assertRaises(self.failureException, self.assertGreaterEqual, 'ant',
+    1:                           u'bug')
+    1:         self.assertRaises(self.failureException, self.assertGreaterEqual, u'ant',
+    1:                           'bug')
+    1:         self.assertRaises(self.failureException, self.assertLess, 'bug', u'ant')
+    1:         self.assertRaises(self.failureException, self.assertLess, u'bug', 'ant')
+    1:         self.assertRaises(self.failureException, self.assertLess, 'ant', u'ant')
+    1:         self.assertRaises(self.failureException, self.assertLess, u'ant', 'ant')
+    1:         self.assertRaises(self.failureException, self.assertLessEqual, 'bug', u'ant')
+    1:         self.assertRaises(self.failureException, self.assertLessEqual, u'bug', 'ant')
+       
+    1:     def testAssertMultiLineEqual(self):
+               sample_text = b"""\
+       http://www.python.org/doc/2.3/lib/module-unittest.html
+       test case
+           A test case is the smallest unit of testing. [...]
+    1: """
+               revised_sample_text = b"""\
+       http://www.python.org/doc/2.4.1/lib/module-unittest.html
+       test case
+           A test case is the smallest unit of testing. [...] You may provide your
+           own implementation that does not subclass from TestCase, of course.
+    1: """
+               sample_text_error = b"""\
+       - http://www.python.org/doc/2.3/lib/module-unittest.html
+       ?                             ^
+       + http://www.python.org/doc/2.4.1/lib/module-unittest.html
+       ?                             ^^^
+         test case
+       -     A test case is the smallest unit of testing. [...]
+       +     A test case is the smallest unit of testing. [...] You may provide your
+       ?                                                       +++++++++++++++++++++
+       +     own implementation that does not subclass from TestCase, of course.
+    1: """
+    1:         self.maxDiff = None
+    7:         for type_changer in (lambda x: x, lambda x: x.decode('utf8')):
+    2:             try:
+    2:                 self.assertMultiLineEqual(type_changer(sample_text),
+    2:                                           type_changer(revised_sample_text))
+    2:             except self.failureException, e:
+                       # need to remove the first line of the error message
+    2:                 error = str(e).encode('utf8').split('\n', 1)[1]
+       
+                       # assertMultiLineEqual is hooked up as the default for
+                       # unicode strings - so we can't use it for this check
+    2:                 self.assertTrue(sample_text_error == error)
+       
+    1:     def testAsertEqualSingleLine(self):
+    1:         sample_text = u"laden swallows fly slowly"
+    1:         revised_sample_text = u"unladen swallows fly quickly"
+               sample_text_error = """\
+       - laden swallows fly slowly
+       ?                    ^^^^
+       + unladen swallows fly quickly
+       ? ++                   ^^^^^
+    1: """
+    1:         try:
+    1:             self.assertEqual(sample_text, revised_sample_text)
+    1:         except self.failureException as e:
+    1:             error = str(e).split('\n', 1)[1]
+    1:             self.assertTrue(sample_text_error == error)
+       
+    1:     def testAssertIsNone(self):
+    1:         self.assertIsNone(None)
+    1:         self.assertRaises(self.failureException, self.assertIsNone, False)
+    1:         self.assertIsNotNone('DjZoPloGears on Rails')
+    1:         self.assertRaises(self.failureException, self.assertIsNotNone, None)
+       
+    1:     def testAssertRegexpMatches(self):
+    1:         self.assertRegexpMatches('asdfabasdf', r'ab+')
+    1:         self.assertRaises(self.failureException, self.assertRegexpMatches,
+    1:                           'saaas', r'aaaa')
+       
+    1:     def testAssertRaisesCallable(self):
+    2:         class ExceptionMock(Exception):
+    1:             pass
+    1:         def Stub():
+    3:             raise ExceptionMock('We expect')
+    1:         self.assertRaises(ExceptionMock, Stub)
+               # A tuple of exception classes is accepted
+    1:         self.assertRaises((ValueError, ExceptionMock), Stub)
+               # *args and **kwargs also work
+    1:         self.assertRaises(ValueError, int, '19', base=8)
+               # Failure when no exception is raised
+    1:         with self.assertRaises(self.failureException):
+    2:             self.assertRaises(ExceptionMock, lambda: 0)
+               # Failure when another exception is raised
+    1:         with self.assertRaises(ExceptionMock):
+    1:             self.assertRaises(ValueError, Stub)
+       
+    1:     def testAssertRaisesContext(self):
+    2:         class ExceptionMock(Exception):
+    1:             pass
+    1:         def Stub():
+    3:             raise ExceptionMock('We expect')
+    1:         with self.assertRaises(ExceptionMock):
+    1:             Stub()
+               # A tuple of exception classes is accepted
+    1:         with self.assertRaises((ValueError, ExceptionMock)) as cm:
+    1:             Stub()
+               # The context manager exposes caught exception
+    1:         self.assertIsInstance(cm.exception, ExceptionMock)
+    1:         self.assertEqual(cm.exception.args[0], 'We expect')
+               # *args and **kwargs also work
+    1:         with self.assertRaises(ValueError):
+    1:             int('19', base=8)
+               # Failure when no exception is raised
+    1:         with self.assertRaises(self.failureException):
+    1:             with self.assertRaises(ExceptionMock):
+    1:                 pass
+               # Failure when another exception is raised
+    1:         with self.assertRaises(ExceptionMock):
+    1:             self.assertRaises(ValueError, Stub)
+       
+    1:     def testAssertRaisesRegexp(self):
+    2:         class ExceptionMock(Exception):
+    1:             pass
+       
+    1:         def Stub():
+    3:             raise ExceptionMock('We expect')
+       
+    1:         self.assertRaisesRegexp(ExceptionMock, re.compile('expect$'), Stub)
+    1:         self.assertRaisesRegexp(ExceptionMock, 'expect$', Stub)
+    1:         self.assertRaisesRegexp(ExceptionMock, u'expect$', Stub)
+       
+    1:     def testAssertNotRaisesRegexp(self):
+    1:         self.assertRaisesRegexp(
+    1:                 self.failureException, '^Exception not raised$',
+    1:                 self.assertRaisesRegexp, Exception, re.compile('x'),
+    2:                 lambda: None)
+    1:         self.assertRaisesRegexp(
+    1:                 self.failureException, '^Exception not raised$',
+    1:                 self.assertRaisesRegexp, Exception, 'x',
+    2:                 lambda: None)
+    1:         self.assertRaisesRegexp(
+    1:                 self.failureException, '^Exception not raised$',
+    1:                 self.assertRaisesRegexp, Exception, u'x',
+    2:                 lambda: None)
+       
+    1:     def testAssertRaisesRegexpInvalidRegexp(self):
+               # Issue 20145.
+    2:         class MyExc(Exception):
+    1:             pass
+    1:         self.assertRaises(TypeError, self.assertRaisesRegexp, MyExc, lambda: True)
+       
+    1:     def testAssertRaisesRegexpMismatch(self):
+    1:         def Stub():
+    3:             raise Exception('Unexpected')
+       
+    1:         self.assertRaisesRegexp(
+    1:                 self.failureException,
+    1:                 r'"\^Expected\$" does not match "Unexpected"',
+    1:                 self.assertRaisesRegexp, Exception, '^Expected$',
+    1:                 Stub)
+    1:         self.assertRaisesRegexp(
+    1:                 self.failureException,
+    1:                 r'"\^Expected\$" does not match "Unexpected"',
+    1:                 self.assertRaisesRegexp, Exception, u'^Expected$',
+    1:                 Stub)
+    1:         self.assertRaisesRegexp(
+    1:                 self.failureException,
+    1:                 r'"\^Expected\$" does not match "Unexpected"',
+    1:                 self.assertRaisesRegexp, Exception,
+    1:                 re.compile('^Expected$'), Stub)
+       
+    1:     def testAssertRaisesExcValue(self):
+    2:         class ExceptionMock(Exception):
+    1:             pass
+       
+    1:         def Stub(foo):
+    1:             raise ExceptionMock(foo)
+    1:         v = "particular value"
+       
+    1:         ctx = self.assertRaises(ExceptionMock)
+    1:         with ctx:
+    1:             Stub(v)
+    1:         e = ctx.exception
+    1:         self.assertIsInstance(e, ExceptionMock)
+    1:         self.assertEqual(e.args[0], v)
+       
+    1:     def testSynonymAssertMethodNames(self):
+               """Test undocumented method name synonyms.
+       
+               Please do not use these methods names in your own code.
+       
+               This test confirms their continued existence and functionality
+               in order to avoid breaking existing code.
+               """
+    1:         self.assertNotEquals(3, 5)
+    1:         self.assertEquals(3, 3)
+    1:         self.assertAlmostEquals(2.0, 2.0)
+    1:         self.assertNotAlmostEquals(3.0, 5.0)
+    1:         self.assert_(True)
+       
+    1:     def testPendingDeprecationMethodNames(self):
+               """Test fail* methods pending deprecation, they will warn in 3.2.
+       
+               Do not use these methods.  They will go away in 3.3.
+               """
+    1:         with test_support.check_warnings():
+    1:             self.failIfEqual(3, 5)
+    1:             self.failUnlessEqual(3, 3)
+    1:             self.failUnlessAlmostEqual(2.0, 2.0)
+    1:             self.failIfAlmostEqual(3.0, 5.0)
+    1:             self.failUnless(True)
+    1:             self.failUnlessRaises(TypeError, lambda _: 3.14 + u'spam')
+    1:             self.failIf(False)
+       
+    1:     def testDeepcopy(self):
+               # Issue: 5660
+    2:         class TestableTest(unittest.TestCase):
+    1:             def testNothing(self):
+>>>>>>                 pass
+       
+    1:         test = TestableTest('testNothing')
+       
+               # This shouldn't blow up
+    1:         deepcopy(test)
+       
+    1:     def testKeyboardInterrupt(self):
+    1:         def _raise(self=None):
+    4:             raise KeyboardInterrupt
+    1:         def nothing(self):
+    1:             pass
+       
+    2:         class Test1(unittest.TestCase):
+    1:             test_something = _raise
+       
+    2:         class Test2(unittest.TestCase):
+    1:             setUp = _raise
+    1:             test_something = nothing
+       
+    2:         class Test3(unittest.TestCase):
+    1:             test_something = nothing
+    1:             tearDown = _raise
+       
+    2:         class Test4(unittest.TestCase):
+    1:             def test_something(self):
+    1:                 self.addCleanup(_raise)
+       
+    5:         for klass in (Test1, Test2, Test3, Test4):
+    4:             with self.assertRaises(KeyboardInterrupt):
+    4:                 klass('test_something').run()
+       
+    1:     def testSystemExit(self):
+    1:         def _raise(self=None):
+    4:             raise SystemExit
+    1:         def nothing(self):
+    1:             pass
+       
+    2:         class Test1(unittest.TestCase):
+    1:             test_something = _raise
+       
+    2:         class Test2(unittest.TestCase):
+    1:             setUp = _raise
+    1:             test_something = nothing
+       
+    2:         class Test3(unittest.TestCase):
+    1:             test_something = nothing
+    1:             tearDown = _raise
+       
+    2:         class Test4(unittest.TestCase):
+    1:             def test_something(self):
+    1:                 self.addCleanup(_raise)
+       
+    5:         for klass in (Test1, Test2, Test3, Test4):
+    4:             result = unittest.TestResult()
+    4:             klass('test_something').run(result)
+    4:             self.assertEqual(len(result.errors), 1)
+    4:             self.assertEqual(result.testsRun, 1)
+       
+    1:     def testPickle(self):
+               # Issue 10326
+       
+               # Can't use TestCase classes defined in Test class as
+               # pickle does not work with inner classes
+    1:         test = unittest.TestCase('run')
+    4:         for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+       
+                   # blew up prior to fix
+    3:             pickled_test = pickle.dumps(test, protocol=protocol)
+       
+    3:             unpickled_test = pickle.loads(pickled_test)
+    3:             self.assertEqual(test, unpickled_test)
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     unittest.main()

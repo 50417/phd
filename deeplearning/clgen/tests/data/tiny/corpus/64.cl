@@ -1,0 +1,1 @@
+constant long a = 100;

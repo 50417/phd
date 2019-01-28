@@ -1,0 +1,71 @@
+       """This test checks for correct fork() behavior.
+    1: """
+       
+    1: import imp
+    1: import os
+    1: import signal
+    1: import sys
+    1: import time
+       
+    1: from test.fork_wait import ForkWait
+    1: from test.test_support import run_unittest, reap_children, get_attribute, import_module
+    1: threading = import_module('threading')
+       
+       #Skip test if fork does not exist.
+    1: get_attribute(os, 'fork')
+       
+       
+    2: class ForkTest(ForkWait):
+    1:     def wait_impl(self, cpid):
+    5:         for i in range(10):
+                   # waitpid() shouldn't hang, but some of the buildbots seem to hang
+                   # in the forking tests.  This is an attempt to fix the problem.
+    5:             spid, status = os.waitpid(cpid, os.WNOHANG)
+    5:             if spid == cpid:
+    2:                 break
+    3:             time.sleep(1.0)
+       
+    2:         self.assertEqual(spid, cpid)
+    2:         self.assertEqual(status, 0, "cause = %d, exit = %d" % (status&0xff, status>>8))
+       
+    1:     def test_import_lock_fork(self):
+    1:         import_started = threading.Event()
+    1:         fake_module_name = "fake test module"
+    1:         partial_module = "partial"
+    1:         complete_module = "complete"
+    1:         def importer():
+    1:             imp.acquire_lock()
+    1:             sys.modules[fake_module_name] = partial_module
+    1:             import_started.set()
+    1:             time.sleep(0.01) # Give the other thread time to try and acquire.
+    1:             sys.modules[fake_module_name] = complete_module
+    1:             imp.release_lock()
+    1:         t = threading.Thread(target=importer)
+    1:         t.start()
+    1:         import_started.wait()
+    1:         pid = os.fork()
+    1:         try:
+    1:             if not pid:
+>>>>>>                 m = __import__(fake_module_name)
+>>>>>>                 if m == complete_module:
+>>>>>>                     os._exit(0)
+                       else:
+>>>>>>                     os._exit(1)
+                   else:
+    1:                 t.join()
+                       # Exitcode 1 means the child got a partial module (bad.) No
+                       # exitcode (but a hang, which manifests as 'got pid 0')
+                       # means the child deadlocked (also bad.)
+    1:                 self.wait_impl(pid)
+               finally:
+    1:             try:
+    1:                 os.kill(pid, signal.SIGKILL)
+    1:             except OSError:
+    1:                 pass
+       
+    1: def test_main():
+    1:     run_unittest(ForkTest)
+    1:     reap_children()
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

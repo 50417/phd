@@ -1,0 +1,299 @@
+    1: import __future__
+    1: import os
+    1: import unittest
+    1: import distutils.dir_util
+    1: import tempfile
+       
+    1: from test import test_support
+       
+    1: try: set
+>>>>>> except NameError: from sets import Set as set
+       
+    1: import modulefinder
+       
+       # Note: To test modulefinder with Python 2.2, sets.py and
+       # modulefinder.py must be available - they are not in the standard
+       # library.
+       
+    1: TEST_DIR = tempfile.mkdtemp()
+    1: TEST_PATH = [TEST_DIR, os.path.dirname(__future__.__file__)]
+       
+       # Each test description is a list of 5 items:
+       #
+       # 1. a module name that will be imported by modulefinder
+       # 2. a list of module names that modulefinder is required to find
+       # 3. a list of module names that modulefinder should complain
+       #    about because they are not found
+       # 4. a list of module names that modulefinder should complain
+       #    about because they MAY be not found
+       # 5. a string specifying packages to create; the format is obvious imo.
+       #
+       # Each package will be created in TEST_DIR, and TEST_DIR will be
+       # removed after the tests again.
+       # Modulefinder searches in a path that contains TEST_DIR, plus
+       # the standard Lib directory.
+       
+       maybe_test = [
+    1:     "a.module",
+    1:     ["a", "a.module", "sys",
+    1:      "b"],
+    1:     ["c"], ["b.something"],
+           """\
+       a/__init__.py
+       a/module.py
+                                       from b import something
+                                       from c import something
+       b/__init__.py
+                                       from sys import *
+    1: """]
+       
+       maybe_test_new = [
+    1:     "a.module",
+    1:     ["a", "a.module", "sys",
+    1:      "b", "__future__"],
+    1:     ["c"], ["b.something"],
+           """\
+       a/__init__.py
+       a/module.py
+                                       from b import something
+                                       from c import something
+       b/__init__.py
+                                       from __future__ import absolute_import
+                                       from sys import *
+    1: """]
+       
+       package_test = [
+    1:     "a.module",
+    1:     ["a", "a.b", "a.c", "a.module", "mymodule", "sys"],
+    1:     ["blahblah"], [],
+           """\
+       mymodule.py
+       a/__init__.py
+                                       import blahblah
+                                       from a import b
+                                       import c
+       a/module.py
+                                       import sys
+                                       from a import b as x
+                                       from a.c import sillyname
+       a/b.py
+       a/c.py
+                                       from a.module import x
+                                       import mymodule as sillyname
+                                       from sys import version_info
+    1: """]
+       
+       absolute_import_test = [
+    1:     "a.module",
+    1:     ["a", "a.module",
+    1:      "b", "b.x", "b.y", "b.z",
+    1:      "__future__", "sys", "exceptions"],
+    1:     ["blahblah"], [],
+           """\
+       mymodule.py
+       a/__init__.py
+       a/module.py
+                                       from __future__ import absolute_import
+                                       import sys # sys
+                                       import blahblah # fails
+                                       import exceptions # exceptions
+                                       import b.x # b.x
+                                       from b import y # b.y
+                                       from b.z import * # b.z.*
+       a/exceptions.py
+       a/sys.py
+                                       import mymodule
+       a/b/__init__.py
+       a/b/x.py
+       a/b/y.py
+       a/b/z.py
+       b/__init__.py
+                                       import z
+       b/unused.py
+       b/x.py
+       b/y.py
+       b/z.py
+    1: """]
+       
+       relative_import_test = [
+    1:     "a.module",
+    1:     ["__future__",
+    1:      "a", "a.module",
+    1:      "a.b", "a.b.y", "a.b.z",
+    1:      "a.b.c", "a.b.c.moduleC",
+    1:      "a.b.c.d", "a.b.c.e",
+    1:      "a.b.x",
+    1:      "exceptions"],
+    1:     [], [],
+           """\
+       mymodule.py
+       a/__init__.py
+                                       from .b import y, z # a.b.y, a.b.z
+       a/module.py
+                                       from __future__ import absolute_import # __future__
+                                       import exceptions # exceptions
+       a/exceptions.py
+       a/sys.py
+       a/b/__init__.py
+                                       from ..b import x # a.b.x
+                                       #from a.b.c import moduleC
+                                       from .c import moduleC # a.b.moduleC
+       a/b/x.py
+       a/b/y.py
+       a/b/z.py
+       a/b/g.py
+       a/b/c/__init__.py
+                                       from ..c import e # a.b.c.e
+       a/b/c/moduleC.py
+                                       from ..c import d # a.b.c.d
+       a/b/c/d.py
+       a/b/c/e.py
+       a/b/c/x.py
+    1: """]
+       
+       relative_import_test_2 = [
+    1:     "a.module",
+    1:     ["a", "a.module",
+    1:      "a.sys",
+    1:      "a.b", "a.b.y", "a.b.z",
+    1:      "a.b.c", "a.b.c.d",
+    1:      "a.b.c.e",
+    1:      "a.b.c.moduleC",
+    1:      "a.b.c.f",
+    1:      "a.b.x",
+    1:      "a.another"],
+    1:     [], [],
+           """\
+       mymodule.py
+       a/__init__.py
+                                       from . import sys # a.sys
+       a/another.py
+       a/module.py
+                                       from .b import y, z # a.b.y, a.b.z
+       a/exceptions.py
+       a/sys.py
+       a/b/__init__.py
+                                       from .c import moduleC # a.b.c.moduleC
+                                       from .c import d # a.b.c.d
+       a/b/x.py
+       a/b/y.py
+       a/b/z.py
+       a/b/c/__init__.py
+                                       from . import e # a.b.c.e
+       a/b/c/moduleC.py
+                                       #
+                                       from . import f   # a.b.c.f
+                                       from .. import x  # a.b.x
+                                       from ... import another # a.another
+       a/b/c/d.py
+       a/b/c/e.py
+       a/b/c/f.py
+    1: """]
+       
+       relative_import_test_3 = [
+    1:     "a.module",
+    1:     ["a", "a.module"],
+    1:     ["a.bar"],
+    1:     [],
+           """\
+       a/__init__.py
+                                       def foo(): pass
+       a/module.py
+                                       from . import foo
+                                       from . import bar
+    1: """]
+       
+    1: def open_file(path):
+           ##print "#", os.path.abspath(path)
+   59:     dirname = os.path.dirname(path)
+   59:     distutils.dir_util.mkpath(dirname)
+   59:     return open(path, "w")
+       
+    1: def create_package(source):
+    8:     ofi = None
+    8:     try:
+  114:         for line in source.splitlines():
+  106:             if line.startswith(" ") or line.startswith("\t"):
+   47:                 ofi.write(line.strip() + "\n")
+                   else:
+   59:                 if ofi:
+   51:                     ofi.close()
+   59:                 ofi = open_file(os.path.join(TEST_DIR, line.strip()))
+           finally:
+    8:         if ofi:
+    8:             ofi.close()
+       
+    2: class ModuleFinderTest(unittest.TestCase):
+    1:     def _do_test(self, info, report=False):
+    8:         import_this, modules, missing, maybe_missing, source = info
+    8:         create_package(source)
+    8:         try:
+    8:             mf = modulefinder.ModuleFinder(path=TEST_PATH)
+    8:             mf.import_hook(import_this)
+    8:             if report:
+>>>>>>                 mf.report()
+       ##                # This wouldn't work in general when executed several times:
+       ##                opath = sys.path[:]
+       ##                sys.path = TEST_PATH
+       ##                try:
+       ##                    __import__(import_this)
+       ##                except:
+       ##                    import traceback; traceback.print_exc()
+       ##                sys.path = opath
+       ##                return
+    8:             modules = set(modules)
+    8:             found = set(mf.modules.keys())
+    8:             more = list(found - modules)
+    8:             less = list(modules - found)
+                   # check if we found what we expected, not more, not less
+    8:             self.assertEqual((more, less), ([], []))
+       
+                   # check for missing and maybe missing modules
+    8:             bad, maybe = mf.any_missing_maybe()
+    8:             self.assertEqual(bad, missing)
+    8:             self.assertEqual(maybe, maybe_missing)
+               finally:
+    8:             distutils.dir_util.remove_tree(TEST_DIR)
+       
+    1:     def test_package(self):
+    1:         self._do_test(package_test)
+       
+    1:     def test_maybe(self):
+    1:         self._do_test(maybe_test)
+       
+    1:     if getattr(__future__, "absolute_import", None):
+       
+    1:         def test_maybe_new(self):
+    1:             self._do_test(maybe_test_new)
+       
+    1:         def test_absolute_imports(self):
+    1:             self._do_test(absolute_import_test)
+       
+    1:         def test_relative_imports(self):
+    1:             self._do_test(relative_import_test)
+       
+    1:         def test_relative_imports_2(self):
+    1:             self._do_test(relative_import_test_2)
+       
+    1:         def test_relative_imports_3(self):
+    1:             self._do_test(relative_import_test_3)
+       
+    1:     def test_extended_opargs(self):
+               extended_opargs_test = [
+    1:             "a",
+    1:             ["a", "b"],
+    1:             [], [],
+                   """\
+       a.py
+                                       %r
+                                       import b
+       b.py
+    1: """ % range(2**16)]  # 2**16 constants
+    1:         self._do_test(extended_opargs_test)
+       
+    1: def test_main():
+    1:     distutils.log.set_threshold(distutils.log.WARN)
+    1:     test_support.run_unittest(ModuleFinderTest)
+       
+    1: if __name__ == "__main__":
+>>>>>>     unittest.main()

@@ -1,0 +1,140 @@
+       # -*- encoding: utf8 -*-
+    1: """Tests for distutils.command.upload."""
+    1: import os
+    1: import unittest
+    1: from test.test_support import run_unittest
+       
+    1: from distutils.command import upload as upload_mod
+    1: from distutils.command.upload import upload
+    1: from distutils.core import Distribution
+    1: from distutils.errors import DistutilsError
+       
+    1: from distutils.tests.test_config import PYPIRC, PyPIRCCommandTestCase
+       
+       PYPIRC_LONG_PASSWORD = """\
+       [distutils]
+       
+       index-servers =
+           server1
+           server2
+       
+       [server1]
+       username:me
+       password:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+       
+       [server2]
+       username:meagain
+       password: secret
+       realm:acme
+       repository:http://another.pypi/
+    1: """
+       
+       
+       PYPIRC_NOPASSWORD = """\
+       [distutils]
+       
+       index-servers =
+           server1
+       
+       [server1]
+       username:me
+    1: """
+       
+    2: class FakeOpen(object):
+       
+    1:     def __init__(self, url, msg=None, code=None):
+    2:         self.url = url
+    2:         if not isinstance(url, str):
+    2:             self.req = url
+               else:
+>>>>>>             self.req = None
+    2:         self.msg = msg or 'OK'
+    2:         self.code = code or 200
+       
+    1:     def getcode(self):
+    2:         return self.code
+       
+       
+    2: class uploadTestCase(PyPIRCCommandTestCase):
+       
+    1:     def setUp(self):
+    6:         super(uploadTestCase, self).setUp()
+    6:         self.old_open = upload_mod.urlopen
+    6:         upload_mod.urlopen = self._urlopen
+    6:         self.last_open = None
+    6:         self.next_msg = None
+    6:         self.next_code = None
+       
+    1:     def tearDown(self):
+    6:         upload_mod.urlopen = self.old_open
+    6:         super(uploadTestCase, self).tearDown()
+       
+    1:     def _urlopen(self, url):
+    2:         self.last_open = FakeOpen(url, msg=self.next_msg, code=self.next_code)
+    2:         return self.last_open
+       
+    1:     def test_finalize_options(self):
+       
+               # new format
+    1:         self.write_file(self.rc, PYPIRC)
+    1:         dist = Distribution()
+    1:         cmd = upload(dist)
+    1:         cmd.finalize_options()
+    1:         for attr, waited in (('username', 'me'), ('password', 'secret'),
+    1:                              ('realm', 'pypi'),
+    5:                              ('repository', 'https://upload.pypi.org/legacy/')):
+    4:             self.assertEqual(getattr(cmd, attr), waited)
+       
+    1:     def test_saved_password(self):
+               # file with no password
+    1:         self.write_file(self.rc, PYPIRC_NOPASSWORD)
+       
+               # make sure it passes
+    1:         dist = Distribution()
+    1:         cmd = upload(dist)
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.password, None)
+       
+               # make sure we get it as well, if another command
+               # initialized it at the dist level
+    1:         dist.password = 'xxx'
+    1:         cmd = upload(dist)
+    1:         cmd.finalize_options()
+    1:         self.assertEqual(cmd.password, 'xxx')
+       
+    1:     def test_upload(self):
+    2:         tmp = self.mkdtemp()
+    2:         path = os.path.join(tmp, 'xxx')
+    2:         self.write_file(path)
+    2:         command, pyversion, filename = 'xxx', '2.6', path
+    2:         dist_files = [(command, pyversion, filename)]
+    2:         self.write_file(self.rc, PYPIRC_LONG_PASSWORD)
+       
+               # lets run it
+    2:         pkg_dir, dist = self.create_dist(dist_files=dist_files, author=u'dédé')
+    2:         cmd = upload(dist)
+    2:         cmd.ensure_finalized()
+    2:         cmd.run()
+       
+               # what did we send ?
+    1:         self.assertIn('dédé', self.last_open.req.data)
+    1:         headers = dict(self.last_open.req.headers)
+    1:         self.assertEqual(headers['Content-length'], '2159')
+    1:         self.assertTrue(headers['Content-type'].startswith('multipart/form-data'))
+    1:         self.assertEqual(self.last_open.req.get_method(), 'POST')
+    1:         self.assertEqual(self.last_open.req.get_full_url(),
+    1:                          'https://upload.pypi.org/legacy/')
+    1:         self.assertIn('xxx', self.last_open.req.data)
+    1:         auth = self.last_open.req.headers['Authorization']
+    1:         self.assertNotIn('\n', auth)
+       
+    1:     def test_upload_fails(self):
+    1:         self.next_msg = "Not Found"
+    1:         self.next_code = 404
+    1:         self.assertRaises(DistutilsError, self.test_upload)
+       
+    1: def test_suite():
+    1:     return unittest.makeSuite(uploadTestCase)
+       
+    1: if __name__ == "__main__":
+>>>>>>     run_unittest(test_suite())

@@ -1,0 +1,557 @@
+       """Classes to represent arbitrary sets (including sets of sets).
+       
+       This module implements sets using dictionaries whose values are
+       ignored.  The usual operations (union, intersection, deletion, etc.)
+       are provided as both methods and operators.
+       
+       Important: sets are not sequences!  While they support 'x in s',
+       'len(s)', and 'for x in s', none of those operations are unique for
+       sequences; for example, mappings support all three as well.  The
+       characteristic operation for sequences is subscripting with small
+       integers: s[i], for i in range(len(s)).  Sets don't support
+       subscripting at all.  Also, sequences allow multiple occurrences and
+       their elements have a definite order; sets on the other hand don't
+       record multiple occurrences and don't remember the order of element
+       insertion (which is why they don't support s[i]).
+       
+       The following classes are provided:
+       
+       BaseSet -- All the operations common to both mutable and immutable
+           sets. This is an abstract class, not meant to be directly
+           instantiated.
+       
+       Set -- Mutable sets, subclass of BaseSet; not hashable.
+       
+       ImmutableSet -- Immutable sets, subclass of BaseSet; hashable.
+           An iterable argument is mandatory to create an ImmutableSet.
+       
+       _TemporarilyImmutableSet -- A wrapper around a Set, hashable,
+           giving the same hash value as the immutable set equivalent
+           would have.  Do not use this class directly.
+       
+       Only hashable objects can be added to a Set. In particular, you cannot
+       really add a Set as an element to another Set; if you try, what is
+       actually added is an ImmutableSet built from it (it compares equal to
+       the one you tried adding).
+       
+       When you ask if `x in y' where x is a Set and y is a Set or
+       ImmutableSet, x is wrapped into a _TemporarilyImmutableSet z, and
+       what's tested is actually `z in y'.
+       
+    1: """
+       
+       # Code history:
+       #
+       # - Greg V. Wilson wrote the first version, using a different approach
+       #   to the mutable/immutable problem, and inheriting from dict.
+       #
+       # - Alex Martelli modified Greg's version to implement the current
+       #   Set/ImmutableSet approach, and make the data an attribute.
+       #
+       # - Guido van Rossum rewrote much of the code, made some API changes,
+       #   and cleaned up the docstrings.
+       #
+       # - Raymond Hettinger added a number of speedups and other
+       #   improvements.
+       
+    1: from itertools import ifilter, ifilterfalse
+       
+    1: __all__ = ['BaseSet', 'Set', 'ImmutableSet']
+       
+    1: import warnings
+    1: warnings.warn("the sets module is deprecated", DeprecationWarning,
+    1:                 stacklevel=2)
+       
+    2: class BaseSet(object):
+    1:     """Common base class for mutable and immutable sets."""
+       
+    1:     __slots__ = ['_data']
+       
+           # Constructor
+       
+    1:     def __init__(self):
+               """This is an abstract class."""
+               # Don't call this from a concrete subclass!
+>>>>>>         if self.__class__ is BaseSet:
+>>>>>>             raise TypeError, ("BaseSet is an abstract class.  "
+                                     "Use Set or ImmutableSet.")
+       
+           # Standard protocols: __len__, __repr__, __str__, __iter__
+       
+    1:     def __len__(self):
+               """Return the number of elements of a set."""
+  314:         return len(self._data)
+       
+    1:     def __repr__(self):
+               """Return string representation of a set.
+       
+               This looks like 'Set([<list of elements>])'.
+               """
+   32:         return self._repr()
+       
+           # __str__ is the same as __repr__
+    1:     __str__ = __repr__
+       
+    1:     def _repr(self, sorted=False):
+   32:         elements = self._data.keys()
+   32:         if sorted:
+    5:             elements.sort()
+   32:         return '%s(%r)' % (self.__class__.__name__, elements)
+       
+    1:     def __iter__(self):
+               """Return an iterator over the elements or a set.
+       
+               This is the keys iterator for the underlying dict.
+               """
+  218:         return self._data.iterkeys()
+       
+           # Three-way comparison is not supported.  However, because __eq__ is
+           # tried before __cmp__, if Set x == Set y, x.__eq__(y) returns True and
+           # then cmp(x, y) returns 0 (Python doesn't actually call __cmp__ in this
+           # case).
+       
+    1:     def __cmp__(self, other):
+    1:         raise TypeError, "can't compare sets using cmp()"
+       
+           # Equality comparisons using the underlying dicts.  Mixed-type comparisons
+           # are allowed here, where Set == z for non-Set z always returns False,
+           # and Set != z always True.  This allows expressions like "x in y" to
+           # give the expected result when y is a sequence of mixed types, not
+           # raising a pointless TypeError just because y contains a Set, or x is
+           # a Set and y contain's a non-set ("in" invokes only __eq__).
+           # Subtle:  it would be nicer if __eq__ and __ne__ could return
+           # NotImplemented instead of True or False.  Then the other comparand
+           # would get a chance to determine the result, and if the other comparand
+           # also returned NotImplemented then it would fall back to object address
+           # comparison (which would always return False for __eq__ and always
+           # True for __ne__).  However, that doesn't work, because this type
+           # *also* implements __cmp__:  if, e.g., __eq__ returns NotImplemented,
+           # Python tries __cmp__ next, and the __cmp__ here then raises TypeError.
+       
+    1:     def __eq__(self, other):
+  154:         if isinstance(other, BaseSet):
+  138:             return self._data == other._data
+               else:
+   16:             return False
+       
+    1:     def __ne__(self, other):
+   26:         if isinstance(other, BaseSet):
+   12:             return self._data != other._data
+               else:
+   14:             return True
+       
+           # Copying operations
+       
+    1:     def copy(self):
+               """Return a shallow copy of a set."""
+   11:         result = self.__class__()
+   11:         result._data.update(self._data)
+   11:         return result
+       
+    1:     __copy__ = copy # For the copy module
+       
+    1:     def __deepcopy__(self, memo):
+               """Return a deep copy of a set; used by copy module."""
+               # This pre-creates the result and inserts it in the memo
+               # early, in case the deep copy recurses into another reference
+               # to this same set.  A set can't be an element of itself, but
+               # it can certainly contain an object that has a reference to
+               # itself.
+    5:         from copy import deepcopy
+    5:         result = self.__class__()
+    5:         memo[id(self)] = result
+    5:         data = result._data
+    5:         value = True
+   11:         for elt in self:
+    6:             data[deepcopy(elt, memo)] = value
+    5:         return result
+       
+           # Standard set operations: union, intersection, both differences.
+           # Each has an operator version (e.g. __or__, invoked with |) and a
+           # method version (e.g. union).
+           # Subtle:  Each pair requires distinct code so that the outcome is
+           # correct when the type of other isn't suitable.  For example, if
+           # we did "union = __or__" instead, then Set().union(3) would return
+           # NotImplemented instead of raising TypeError (albeit that *why* it
+           # raises TypeError as-is is also a bit subtle).
+       
+    1:     def __or__(self, other):
+               """Return the union of two sets as a new set.
+       
+               (I.e. all elements that are in either set.)
+               """
+   46:         if not isinstance(other, BaseSet):
+    8:             return NotImplemented
+   38:         return self.union(other)
+       
+    1:     def union(self, other):
+               """Return the union of two sets as a new set.
+       
+               (I.e. all elements that are in either set.)
+               """
+   45:         result = self.__class__(self)
+   45:         result._update(other)
+   43:         return result
+       
+    1:     def __and__(self, other):
+               """Return the intersection of two sets as a new set.
+       
+               (I.e. all elements that are in both sets.)
+               """
+   48:         if not isinstance(other, BaseSet):
+    8:             return NotImplemented
+   40:         return self.intersection(other)
+       
+    1:     def intersection(self, other):
+               """Return the intersection of two sets as a new set.
+       
+               (I.e. all elements that are in both sets.)
+               """
+   54:         if not isinstance(other, BaseSet):
+   14:             other = Set(other)
+   50:         if len(self) <= len(other):
+   35:             little, big = self, other
+               else:
+   15:             little, big = other, self
+   50:         common = ifilter(big._data.__contains__, little)
+   50:         return self.__class__(common)
+       
+    1:     def __xor__(self, other):
+               """Return the symmetric difference of two sets as a new set.
+       
+               (I.e. all elements that are in exactly one of the sets.)
+               """
+   25:         if not isinstance(other, BaseSet):
+    8:             return NotImplemented
+   17:         return self.symmetric_difference(other)
+       
+    1:     def symmetric_difference(self, other):
+               """Return the symmetric difference of two sets as a new set.
+       
+               (I.e. all elements that are in exactly one of the sets.)
+               """
+   24:         result = self.__class__()
+   24:         data = result._data
+   24:         value = True
+   24:         selfdata = self._data
+   24:         try:
+   24:             otherdata = other._data
+    7:         except AttributeError:
+    7:             otherdata = Set(other)._data
+  230:         for elt in ifilterfalse(otherdata.__contains__, selfdata):
+  208:             data[elt] = value
+  230:         for elt in ifilterfalse(selfdata.__contains__, otherdata):
+  208:             data[elt] = value
+   22:         return result
+       
+    1:     def  __sub__(self, other):
+               """Return the difference of two sets as a new Set.
+       
+               (I.e. all elements that are in this set and not in the other.)
+               """
+   44:         if not isinstance(other, BaseSet):
+    9:             return NotImplemented
+   35:         return self.difference(other)
+       
+    1:     def difference(self, other):
+               """Return the difference of two sets as a new Set.
+       
+               (I.e. all elements that are in this set and not in the other.)
+               """
+   52:         result = self.__class__()
+   52:         data = result._data
+   52:         try:
+   52:             otherdata = other._data
+    7:         except AttributeError:
+    7:             otherdata = Set(other)._data
+   50:         value = True
+  550:         for elt in ifilterfalse(otherdata.__contains__, self):
+  500:             data[elt] = value
+   50:         return result
+       
+           # Membership test
+       
+    1:     def __contains__(self, element):
+               """Report whether an element is a member of a set.
+       
+               (Called in response to the expression `element in self'.)
+               """
+    4:         try:
+    4:             return element in self._data
+>>>>>>         except TypeError:
+>>>>>>             transform = getattr(element, "__as_temporarily_immutable__", None)
+>>>>>>             if transform is None:
+>>>>>>                 raise # re-raise the TypeError exception we caught
+>>>>>>             return transform() in self._data
+       
+           # Subset and superset test
+       
+    1:     def issubset(self, other):
+               """Report whether another set contains this set."""
+   42:         self._binary_sanity_check(other)
+   28:         if len(self) > len(other):  # Fast check for obvious cases
+    4:             return False
+   24:         for elt in ifilterfalse(other._data.__contains__, self):
+    4:             return False
+   20:         return True
+       
+    1:     def issuperset(self, other):
+               """Report whether this set contains another set."""
+   41:         self._binary_sanity_check(other)
+   27:         if len(self) < len(other):  # Fast check for obvious cases
+    4:             return False
+   23:         for elt in ifilterfalse(self._data.__contains__, other):
+    5:             return False
+   18:         return True
+       
+           # Inequality comparisons using the is-subset relation.
+    1:     __le__ = issubset
+    1:     __ge__ = issuperset
+       
+    1:     def __lt__(self, other):
+   25:         self._binary_sanity_check(other)
+   10:         return len(self) < len(other) and self.issubset(other)
+       
+    1:     def __gt__(self, other):
+   25:         self._binary_sanity_check(other)
+   10:         return len(self) > len(other) and self.issuperset(other)
+       
+           # We inherit object.__hash__, so we must deny this explicitly
+    1:     __hash__ = None
+       
+           # Assorted helpers
+       
+    1:     def _binary_sanity_check(self, other):
+               # Check that the other argument to a binary operation is also
+               # a set, raising a TypeError otherwise.
+  182:         if not isinstance(other, BaseSet):
+   86:             raise TypeError, "Binary operation only permitted between sets"
+       
+    1:     def _compute_hash(self):
+               # Calculate hash code for a set by xor'ing the hash codes of
+               # the elements.  This ensures that the hash code does not depend
+               # on the order in which elements are added to the set.  This is
+               # not called __hash__ because a BaseSet should not be hashable;
+               # only an ImmutableSet is hashable.
+   20:         result = 0
+   56:         for elt in self:
+   36:             result ^= hash(elt)
+   20:         return result
+       
+    1:     def _update(self, iterable):
+               # The main loop for update() and the subclass __init__() methods.
+  637:         data = self._data
+       
+               # Use the fast update() method when a dictionary is available.
+  637:         if isinstance(iterable, BaseSet):
+   95:             data.update(iterable._data)
+   95:             return
+       
+  542:         value = True
+       
+  542:         if type(iterable) in (list, tuple, xrange):
+                   # Optimized: we know that __iter__() and next() can't
+                   # raise TypeError, so we can move 'try:' out of the loop.
+  409:             it = iter(iterable)
+  418:             while True:
+  418:                 try:
+ 1886:                     for element in it:
+ 1477:                         data[element] = value
+  409:                     return
+    9:                 except TypeError:
+    9:                     transform = getattr(element, "__as_immutable__", None)
+    9:                     if transform is None:
+>>>>>>                         raise # re-raise the TypeError exception we caught
+    9:                     data[transform()] = value
+               else:
+                   # Safe: only catch TypeError where intended
+  564:             for element in iterable:
+  431:                 try:
+  431:                     data[element] = value
+>>>>>>                 except TypeError:
+>>>>>>                     transform = getattr(element, "__as_immutable__", None)
+>>>>>>                     if transform is None:
+>>>>>>                         raise # re-raise the TypeError exception we caught
+>>>>>>                     data[transform()] = value
+       
+       
+    2: class ImmutableSet(BaseSet):
+    1:     """Immutable set class."""
+       
+    1:     __slots__ = ['_hashcode']
+       
+           # BaseSet + hashing
+       
+    1:     def __init__(self, iterable=None):
+               """Construct an immutable set from an optional iterable."""
+   24:         self._hashcode = None
+   24:         self._data = {}
+   24:         if iterable is not None:
+   24:             self._update(iterable)
+       
+    1:     def __hash__(self):
+   32:         if self._hashcode is None:
+   18:             self._hashcode = self._compute_hash()
+   32:         return self._hashcode
+       
+    1:     def __getstate__(self):
+>>>>>>         return self._data, self._hashcode
+       
+    1:     def __setstate__(self, state):
+>>>>>>         self._data, self._hashcode = state
+       
+    2: class Set(BaseSet):
+    1:     """ Mutable set class."""
+       
+    1:     __slots__ = []
+       
+           # BaseSet + operations requiring mutability; no hashing
+       
+    1:     def __init__(self, iterable=None):
+               """Construct a set from an optional iterable."""
+  658:         self._data = {}
+  658:         if iterable is not None:
+  556:             self._update(iterable)
+       
+    1:     def __getstate__(self):
+               # getstate's results are ignored if it is not
+   12:         return self._data,
+       
+    1:     def __setstate__(self, data):
+   12:         self._data, = data
+       
+           # In-place union, intersection, differences.
+           # Subtle:  The xyz_update() functions deliberately return None,
+           # as do all mutating operations on built-in container types.
+           # The __xyz__ spellings have to return self, though.
+       
+    1:     def __ior__(self, other):
+               """Update a set with the union of itself and another."""
+   12:         self._binary_sanity_check(other)
+    5:         self._data.update(other._data)
+    5:         return self
+       
+    1:     def union_update(self, other):
+               """Update a set with the union of itself and another."""
+   12:         self._update(other)
+       
+    1:     def __iand__(self, other):
+               """Update a set with the intersection of itself and another."""
+   13:         self._binary_sanity_check(other)
+    6:         self._data = (self & other)._data
+    6:         return self
+       
+    1:     def intersection_update(self, other):
+               """Update a set with the intersection of itself and another."""
+    8:         if isinstance(other, BaseSet):
+    1:             self &= other
+               else:
+    7:             self._data = (self.intersection(other))._data
+       
+    1:     def __ixor__(self, other):
+               """Update a set with the symmetric difference of itself and another."""
+   12:         self._binary_sanity_check(other)
+    5:         self.symmetric_difference_update(other)
+    5:         return self
+       
+    1:     def symmetric_difference_update(self, other):
+               """Update a set with the symmetric difference of itself and another."""
+   13:         data = self._data
+   13:         value = True
+   13:         if not isinstance(other, BaseSet):
+    7:             other = Set(other)
+   11:         if self is other:
+    1:             self.clear()
+   39:         for elt in other:
+   28:             if elt in data:
+   11:                 del data[elt]
+                   else:
+   17:                 data[elt] = value
+       
+    1:     def __isub__(self, other):
+               """Remove all elements of another set from this set."""
+   12:         self._binary_sanity_check(other)
+    5:         self.difference_update(other)
+    5:         return self
+       
+    1:     def difference_update(self, other):
+               """Remove all elements of another set from this set."""
+   13:         data = self._data
+   13:         if not isinstance(other, BaseSet):
+    7:             other = Set(other)
+   11:         if self is other:
+    1:             self.clear()
+   22:         for elt in ifilter(data.__contains__, other):
+   11:             del data[elt]
+       
+           # Python dict-like mass mutations: update, clear
+       
+    1:     def update(self, iterable):
+               """Add all values from an iterable (such as a list or file)."""
+>>>>>>         self._update(iterable)
+       
+    1:     def clear(self):
+               """Remove all elements from this set."""
+    3:         self._data.clear()
+       
+           # Single-element mutations: add, remove, discard
+       
+    1:     def add(self, element):
+               """Add an element to a set.
+       
+               This has no effect if the element is already present.
+               """
+    7:         try:
+    7:             self._data[element] = True
+    1:         except TypeError:
+    1:             transform = getattr(element, "__as_immutable__", None)
+    1:             if transform is None:
+>>>>>>                 raise # re-raise the TypeError exception we caught
+    1:             self._data[transform()] = True
+       
+    1:     def remove(self, element):
+               """Remove an element from a set; it must be a member.
+       
+               If the element is not a member, raise a KeyError.
+               """
+   13:         try:
+   13:             del self._data[element]
+    5:         except TypeError:
+    2:             transform = getattr(element, "__as_temporarily_immutable__", None)
+    2:             if transform is None:
+>>>>>>                 raise # re-raise the TypeError exception we caught
+    2:             del self._data[transform()]
+       
+    1:     def discard(self, element):
+               """Remove an element from a set if it is a member.
+       
+               If the element is not a member, do nothing.
+               """
+    7:         try:
+    7:             self.remove(element)
+    3:         except KeyError:
+    3:             pass
+       
+    1:     def pop(self):
+               """Remove and return an arbitrary set element."""
+    4:         return self._data.popitem()[0]
+       
+    1:     def __as_immutable__(self):
+               # Return a copy of self as an immutable set
+   10:         return ImmutableSet(self)
+       
+    1:     def __as_temporarily_immutable__(self):
+               # Return self wrapped in a temporarily immutable set
+    2:         return _TemporarilyImmutableSet(self)
+       
+       
+    2: class _TemporarilyImmutableSet(BaseSet):
+           # Wrap a mutable set as if it was temporarily immutable.
+           # This only supplies hashing and equality comparisons.
+       
+    1:     def __init__(self, set):
+    2:         self._set = set
+    2:         self._data = set._data  # Needed by ImmutableSet.__eq__()
+       
+    1:     def __hash__(self):
+    2:         return self._set._compute_hash()

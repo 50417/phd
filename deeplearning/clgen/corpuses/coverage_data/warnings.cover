@@ -1,0 +1,425 @@
+    4: """Python part of the warnings subsystem."""
+       
+       # Note: function level imports should *not* be used
+       # in this module as it may cause import lock deadlock.
+       # See bug 683658.
+    4: import linecache
+    4: import sys
+    4: import types
+       
+    4: __all__ = ["warn", "warn_explicit", "showwarning",
+    4:            "formatwarning", "filterwarnings", "simplefilter",
+    4:            "resetwarnings", "catch_warnings"]
+       
+       
+    4: def warnpy3k(message, category=None, stacklevel=1):
+           """Issue a deprecation warning for Python 3.x related changes.
+       
+           Warnings are omitted unless Python is started with the -3 option.
+           """
+93204:     if sys.py3kwarning:
+>>>>>>         if category is None:
+>>>>>>             category = DeprecationWarning
+>>>>>>         warn(message, category, stacklevel+1)
+       
+    4: def _show_warning(message, category, filename, lineno, file=None, line=None):
+           """Hook to write a warning to a file; replace if you like."""
+    5:     if file is None:
+>>>>>>         file = sys.stderr
+>>>>>>         if file is None:
+                   # sys.stderr is None - warnings get lost
+>>>>>>             return
+    5:     try:
+    5:         file.write(formatwarning(message, category, filename, lineno, line))
+>>>>>>     except (IOError, UnicodeError):
+>>>>>>         pass # the file (probably stderr) is invalid - this warning gets lost.
+       # Keep a working version around in case the deprecation of the old API is
+       # triggered.
+    4: showwarning = _show_warning
+       
+    4: def formatwarning(message, category, filename, lineno, line=None):
+           """Function to format a warning the standard way."""
+   26:     try:
+   26:         unicodetype = unicode
+>>>>>>     except NameError:
+>>>>>>         unicodetype = ()
+   26:     try:
+   26:         message = str(message)
+    4:     except UnicodeEncodeError:
+    4:         pass
+   26:     s =  "%s: %s: %s\n" % (lineno, category.__name__, message)
+   26:     line = linecache.getline(filename, lineno) if line is None else line
+   26:     if line:
+   26:         line = line.strip()
+   26:         if isinstance(s, unicodetype) and isinstance(line, str):
+    4:             line = unicode(line, 'latin1')
+   26:         s += "  %s\n" % line
+   26:     if isinstance(s, unicodetype) and isinstance(filename, str):
+    4:         enc = sys.getfilesystemencoding()
+    4:         if enc:
+    4:             try:
+    4:                 filename = unicode(filename, enc)
+>>>>>>             except UnicodeDecodeError:
+>>>>>>                 pass
+   26:     s = "%s:%s" % (filename, s)
+   26:     return s
+       
+    4: def filterwarnings(action, message="", category=Warning, module="", lineno=0,
+    4:                    append=0):
+           """Insert an entry into the list of warnings filters (at the front).
+       
+           'action' -- one of "error", "ignore", "always", "default", "module",
+                       or "once"
+           'message' -- a regex that the warning message must match
+           'category' -- a class that the warning must be a subclass of
+           'module' -- a regex that the module name must match
+           'lineno' -- an integer line number, 0 matches all warnings
+           'append' -- if true, append to the list of filters
+           """
+  128:     import re
+  128:     assert action in ("error", "ignore", "always", "default", "module",
+  128:                       "once"), "invalid action: %r" % (action,)
+  128:     assert isinstance(message, basestring), "message must be a string"
+  128:     assert isinstance(category, (type, types.ClassType)), \
+>>>>>>            "category must be a class"
+  128:     assert issubclass(category, Warning), "category must be a Warning subclass"
+  128:     assert isinstance(module, basestring), "module must be a string"
+  128:     assert isinstance(lineno, (int, long)) and lineno >= 0, \
+>>>>>>            "lineno must be an int >= 0"
+  128:     item = (action, re.compile(message, re.I), category,
+  128:             re.compile(module), int(lineno))
+  128:     if append:
+    2:         filters.append(item)
+           else:
+  126:         filters.insert(0, item)
+       
+    4: def simplefilter(action, category=Warning, lineno=0, append=0):
+           """Insert a simple entry into the list of warnings filters (at the front).
+       
+           A simple filter matches all modules and messages.
+           'action' -- one of "error", "ignore", "always", "default", "module",
+                       or "once"
+           'category' -- a class that the warning must be a subclass of
+           'lineno' -- an integer line number, 0 matches all warnings
+           'append' -- if true, append to the list of filters
+           """
+ 1566:     assert action in ("error", "ignore", "always", "default", "module",
+ 1566:                       "once"), "invalid action: %r" % (action,)
+ 1566:     assert isinstance(lineno, (int, long)) and lineno >= 0, \
+>>>>>>            "lineno must be an int >= 0"
+ 1566:     item = (action, None, category, None, int(lineno))
+ 1566:     if append:
+    2:         filters.append(item)
+           else:
+ 1564:         filters.insert(0, item)
+       
+    4: def resetwarnings():
+           """Clear the list of warning filters, so that no filters are active."""
+   23:     filters[:] = []
+       
+    8: class _OptionError(Exception):
+    4:     """Exception used by option processing helpers."""
+    4:     pass
+       
+       # Helper to process -W options passed via sys.warnoptions
+    4: def _processoptions(args):
+    4:     for arg in args:
+>>>>>>         try:
+>>>>>>             _setoption(arg)
+>>>>>>         except _OptionError, msg:
+>>>>>>             print >>sys.stderr, "Invalid -W option ignored:", msg
+       
+       # Helper for _processoptions()
+    4: def _setoption(arg):
+    8:     import re
+    8:     parts = arg.split(':')
+    8:     if len(parts) > 5:
+    2:         raise _OptionError("too many fields (max 5): %r" % (arg,))
+   10:     while len(parts) < 5:
+    4:         parts.append('')
+    6:     action, message, category, module, lineno = [s.strip()
+   36:                                                  for s in parts]
+    6:     action = _getaction(action)
+    4:     message = re.escape(message)
+    4:     category = _getcategory(category)
+    4:     module = re.escape(module)
+    4:     if module:
+    2:         module = module + '$'
+    4:     if lineno:
+    4:         try:
+    4:             lineno = int(lineno)
+    4:             if lineno < 0:
+    2:                 raise ValueError
+    2:         except (ValueError, OverflowError):
+    2:             raise _OptionError("invalid lineno %r" % (lineno,))
+           else:
+>>>>>>         lineno = 0
+    2:     filterwarnings(action, message, category, module, lineno)
+       
+       # Helper for _setoption()
+    4: def _getaction(action):
+    6:     if not action:
+>>>>>>         return "default"
+    6:     if action == "all": return "always" # Alias
+   32:     for a in ('default', 'always', 'ignore', 'module', 'once', 'error'):
+   30:         if a.startswith(action):
+    4:             return a
+    2:     raise _OptionError("invalid action: %r" % (action,))
+       
+       # Helper for _setoption()
+    4: def _getcategory(category):
+    4:     import re
+    4:     if not category:
+    2:         return Warning
+    2:     if re.match("^[a-zA-Z0-9_]+$", category):
+    2:         try:
+    2:             cat = eval(category)
+>>>>>>         except NameError:
+>>>>>>             raise _OptionError("unknown warning category: %r" % (category,))
+           else:
+>>>>>>         i = category.rfind(".")
+>>>>>>         module = category[:i]
+>>>>>>         klass = category[i+1:]
+>>>>>>         try:
+>>>>>>             m = __import__(module, None, None, [klass])
+>>>>>>         except ImportError:
+>>>>>>             raise _OptionError("invalid module name: %r" % (module,))
+>>>>>>         try:
+>>>>>>             cat = getattr(m, klass)
+>>>>>>         except AttributeError:
+>>>>>>             raise _OptionError("unknown warning category: %r" % (category,))
+    2:     if not issubclass(cat, Warning):
+>>>>>>         raise _OptionError("invalid warning category: %r" % (category,))
+    2:     return cat
+       
+       
+       # Code typically replaced by _warnings
+    4: def warn(message, category=None, stacklevel=1):
+           """Issue a warning, or maybe ignore it or raise an exception."""
+           # Check if message is already a Warning object
+   43:     if isinstance(message, Warning):
+    5:         category = message.__class__
+           # Check category argument
+   43:     if category is None:
+   33:         category = UserWarning
+   43:     assert issubclass(category, Warning)
+           # Get context information
+   43:     try:
+   43:         caller = sys._getframe(stacklevel)
+    1:     except ValueError:
+    1:         globals = sys.__dict__
+    1:         lineno = 1
+           else:
+   42:         globals = caller.f_globals
+   42:         lineno = caller.f_lineno
+   43:     if '__name__' in globals:
+   43:         module = globals['__name__']
+           else:
+>>>>>>         module = "<string>"
+   43:     filename = globals.get('__file__')
+   43:     if filename:
+   38:         fnl = filename.lower()
+   38:         if fnl.endswith((".pyc", ".pyo")):
+   38:             filename = filename[:-1]
+           else:
+    5:         if module == "__main__":
+    3:             try:
+    3:                 filename = sys.argv[0]
+    1:             except AttributeError:
+                       # embedded interpreters don't have sys.argv, see bug #839151
+    1:                 filename = '__main__'
+    5:         if not filename:
+    3:             filename = module
+   43:     registry = globals.setdefault("__warningregistry__", {})
+   43:     warn_explicit(message, category, filename, lineno, module, registry,
+   43:                   globals)
+       
+       def warn_explicit(message, category, filename, lineno,
+    4:                   module=None, registry=None, module_globals=None):
+   49:     lineno = int(lineno)
+   48:     if module is None:
+    5:         module = filename or "<unknown>"
+    5:         if module[-3:].lower() == ".py":
+    3:             module = module[:-3] # XXX What about leading pathname?
+   48:     if registry is None:
+    4:         registry = {}
+   48:     if isinstance(message, Warning):
+    8:         text = str(message)
+    7:         category = message.__class__
+           else:
+   40:         text = message
+   40:         message = category(message)
+   46:     key = (text, category, lineno)
+           # Quick test for common case
+   46:     if registry.get(key):
+    1:         return
+           # Search the filters
+   47:     for item in filters:
+   45:         action, msg, cat, mod, ln = item
+   45:         if ((msg is None or msg.match(text)) and
+   42:             issubclass(category, cat) and
+   42:             (mod is None or mod.match(module)) and
+   42:             (ln == 0 or lineno == ln)):
+   42:             break
+           else:
+    2:         action = defaultaction
+           # Early exit actions
+   44:     if action == "ignore":
+    5:         registry[key] = 1
+    5:         return
+       
+           # Prime the linecache for formatting, in case the
+           # "file" is actually in a zipfile or something.
+   39:     linecache.getlines(filename, module_globals)
+       
+   39:     if action == "error":
+    7:         raise message
+           # Other actions
+   32:     if action == "once":
+   19:         registry[key] = 1
+   19:         oncekey = (text, category)
+   19:         if onceregistry.get(oncekey):
+    2:             return
+   17:         onceregistry[oncekey] = 1
+   13:     elif action == "always":
+    8:         pass
+    5:     elif action == "module":
+    2:         registry[key] = 1
+    2:         altkey = (text, category, 0)
+    2:         if registry.get(altkey):
+    1:             return
+    1:         registry[altkey] = 1
+    3:     elif action == "default":
+    3:         registry[key] = 1
+           else:
+               # Unrecognized actions are errors
+>>>>>>         raise RuntimeError(
+>>>>>>               "Unrecognized action (%r) in warnings.filters:\n %s" %
+>>>>>>               (action, item))
+           # Print message and context
+   29:     showwarning(message, category, filename, lineno)
+       
+       
+    8: class WarningMessage(object):
+       
+    4:     """Holds the result of a single showwarning() call."""
+       
+           _WARNING_DETAILS = ("message", "category", "filename", "lineno", "file",
+    4:                         "line")
+       
+    4:     def __init__(self, message, category, filename, lineno, file=None,
+    4:                     line=None):
+ 1143:         self.message = message
+ 1143:         self.category = category
+ 1143:         self.filename = filename
+ 1143:         self.lineno = lineno
+ 1143:         self.file = file
+ 1143:         self.line = line
+ 1143:         self._category_name = category.__name__ if category else None
+       
+    4:     def __str__(self):
+>>>>>>         return ("{message : %r, category : %r, filename : %r, lineno : %s, "
+>>>>>>                     "line : %r}" % (self.message, self._category_name,
+>>>>>>                                     self.filename, self.lineno, self.line))
+       
+       
+    8: class catch_warnings(object):
+       
+           """A context manager that copies and restores the warnings filter upon
+           exiting the context.
+       
+           The 'record' argument specifies whether warnings should be captured by a
+           custom implementation of warnings.showwarning() and be appended to a list
+           returned by the context manager. Otherwise None is returned by the context
+           manager. The objects appended to the list are arguments whose attributes
+           mirror the arguments to showwarning().
+       
+           The 'module' argument is to specify an alternative module to the module
+           named 'warnings' and imported under that name. This argument is only useful
+           when testing the warnings module itself.
+       
+    4:     """
+       
+    4:     def __init__(self, record=False, module=None):
+               """Specify whether to record warnings and if an alternative module
+               should be used other than sys.modules['warnings'].
+       
+               For compatibility with Python 3.0, please consider all arguments to be
+               keyword-only.
+       
+               """
+ 9503:         self._record = record
+ 9503:         self._module = sys.modules['warnings'] if module is None else module
+ 9503:         self._entered = False
+       
+    4:     def __repr__(self):
+    8:         args = []
+    8:         if self._record:
+    4:             args.append("record=True")
+    8:         if self._module is not sys.modules['warnings']:
+>>>>>>             args.append("module=%r" % self._module)
+    8:         name = type(self).__name__
+    8:         return "%s(%s)" % (name, ", ".join(args))
+       
+    4:     def __enter__(self):
+ 9507:         if self._entered:
+    4:             raise RuntimeError("Cannot enter %r twice" % self)
+ 9503:         self._entered = True
+ 9503:         self._filters = self._module.filters
+ 9503:         self._module.filters = self._filters[:]
+ 9503:         self._showwarning = self._module.showwarning
+ 9503:         if self._record:
+ 1573:             log = []
+ 1573:             def showwarning(*args, **kwargs):
+ 1143:                 log.append(WarningMessage(*args, **kwargs))
+ 1573:             self._module.showwarning = showwarning
+ 1573:             return log
+               else:
+ 7930:             return None
+       
+    4:     def __exit__(self, *exc_info):
+ 9501:         if not self._entered:
+    4:             raise RuntimeError("Cannot exit %r without entering first" % self)
+ 9497:         self._module.filters = self._filters
+ 9497:         self._module.showwarning = self._showwarning
+       
+       
+       # filters contains a sequence of filter 5-tuples
+       # The components of the 5-tuple are:
+       # - an action: error, ignore, always, default, module, or once
+       # - a compiled regex that must match the warning message
+       # - a class representing the warning category
+       # - a compiled regex that must match the module that is being warned
+       # - a line number for the line being warning, or 0 to mean any line
+       # If either if the compiled regexs are None, match anything.
+    4: _warnings_defaults = False
+    4: try:
+    4:     from _warnings import (filters, default_action, once_registry,
+                                   warn, warn_explicit)
+    2:     defaultaction = default_action
+    2:     onceregistry = once_registry
+    2:     _warnings_defaults = True
+    2: except ImportError:
+    2:     filters = []
+    2:     defaultaction = "default"
+    2:     onceregistry = {}
+       
+       
+       # Module initialization
+    4: _processoptions(sys.warnoptions)
+    4: if not _warnings_defaults:
+    2:     silence = [ImportWarning, PendingDeprecationWarning]
+           # Don't silence DeprecationWarning if -3 or -Q was used.
+    2:     if not sys.py3kwarning and not sys.flags.division_warning:
+    2:         silence.append(DeprecationWarning)
+    8:     for cls in silence:
+    6:         simplefilter("ignore", category=cls)
+    2:     bytes_warning = sys.flags.bytes_warning
+    2:     if bytes_warning > 1:
+>>>>>>         bytes_action = "error"
+    2:     elif bytes_warning:
+>>>>>>         bytes_action = "default"
+           else:
+    2:         bytes_action = "ignore"
+    2:     simplefilter(bytes_action, category=BytesWarning, append=1)
+    4: del _warnings_defaults

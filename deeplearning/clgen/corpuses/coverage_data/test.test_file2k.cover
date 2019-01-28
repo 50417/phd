@@ -1,0 +1,880 @@
+    1: import sys
+    1: import os
+    1: import unittest
+    1: import itertools
+    1: import select
+    1: import signal
+    1: import stat
+    1: import subprocess
+    1: import time
+    1: from array import array
+    1: from weakref import proxy
+    1: try:
+    1:     import threading
+>>>>>> except ImportError:
+>>>>>>     threading = None
+       
+    1: from test import test_support
+    1: from test.test_support import TESTFN, run_unittest, requires
+    1: from UserList import UserList
+       
+    2: class AutoFileTests(unittest.TestCase):
+           # file tests for which a test file is automatically set up
+       
+    1:     def setUp(self):
+   14:         self.f = open(TESTFN, 'wb')
+       
+    1:     def tearDown(self):
+   14:         if self.f:
+   13:             self.f.close()
+   14:         os.remove(TESTFN)
+       
+    1:     def testWeakRefs(self):
+               # verify weak references
+    1:         p = proxy(self.f)
+    1:         p.write('teststring')
+    1:         self.assertEqual(self.f.tell(), p.tell())
+    1:         self.f.close()
+    1:         self.f = None
+    1:         self.assertRaises(ReferenceError, getattr, p, 'tell')
+       
+    1:     def testAttributes(self):
+               # verify expected attributes exist
+    1:         f = self.f
+    1:         with test_support.check_py3k_warnings():
+    1:             softspace = f.softspace
+    1:         f.name     # merely shouldn't blow up
+    1:         f.mode     # ditto
+    1:         f.closed   # ditto
+       
+    1:         with test_support.check_py3k_warnings():
+                   # verify softspace is writable
+    1:             f.softspace = softspace    # merely shouldn't blow up
+       
+               # verify the others aren't
+    4:         for attr in 'name', 'mode', 'closed':
+    3:             self.assertRaises((AttributeError, TypeError), setattr, f, attr, 'oops')
+       
+    1:     def testReadinto(self):
+               # verify readinto
+    1:         self.f.write('12')
+    1:         self.f.close()
+    1:         a = array('c', 'x'*10)
+    1:         self.f = open(TESTFN, 'rb')
+    1:         n = self.f.readinto(a)
+    1:         self.assertEqual('12', a.tostring()[:n])
+       
+    1:     def testWritelinesUserList(self):
+               # verify writelines with instance sequence
+    1:         l = UserList(['1', '2'])
+    1:         self.f.writelines(l)
+    1:         self.f.close()
+    1:         self.f = open(TESTFN, 'rb')
+    1:         buf = self.f.read()
+    1:         self.assertEqual(buf, '12')
+       
+    1:     def testWritelinesIntegers(self):
+               # verify writelines with integers
+    1:         self.assertRaises(TypeError, self.f.writelines, [1, 2, 3])
+       
+    1:     def testWritelinesIntegersUserList(self):
+               # verify writelines with integers in UserList
+    1:         l = UserList([1,2,3])
+    1:         self.assertRaises(TypeError, self.f.writelines, l)
+       
+    1:     def testWritelinesNonString(self):
+               # verify writelines with non-string object
+    2:         class NonString:
+    1:             pass
+       
+    1:         self.assertRaises(TypeError, self.f.writelines,
+    1:                           [NonString(), NonString()])
+       
+    1:     def testWritelinesBuffer(self):
+    1:         self.f.writelines([array('c', 'abc')])
+    1:         self.f.close()
+    1:         self.f = open(TESTFN, 'rb')
+    1:         buf = self.f.read()
+    1:         self.assertEqual(buf, 'abc')
+       
+    1:     def testRepr(self):
+               # verify repr works
+    1:         self.assertTrue(repr(self.f).startswith("<open file '" + TESTFN))
+               # see issue #14161
+               # Windows doesn't like \r\n\t" in the file name, but ' is ok
+    1:         fname = 'xx\rxx\nxx\'xx"xx' if sys.platform != "win32" else "xx'xx"
+    1:         with open(fname, 'w') as f:
+    1:             self.addCleanup(os.remove, fname)
+    1:             self.assertTrue(repr(f).startswith(
+    1:                     "<open file %r, mode 'w' at" % fname))
+       
+    1:     def testErrors(self):
+    1:         self.f.close()
+    1:         self.f = open(TESTFN, 'rb')
+    1:         f = self.f
+    1:         self.assertEqual(f.name, TESTFN)
+    1:         self.assertTrue(not f.isatty())
+    1:         self.assertTrue(not f.closed)
+       
+    1:         self.assertRaises(TypeError, f.readinto, "")
+    1:         f.close()
+    1:         self.assertTrue(f.closed)
+       
+    1:     def testMethods(self):
+    1:         methods = ['fileno', 'flush', 'isatty', 'next', 'read', 'readinto',
+    1:                    'readline', 'readlines', 'seek', 'tell', 'truncate',
+    1:                    'write', '__iter__']
+    1:         deprecated_methods = ['xreadlines']
+    1:         if sys.platform.startswith('atheos'):
+>>>>>>             methods.remove('truncate')
+       
+               # __exit__ should close the file
+    1:         self.f.__exit__(None, None, None)
+    1:         self.assertTrue(self.f.closed)
+       
+   14:         for methodname in methods:
+   13:             method = getattr(self.f, methodname)
+                   # should raise on closed file
+   13:             self.assertRaises(ValueError, method)
+    1:         with test_support.check_py3k_warnings():
+    2:             for methodname in deprecated_methods:
+    1:                 method = getattr(self.f, methodname)
+    1:                 self.assertRaises(ValueError, method)
+    1:         self.assertRaises(ValueError, self.f.writelines, [])
+       
+               # file is closed, __exit__ shouldn't do anything
+    1:         self.assertEqual(self.f.__exit__(None, None, None), None)
+               # it must also return None if an exception was given
+    1:         try:
+    1:             1 // 0
+    1:         except:
+    1:             self.assertEqual(self.f.__exit__(*sys.exc_info()), None)
+       
+    1:     def testReadWhenWriting(self):
+    1:         self.assertRaises(IOError, self.f.read)
+       
+    1:     def testNastyWritelinesGenerator(self):
+    1:         def nasty():
+    6:             for i in range(5):
+    5:                 if i == 3:
+    1:                     self.f.close()
+    5:                 yield str(i)
+    1:         self.assertRaises(ValueError, self.f.writelines, nasty())
+       
+    1:     def testIssue5677(self):
+               # Remark: Do not perform more than one test per open file,
+               # since that does NOT catch the readline error on Windows.
+    1:         data = 'xxx'
+    5:         for mode in ['w', 'wb', 'a', 'ab']:
+   16:             for attr in ['read', 'readline', 'readlines']:
+   12:                 self.f = open(TESTFN, mode)
+   12:                 self.f.write(data)
+   12:                 self.assertRaises(IOError, getattr(self.f, attr))
+   12:                 self.f.close()
+       
+    4:             self.f = open(TESTFN, mode)
+    4:             self.f.write(data)
+    8:             self.assertRaises(IOError, lambda: [line for line in self.f])
+    4:             self.f.close()
+       
+    4:             self.f = open(TESTFN, mode)
+    4:             self.f.write(data)
+    4:             self.assertRaises(IOError, self.f.readinto, bytearray(len(data)))
+    4:             self.f.close()
+       
+    9:         for mode in ['r', 'rb', 'U', 'Ub', 'Ur', 'rU', 'rbU', 'rUb']:
+    8:             self.f = open(TESTFN, mode)
+    8:             self.assertRaises(IOError, self.f.write, data)
+    8:             self.f.close()
+       
+    8:             self.f = open(TESTFN, mode)
+    8:             self.assertRaises(IOError, self.f.writelines, [data, data])
+    8:             self.f.close()
+       
+    8:             self.f = open(TESTFN, mode)
+    8:             self.assertRaises(IOError, self.f.truncate)
+    8:             self.f.close()
+       
+    2: class OtherFileTests(unittest.TestCase):
+       
+    1:     def testOpenDir(self):
+    1:         this_dir = os.path.dirname(__file__) or os.curdir
+    3:         for mode in (None, "w"):
+    2:             try:
+    2:                 if mode:
+    1:                     f = open(this_dir, mode)
+                       else:
+    1:                     f = open(this_dir)
+    2:             except IOError as e:
+    2:                 self.assertEqual(e.filename, this_dir)
+                   else:
+>>>>>>                 self.fail("opening a directory didn't raise an IOError")
+       
+    1:     def testModeStrings(self):
+               # check invalid mode strings
+    4:         for mode in ("", "aU", "wU+"):
+    3:             try:
+    3:                 f = open(TESTFN, mode)
+    3:             except ValueError:
+    3:                 pass
+                   else:
+>>>>>>                 f.close()
+>>>>>>                 self.fail('%r is an invalid file mode' % mode)
+       
+               # Some invalid modes fail on Windows, but pass on Unix
+               # Issue3965: avoid a crash on Windows when filename is unicode
+    4:         for name in (TESTFN, unicode(TESTFN), unicode(TESTFN + '\t')):
+    3:             try:
+    3:                 f = open(name, "rr")
+    3:             except (IOError, ValueError):
+    3:                 pass
+                   else:
+>>>>>>                 f.close()
+       
+    1:     def testStdinSeek(self):
+    1:         if sys.platform == 'osf1V5':
+                   # This causes the interpreter to exit on OSF1 v5.1.
+>>>>>>             self.skipTest('Skipping sys.stdin.seek(-1), it may crash '
+                                 'the interpreter. Test manually.')
+       
+    1:         if not sys.stdin.isatty():
+                   # Issue #23168: if stdin is redirected to a file, stdin becomes
+                   # seekable
+>>>>>>             self.skipTest('stdin must be a TTY in this test')
+       
+    1:         self.assertRaises(IOError, sys.stdin.seek, -1)
+       
+    1:     def testStdinTruncate(self):
+    1:         self.assertRaises(IOError, sys.stdin.truncate)
+       
+    1:     def testUnicodeOpen(self):
+               # verify repr works for unicode too
+    1:         f = open(unicode(TESTFN), "w")
+    1:         self.assertTrue(repr(f).startswith("<open file u'" + TESTFN))
+    1:         f.close()
+    1:         os.unlink(TESTFN)
+       
+    1:     def testBadModeArgument(self):
+               # verify that we get a sensible error message for bad mode argument
+    1:         bad_mode = "qwerty"
+    1:         try:
+    1:             f = open(TESTFN, bad_mode)
+    1:         except ValueError, msg:
+    1:             if msg.args[0] != 0:
+    1:                 s = str(msg)
+    1:                 if TESTFN in s or bad_mode not in s:
+>>>>>>                     self.fail("bad error message for invalid mode: %s" % s)
+                   # if msg.args[0] == 0, we're probably on Windows where there may
+                   # be no obvious way to discover why open() failed.
+               else:
+>>>>>>             f.close()
+>>>>>>             self.fail("no error for invalid mode: %s" % bad_mode)
+       
+    1:     def testSetBufferSize(self):
+               # make sure that explicitly setting the buffer size doesn't cause
+               # misbehaviour especially with repeated close() calls
+    5:         for s in (-1, 0, 1, 512):
+    4:             try:
+    4:                 f = open(TESTFN, 'w', s)
+    4:                 f.write(str(s))
+    4:                 f.close()
+    4:                 f.close()
+    4:                 f = open(TESTFN, 'r', s)
+    4:                 d = int(f.read())
+    4:                 f.close()
+    4:                 f.close()
+>>>>>>             except IOError, msg:
+>>>>>>                 self.fail('error setting buffer size %d: %s' % (s, str(msg)))
+    4:             self.assertEqual(d, s)
+       
+    1:     def testTruncateOnWindows(self):
+    1:         os.unlink(TESTFN)
+       
+    1:         def bug801631():
+                   # SF bug <http://www.python.org/sf/801631>
+                   # "file.truncate fault on windows"
+    1:             f = open(TESTFN, 'wb')
+    1:             f.write('12345678901')   # 11 bytes
+    1:             f.close()
+       
+    1:             f = open(TESTFN,'rb+')
+    1:             data = f.read(5)
+    1:             if data != '12345':
+>>>>>>                 self.fail("Read on file opened for update failed %r" % data)
+    1:             if f.tell() != 5:
+>>>>>>                 self.fail("File pos after read wrong %d" % f.tell())
+       
+    1:             f.truncate()
+    1:             if f.tell() != 5:
+>>>>>>                 self.fail("File pos after ftruncate wrong %d" % f.tell())
+       
+    1:             f.close()
+    1:             size = os.path.getsize(TESTFN)
+    1:             if size != 5:
+>>>>>>                 self.fail("File size after ftruncate wrong %d" % size)
+       
+    1:         try:
+    1:             bug801631()
+               finally:
+    1:             os.unlink(TESTFN)
+       
+    1:     def testIteration(self):
+               # Test the complex interaction when mixing file-iteration and the
+               # various read* methods. Ostensibly, the mixture could just be tested
+               # to work when it should work according to the Python language,
+               # instead of fail when it should fail according to the current CPython
+               # implementation.  People don't always program Python the way they
+               # should, though, and the implemenation might change in subtle ways,
+               # so we explicitly test for errors, too; the test will just have to
+               # be updated when the implementation changes.
+    1:         dataoffset = 16384
+    1:         filler = "ham\n"
+    1:         assert not dataoffset % len(filler), \
+>>>>>>             "dataoffset must be multiple of len(filler)"
+    1:         nchunks = dataoffset // len(filler)
+               testlines = [
+    1:             "spam, spam and eggs\n",
+    1:             "eggs, spam, ham and spam\n",
+    1:             "saussages, spam, spam and eggs\n",
+    1:             "spam, ham, spam and eggs\n",
+    1:             "spam, spam, spam, spam, spam, ham, spam\n",
+    1:             "wonderful spaaaaaam.\n"
+               ]
+    1:         methods = [("readline", ()), ("read", ()), ("readlines", ()),
+    1:                    ("readinto", (array("c", " "*100),))]
+       
+    1:         try:
+                   # Prepare the testfile
+    1:             bag = open(TESTFN, "w")
+    1:             bag.write(filler * nchunks)
+    1:             bag.writelines(testlines)
+    1:             bag.close()
+                   # Test for appropriate errors mixing read* and iteration
+    5:             for methodname, args in methods:
+    4:                 f = open(TESTFN)
+    4:                 if f.next() != filler:
+>>>>>>                     self.fail, "Broken testfile"
+    4:                 meth = getattr(f, methodname)
+    4:                 try:
+    4:                     meth(*args)
+    4:                 except ValueError:
+    4:                     pass
+                       else:
+>>>>>>                     self.fail("%s%r after next() didn't raise ValueError" %
+>>>>>>                                      (methodname, args))
+    4:                 f.close()
+       
+                   # Test to see if harmless (by accident) mixing of read* and
+                   # iteration still works. This depends on the size of the internal
+                   # iteration buffer (currently 8192,) but we can test it in a
+                   # flexible manner.  Each line in the bag o' ham is 4 bytes
+                   # ("h", "a", "m", "\n"), so 4096 lines of that should get us
+                   # exactly on the buffer boundary for any power-of-2 buffersize
+                   # between 4 and 16384 (inclusive).
+    1:             f = open(TESTFN)
+ 4097:             for i in range(nchunks):
+ 4096:                 f.next()
+    1:             testline = testlines.pop(0)
+    1:             try:
+    1:                 line = f.readline()
+>>>>>>             except ValueError:
+>>>>>>                 self.fail("readline() after next() with supposedly empty "
+                                 "iteration-buffer failed anyway")
+    1:             if line != testline:
+>>>>>>                 self.fail("readline() after next() with empty buffer "
+>>>>>>                           "failed. Got %r, expected %r" % (line, testline))
+    1:             testline = testlines.pop(0)
+    1:             buf = array("c", "\x00" * len(testline))
+    1:             try:
+    1:                 f.readinto(buf)
+>>>>>>             except ValueError:
+>>>>>>                 self.fail("readinto() after next() with supposedly empty "
+                                 "iteration-buffer failed anyway")
+    1:             line = buf.tostring()
+    1:             if line != testline:
+>>>>>>                 self.fail("readinto() after next() with empty buffer "
+>>>>>>                           "failed. Got %r, expected %r" % (line, testline))
+       
+    1:             testline = testlines.pop(0)
+    1:             try:
+    1:                 line = f.read(len(testline))
+>>>>>>             except ValueError:
+>>>>>>                 self.fail("read() after next() with supposedly empty "
+                                 "iteration-buffer failed anyway")
+    1:             if line != testline:
+>>>>>>                 self.fail("read() after next() with empty buffer "
+>>>>>>                           "failed. Got %r, expected %r" % (line, testline))
+    1:             try:
+    1:                 lines = f.readlines()
+>>>>>>             except ValueError:
+>>>>>>                 self.fail("readlines() after next() with supposedly empty "
+                                 "iteration-buffer failed anyway")
+    1:             if lines != testlines:
+>>>>>>                 self.fail("readlines() after next() with empty buffer "
+>>>>>>                           "failed. Got %r, expected %r" % (line, testline))
+                   # Reading after iteration hit EOF shouldn't hurt either
+    1:             f = open(TESTFN)
+    1:             try:
+ 4103:                 for line in f:
+ 4102:                     pass
+    1:                 try:
+    1:                     f.readline()
+    1:                     f.readinto(buf)
+    1:                     f.read()
+    1:                     f.readlines()
+>>>>>>                 except ValueError:
+>>>>>>                     self.fail("read* failed after next() consumed file")
+                   finally:
+    1:                 f.close()
+               finally:
+    1:             os.unlink(TESTFN)
+       
+    1:     @unittest.skipUnless(os.name == 'posix', 'test requires a posix system.')
+           def test_write_full(self):
+    1:         devfull = '/dev/full'
+    1:         if not (os.path.exists(devfull) and
+>>>>>>                 stat.S_ISCHR(os.stat(devfull).st_mode)):
+                   # Issue #21934: OpenBSD does not have a /dev/full character device
+    1:             self.skipTest('requires %r' % devfull)
+>>>>>>         with open(devfull, 'wb', 1) as f:
+>>>>>>             with self.assertRaises(IOError):
+>>>>>>                 f.write('hello\n')
+>>>>>>         with open(devfull, 'wb', 1) as f:
+>>>>>>             with self.assertRaises(IOError):
+                       # Issue #17976
+>>>>>>                 f.write('hello')
+>>>>>>                 f.write('\n')
+>>>>>>         with open(devfull, 'wb', 0) as f:
+>>>>>>             with self.assertRaises(IOError):
+>>>>>>                 f.write('h')
+       
+    1:     @unittest.skipUnless(sys.maxsize > 2**31, "requires 64-bit system")
+    1:     @test_support.precisionbigmemtest(2**31, 2.5, dry_run=False)
+           def test_very_long_line(self, size):
+               # Issue #22526
+>>>>>>         requires('largefile')
+>>>>>>         with open(TESTFN, "wb") as fp:
+>>>>>>             fp.seek(size - 1)
+>>>>>>             fp.write("\0")
+>>>>>>         with open(TESTFN, "rb") as fp:
+>>>>>>             for l in fp:
+>>>>>>                 pass
+>>>>>>         self.assertEqual(len(l), size)
+>>>>>>         self.assertEqual(l.count("\0"), size)
+>>>>>>         l = None
+       
+    2: class FileSubclassTests(unittest.TestCase):
+       
+    1:     def testExit(self):
+               # test that exiting with context calls subclass' close
+    2:         class C(file):
+    1:             def __init__(self, *args):
+    1:                 self.subclass_closed = False
+    1:                 file.__init__(self, *args)
+    1:             def close(self):
+    1:                 self.subclass_closed = True
+    1:                 file.close(self)
+       
+    1:         with C(TESTFN, 'w') as f:
+    1:             pass
+    1:         self.assertTrue(f.subclass_closed)
+       
+       
+    2: @unittest.skipUnless(threading, 'Threading required for this test.')
+    1: class FileThreadingTests(unittest.TestCase):
+           # These tests check the ability to call various methods of file objects
+           # (including close()) concurrently without crashing the Python interpreter.
+           # See #815646, #595601
+       
+    1:     def setUp(self):
+   15:         self._threads = test_support.threading_setup()
+   15:         self.f = None
+   15:         self.filename = TESTFN
+   15:         with open(self.filename, "w") as f:
+   15:             f.write("\n".join("0123456789"))
+   15:         self._count_lock = threading.Lock()
+   15:         self.close_count = 0
+   15:         self.close_success_count = 0
+   15:         self.use_buffering = False
+       
+    1:     def tearDown(self):
+   15:         if self.f:
+   15:             try:
+   15:                 self.f.close()
+>>>>>>             except (EnvironmentError, ValueError):
+>>>>>>                 pass
+   15:         try:
+   15:             os.remove(self.filename)
+>>>>>>         except EnvironmentError:
+>>>>>>             pass
+   15:         test_support.threading_cleanup(*self._threads)
+       
+    1:     def _create_file(self):
+21109:         if self.use_buffering:
+  607:             self.f = open(self.filename, "w+", buffering=1024*16)
+               else:
+20506:             self.f = open(self.filename, "w+")
+       
+    1:     def _close_file(self):
+31426:         with self._count_lock:
+31433:             self.close_count += 1
+30941:         self.f.close()
+20973:         with self._count_lock:
+21040:             self.close_success_count += 1
+       
+    1:     def _close_and_reopen_file(self):
+31429:         self._close_file()
+               # if close raises an exception thats fine, self.f remains valid so
+               # we don't need to reopen.
+20848:         self._create_file()
+       
+    1:     def _run_workers(self, func, nb_workers, duration=0.2):
+   15:         with self._count_lock:
+   15:             self.close_count = 0
+   15:             self.close_success_count = 0
+   15:         self.do_continue = True
+   15:         threads = []
+   15:         try:
+   90:             for i in range(nb_workers):
+   75:                 t = threading.Thread(target=func)
+   75:                 t.start()
+   75:                 threads.append(t)
+  250:             for _ in xrange(100):
+  248:                 time.sleep(duration/100)
+  248:                 with self._count_lock:
+  248:                     if self.close_count-self.close_success_count > nb_workers+1:
+   13:                         if test_support.verbose:
+>>>>>>                             print 'Q',
+   13:                         break
+   15:             time.sleep(duration)
+               finally:
+   15:             self.do_continue = False
+   90:             for t in threads:
+   75:                 t.join()
+       
+    1:     def _test_close_open_io(self, io_func, nb_workers=5):
+   15:         def worker():
+   75:             self._create_file()
+   75:             funcs = itertools.cycle((
+31437:                 lambda: io_func(),
+31501:                 lambda: self._close_and_reopen_file(),
+                   ))
+62851:             for f in funcs:
+62873:                 if not self.do_continue:
+   75:                     break
+62820:                 try:
+62780:                     f()
+12755:                 except (IOError, ValueError):
+12757:                     pass
+   15:         self._run_workers(worker, nb_workers)
+   15:         if test_support.verbose:
+                   # Useful verbose statistics when tuning this test to take
+                   # less time to run but still ensuring that its still useful.
+                   #
+                   # the percent of close calls that raised an error
+>>>>>>             percent = 100. - 100.*self.close_success_count/self.close_count
+>>>>>>             print self.close_count, ('%.4f ' % percent),
+       
+    1:     def test_close_open(self):
+    1:         def io_func():
+ 3956:             pass
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_flush(self):
+    1:         def io_func():
+ 2060:             self.f.flush()
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_iter(self):
+    1:         def io_func():
+ 2122:             list(iter(self.f))
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_isatty(self):
+    1:         def io_func():
+ 2212:             self.f.isatty()
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_print(self):
+    1:         def io_func():
+ 2382:             print >> self.f, ''
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_print_buffered(self):
+    1:         self.use_buffering = True
+    1:         def io_func():
+ 2093:             print >> self.f, ''
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_read(self):
+    1:         def io_func():
+ 1752:             self.f.read(0)
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_readinto(self):
+    1:         def io_func():
+ 1945:             a = array('c', 'xxxxx')
+ 1945:             self.f.readinto(a)
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_readline(self):
+    1:         def io_func():
+ 1256:             self.f.readline()
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_readlines(self):
+    1:         def io_func():
+ 1282:             self.f.readlines()
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_seek(self):
+    1:         def io_func():
+ 1330:             self.f.seek(0, 0)
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_tell(self):
+    1:         def io_func():
+ 1237:             self.f.tell()
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_truncate(self):
+    1:         def io_func():
+ 2296:             self.f.truncate()
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_write(self):
+    1:         def io_func():
+ 1727:             self.f.write('')
+    1:         self._test_close_open_io(io_func)
+       
+    1:     def test_close_open_writelines(self):
+    1:         def io_func():
+ 3784:             self.f.writelines('')
+    1:         self._test_close_open_io(io_func)
+       
+       
+    2: @unittest.skipUnless(os.name == 'posix', 'test requires a posix system.')
+    1: class TestFileSignalEINTR(unittest.TestCase):
+           def _test_reading(self, data_to_write, read_and_verify_code, method_name,
+    1:                       universal_newlines=False):
+               """Generic buffered read method test harness to verify EINTR behavior.
+       
+               Also validates that Python signal handlers are run during the read.
+       
+               Args:
+                   data_to_write: String to write to the child process for reading
+                       before sending it a signal, confirming the signal was handled,
+                       writing a final newline char and closing the infile pipe.
+                   read_and_verify_code: Single "line" of code to read from a file
+                       object named 'infile' and validate the result.  This will be
+                       executed as part of a python subprocess fed data_to_write.
+                   method_name: The name of the read method being tested, for use in
+                       an error message on failure.
+                   universal_newlines: If True, infile will be opened in universal
+                       newline mode in the child process.
+               """
+    6:         if universal_newlines:
+                   # Test the \r\n -> \n conversion while we're at it.
+    2:             data_to_write = data_to_write.replace('\n', '\r\n')
+    2:             infile_setup_code = 'infile = os.fdopen(sys.stdin.fileno(), "rU")'
+               else:
+    4:             infile_setup_code = 'infile = sys.stdin'
+               # Total pipe IO in this function is smaller than the minimum posix OS
+               # pipe buffer size of 512 bytes.  No writer should block.
+    6:         assert len(data_to_write) < 512, 'data_to_write must fit in pipe buf.'
+       
+               child_code = (
+                    'import os, signal, sys ;'
+                    'signal.signal('
+                            'signal.SIGINT, lambda s, f: sys.stderr.write("$\\n")) ;'
+                    + infile_setup_code + ' ;' +
+                    'assert isinstance(infile, file) ;'
+                    'sys.stderr.write("Go.\\n") ;'
+    6:              + read_and_verify_code)
+    6:         reader_process = subprocess.Popen(
+    6:                 [sys.executable, '-c', child_code],
+    6:                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    6:                 stderr=subprocess.PIPE)
+               # Wait for the signal handler to be installed.
+    6:         go = reader_process.stderr.read(4)
+    6:         if go != 'Go.\n':
+>>>>>>             reader_process.kill()
+>>>>>>             self.fail('Error from %s process while awaiting "Go":\n%s' % (
+>>>>>>                     method_name, go+reader_process.stderr.read()))
+    6:         reader_process.stdin.write(data_to_write)
+    6:         signals_sent = 0
+    6:         rlist = []
+               # We don't know when the read_and_verify_code in our child is actually
+               # executing within the read system call we want to interrupt.  This
+               # loop waits for a bit before sending the first signal to increase
+               # the likelihood of that.  Implementations without correct EINTR
+               # and signal handling usually fail this test.
+   18:         while not rlist:
+   12:             rlist, _, _ = select.select([reader_process.stderr], (), (), 0.05)
+   12:             reader_process.send_signal(signal.SIGINT)
+                   # Give the subprocess time to handle it before we loop around and
+                   # send another one.  On OSX the second signal happening close to
+                   # immediately after the first was causing the subprocess to crash
+                   # via the OS's default SIGINT handler.
+   12:             time.sleep(0.1)
+   12:             signals_sent += 1
+   12:             if signals_sent > 200:
+>>>>>>                 reader_process.kill()
+>>>>>>                 self.fail("failed to handle signal during %s." % method_name)
+               # This assumes anything unexpected that writes to stderr will also
+               # write a newline.  That is true of the traceback printing code.
+    6:         signal_line = reader_process.stderr.readline()
+    6:         if signal_line != '$\n':
+>>>>>>             reader_process.kill()
+>>>>>>             self.fail('Error from %s process while awaiting signal:\n%s' % (
+>>>>>>                     method_name, signal_line+reader_process.stderr.read()))
+               # We append a newline to our input so that a readline call can
+               # end on its own before the EOF is seen.
+    6:         stdout, stderr = reader_process.communicate(input='\n')
+    6:         if reader_process.returncode != 0:
+>>>>>>             self.fail('%s() process exited rc=%d.\nSTDOUT:\n%s\nSTDERR:\n%s' % (
+>>>>>>                     method_name, reader_process.returncode, stdout, stderr))
+       
+    1:     def test_readline(self, universal_newlines=False):
+               """file.readline must handle signals and not lose data."""
+    2:         self._test_reading(
+    2:                 data_to_write='hello, world!',
+                       read_and_verify_code=(
+    2:                         'line = infile.readline() ;'
+                               'expected_line = "hello, world!\\n" ;'
+                               'assert line == expected_line, ('
+                               '"read %r expected %r" % (line, expected_line))'
+                       ),
+    2:                 method_name='readline',
+    2:                 universal_newlines=universal_newlines)
+       
+    1:     def test_readline_with_universal_newlines(self):
+    1:         self.test_readline(universal_newlines=True)
+       
+    1:     def test_readlines(self, universal_newlines=False):
+               """file.readlines must handle signals and not lose data."""
+    2:         self._test_reading(
+    2:                 data_to_write='hello\nworld!',
+                       read_and_verify_code=(
+    2:                         'lines = infile.readlines() ;'
+                               'expected_lines = ["hello\\n", "world!\\n"] ;'
+                               'assert lines == expected_lines, ('
+                               '"readlines returned wrong data.\\n" '
+                               '"got lines %r\\nexpected  %r" '
+                               '% (lines, expected_lines))'
+                       ),
+    2:                 method_name='readlines',
+    2:                 universal_newlines=universal_newlines)
+       
+    1:     def test_readlines_with_universal_newlines(self):
+    1:         self.test_readlines(universal_newlines=True)
+       
+    1:     def test_readall(self):
+               """Unbounded file.read() must handle signals and not lose data."""
+    1:         self._test_reading(
+    1:                 data_to_write='hello, world!abcdefghijklm',
+                       read_and_verify_code=(
+    1:                         'data = infile.read() ;'
+                               'expected_data = "hello, world!abcdefghijklm\\n";'
+                               'assert data == expected_data, ('
+                               '"read %r expected %r" % (data, expected_data))'
+                       ),
+    1:                 method_name='unbounded read')
+       
+    1:     def test_readinto(self):
+               """file.readinto must handle signals and not lose data."""
+    1:         self._test_reading(
+    1:                 data_to_write='hello, world!',
+                       read_and_verify_code=(
+    1:                         'data = bytearray(50) ;'
+                               'num_read = infile.readinto(data) ;'
+                               'expected_data = "hello, world!\\n";'
+                               'assert data[:num_read] == expected_data, ('
+                               '"read %r expected %r" % (data, expected_data))'
+                       ),
+    1:                 method_name='readinto')
+       
+       
+    2: class StdoutTests(unittest.TestCase):
+       
+    1:     def test_move_stdout_on_write(self):
+               # Issue 3242: sys.stdout can be replaced (and freed) during a
+               # print statement; prevent a segfault in this case
+    1:         save_stdout = sys.stdout
+       
+    2:         class File:
+    1:             def write(self, data):
+    2:                 if '\n' in data:
+    1:                     sys.stdout = save_stdout
+       
+    1:         try:
+    1:             sys.stdout = File()
+    1:             print "some text"
+               finally:
+    1:             sys.stdout = save_stdout
+       
+    1:     def test_del_stdout_before_print(self):
+               # Issue 4597: 'print' with no argument wasn't reporting when
+               # sys.stdout was deleted.
+    1:         save_stdout = sys.stdout
+    1:         del sys.stdout
+    1:         try:
+    1:             print
+    1:         except RuntimeError as e:
+    1:             self.assertEqual(str(e), "lost sys.stdout")
+               else:
+>>>>>>             self.fail("Expected RuntimeError")
+               finally:
+    1:             sys.stdout = save_stdout
+       
+    1:     def test_unicode(self):
+    1:         import subprocess
+       
+    1:         def get_message(encoding, *code):
+    8:             code = '\n'.join(code)
+    8:             env = os.environ.copy()
+    8:             env['PYTHONIOENCODING'] = encoding
+    8:             process = subprocess.Popen([sys.executable, "-c", code],
+    8:                                        stdout=subprocess.PIPE, env=env)
+    8:             stdout, stderr = process.communicate()
+    8:             self.assertEqual(process.returncode, 0)
+    8:             return stdout
+       
+    1:         def check_message(text, encoding, expected):
+    6:             stdout = get_message(encoding,
+    6:                 "import sys",
+    6:                 "sys.stdout.write(%r)" % text,
+    6:                 "sys.stdout.flush()")
+    6:             self.assertEqual(stdout, expected)
+       
+               # test the encoding
+    1:         check_message(u'15\u20ac', "iso-8859-15", "15\xa4")
+    1:         check_message(u'15\u20ac', "utf-8", '15\xe2\x82\xac')
+    1:         check_message(u'15\u20ac', "utf-16-le", '1\x005\x00\xac\x20')
+       
+               # test the error handler
+    1:         check_message(u'15\u20ac', "iso-8859-1:ignore", "15")
+    1:         check_message(u'15\u20ac', "iso-8859-1:replace", "15?")
+    1:         check_message(u'15\u20ac', "iso-8859-1:backslashreplace", "15\\u20ac")
+       
+               # test the buffer API
+    3:         for objtype in ('buffer', 'bytearray'):
+    2:             stdout = get_message('ascii',
+    2:                 'import sys',
+    2:                 r'sys.stdout.write(%s("\xe9"))' % objtype,
+    2:                 'sys.stdout.flush()')
+    2:             self.assertEqual(stdout, "\xe9")
+       
+       
+    1: def test_main():
+           # Historically, these tests have been sloppy about removing TESTFN.
+           # So get rid of it no matter what.
+    1:     try:
+    1:         run_unittest(AutoFileTests, OtherFileTests, FileSubclassTests,
+    1:             FileThreadingTests, TestFileSignalEINTR, StdoutTests)
+           finally:
+    1:         if os.path.exists(TESTFN):
+>>>>>>             os.unlink(TESTFN)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

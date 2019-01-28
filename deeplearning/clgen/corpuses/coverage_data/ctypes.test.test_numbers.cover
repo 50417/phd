@@ -1,0 +1,289 @@
+    1: from ctypes import *
+    1: import unittest
+    1: import struct
+       
+    1: def valid_ranges(*types):
+           # given a sequence of numeric types, collect their _type_
+           # attribute, which is a single format character compatible with
+           # the struct module, use the struct module to calculate the
+           # minimum and maximum value allowed for this format.
+           # Returns a list of (min, max) values.
+    2:     result = []
+   13:     for t in types:
+   11:         fmt = t._type_
+   11:         size = struct.calcsize(fmt)
+   11:         a = struct.unpack(fmt, ("\x00"*32)[:size])[0]
+   11:         b = struct.unpack(fmt, ("\xFF"*32)[:size])[0]
+   11:         c = struct.unpack(fmt, ("\x7F"+"\x00"*32)[:size])[0]
+   11:         d = struct.unpack(fmt, ("\x80"+"\xFF"*32)[:size])[0]
+   11:         result.append((min(a, b, c, d), max(a, b, c, d)))
+    2:     return result
+       
+    1: ArgType = type(byref(c_int(0)))
+       
+    1: unsigned_types = [c_ubyte, c_ushort, c_uint, c_ulong]
+    1: signed_types = [c_byte, c_short, c_int, c_long, c_longlong]
+       
+    1: bool_types = []
+       
+    1: float_types = [c_double, c_float]
+       
+    1: try:
+    1:     c_ulonglong
+    1:     c_longlong
+>>>>>> except NameError:
+>>>>>>     pass
+       else:
+    1:     unsigned_types.append(c_ulonglong)
+    1:     signed_types.append(c_longlong)
+       
+    1: try:
+    1:     c_bool
+>>>>>> except NameError:
+>>>>>>     pass
+       else:
+    1:     bool_types.append(c_bool)
+       
+    1: unsigned_ranges = valid_ranges(*unsigned_types)
+    1: signed_ranges = valid_ranges(*signed_types)
+    1: bool_values = [True, False, 0, 1, -1, 5000, 'test', [], [1]]
+       
+       ################################################################
+       
+    2: class NumberTestCase(unittest.TestCase):
+       
+    1:     def test_default_init(self):
+               # default values are set to zero
+   14:         for t in signed_types + unsigned_types + float_types:
+   13:             self.assertEqual(t().value, 0)
+       
+    1:     def test_unsigned_values(self):
+               # the value given to the constructor is available
+               # as the 'value' attribute
+    6:         for t, (l, h) in zip(unsigned_types, unsigned_ranges):
+    5:             self.assertEqual(t(l).value, l)
+    5:             self.assertEqual(t(h).value, h)
+       
+    1:     def test_signed_values(self):
+               # see above
+    7:         for t, (l, h) in zip(signed_types, signed_ranges):
+    6:             self.assertEqual(t(l).value, l)
+    6:             self.assertEqual(t(h).value, h)
+       
+    1:     def test_bool_values(self):
+    1:         from operator import truth
+    2:         for t, v in zip(bool_types, bool_values):
+    1:             self.assertEqual(t(v).value, truth(v))
+       
+    1:     def test_typeerror(self):
+               # Only numbers are allowed in the constructor,
+               # otherwise TypeError is raised
+   14:         for t in signed_types + unsigned_types + float_types:
+   13:             self.assertRaises(TypeError, t, "")
+   13:             self.assertRaises(TypeError, t, None)
+       
+    1:     @unittest.skip('test disabled')
+           def test_valid_ranges(self):
+               # invalid values of the correct type
+               # raise ValueError (not OverflowError)
+>>>>>>         for t, (l, h) in zip(unsigned_types, unsigned_ranges):
+>>>>>>             self.assertRaises(ValueError, t, l-1)
+>>>>>>             self.assertRaises(ValueError, t, h+1)
+       
+    1:     def test_from_param(self):
+               # the from_param class method attribute always
+               # returns PyCArgObject instances
+   14:         for t in signed_types + unsigned_types + float_types:
+   13:             self.assertEqual(ArgType, type(t.from_param(0)))
+       
+    1:     def test_byref(self):
+               # calling byref returns also a PyCArgObject instance
+   15:         for t in signed_types + unsigned_types + float_types + bool_types:
+   14:             parm = byref(t())
+   14:             self.assertEqual(ArgType, type(parm))
+       
+       
+    1:     def test_floats(self):
+               # c_float and c_double can be created from
+               # Python int, long and float
+    2:         class FloatLike(object):
+    1:             def __float__(self):
+    2:                 return 2.0
+    1:         f = FloatLike()
+    3:         for t in float_types:
+    2:             self.assertEqual(t(2.0).value, 2.0)
+    2:             self.assertEqual(t(2).value, 2.0)
+    2:             self.assertEqual(t(2L).value, 2.0)
+    2:             self.assertEqual(t(f).value, 2.0)
+       
+    1:     def test_integers(self):
+    2:         class FloatLike(object):
+    1:             def __float__(self):
+>>>>>>                 return 2.0
+    1:         f = FloatLike()
+    2:         class IntLike(object):
+    1:             def __int__(self):
+   11:                 return 2
+    1:         i = IntLike()
+               # integers cannot be constructed from floats,
+               # but from integer-like objects
+   12:         for t in signed_types + unsigned_types:
+   11:             self.assertRaises(TypeError, t, 3.14)
+   11:             self.assertRaises(TypeError, t, f)
+   11:             self.assertEqual(t(i).value, 2)
+       
+    1:     def test_sizes(self):
+   15:         for t in signed_types + unsigned_types + float_types + bool_types:
+   14:             try:
+   14:                 size = struct.calcsize(t._type_)
+>>>>>>             except struct.error:
+>>>>>>                 continue
+                   # sizeof of the type...
+   14:             self.assertEqual(sizeof(t), size)
+                   # and sizeof of an instance
+   14:             self.assertEqual(sizeof(t()), size)
+       
+    1:     def test_alignments(self):
+   14:         for t in signed_types + unsigned_types + float_types:
+   13:             code = t._type_ # the typecode
+   13:             align = struct.calcsize("c%c" % code) - struct.calcsize(code)
+       
+                   # alignment of the type...
+   13:             self.assertEqual((code, alignment(t)),
+   13:                                  (code, align))
+                   # and alignment of an instance
+   13:             self.assertEqual((code, alignment(t())),
+   13:                                  (code, align))
+       
+    1:     def test_int_from_address(self):
+    1:         from array import array
+   12:         for t in signed_types + unsigned_types:
+                   # the array module doesn't support all format codes
+                   # (no 'q' or 'Q')
+   11:             try:
+   11:                 array(t._type_)
+>>>>>>             except ValueError:
+>>>>>>                 continue
+   11:             a = array(t._type_, [100])
+       
+                   # v now is an integer at an 'external' memory location
+   11:             v = t.from_address(a.buffer_info()[0])
+   11:             self.assertEqual(v.value, a[0])
+   11:             self.assertEqual(type(v), t)
+       
+                   # changing the value at the memory location changes v's value also
+   11:             a[0] = 42
+   11:             self.assertEqual(v.value, a[0])
+       
+       
+    1:     def test_float_from_address(self):
+    1:         from array import array
+    3:         for t in float_types:
+    2:             a = array(t._type_, [3.14])
+    2:             v = t.from_address(a.buffer_info()[0])
+    2:             self.assertEqual(v.value, a[0])
+    2:             self.assertIs(type(v), t)
+    2:             a[0] = 2.3456e17
+    2:             self.assertEqual(v.value, a[0])
+    2:             self.assertIs(type(v), t)
+       
+    1:     def test_char_from_address(self):
+    1:         from ctypes import c_char
+    1:         from array import array
+       
+    1:         a = array('c', 'x')
+    1:         v = c_char.from_address(a.buffer_info()[0])
+    1:         self.assertEqual(v.value, a[0])
+    1:         self.assertIs(type(v), c_char)
+       
+    1:         a[0] = '?'
+    1:         self.assertEqual(v.value, a[0])
+       
+           # array does not support c_bool / 't'
+    1:     @unittest.skip('test disabled')
+           def test_bool_from_address(self):
+>>>>>>         from ctypes import c_bool
+>>>>>>         from array import array
+>>>>>>         a = array(c_bool._type_, [True])
+>>>>>>         v = t.from_address(a.buffer_info()[0])
+>>>>>>         self.assertEqual(v.value, a[0])
+>>>>>>         self.assertEqual(type(v) is t)
+>>>>>>         a[0] = False
+>>>>>>         self.assertEqual(v.value, a[0])
+>>>>>>         self.assertEqual(type(v) is t)
+       
+    1:     def test_init(self):
+               # c_int() can be initialized from Python's int, and c_int.
+               # Not from c_long or so, which seems strange, abc should
+               # probably be changed:
+    1:         self.assertRaises(TypeError, c_int, c_long(42))
+       
+    1:     def test_float_overflow(self):
+    1:         import sys
+    1:         big_int = int(sys.float_info.max) * 2
+    4:         for t in float_types + [c_longdouble]:
+    3:             self.assertRaises(OverflowError, t, big_int)
+    3:             if (hasattr(t, "__ctype_be__")):
+    2:                 self.assertRaises(OverflowError, t.__ctype_be__, big_int)
+    3:             if (hasattr(t, "__ctype_le__")):
+    2:                 self.assertRaises(OverflowError, t.__ctype_le__, big_int)
+       
+    1:     @unittest.skip('test disabled')
+           def test_perf(self):
+>>>>>>         check_perf()
+       
+    1: from ctypes import _SimpleCData
+    2: class c_int_S(_SimpleCData):
+    1:     _type_ = "i"
+    1:     __slots__ = []
+       
+    1: def run_test(rep, msg, func, arg=None):
+       ##    items = [None] * rep
+>>>>>>     items = range(rep)
+>>>>>>     from time import clock
+>>>>>>     if arg is not None:
+>>>>>>         start = clock()
+>>>>>>         for i in items:
+>>>>>>             func(arg); func(arg); func(arg); func(arg); func(arg)
+>>>>>>         stop = clock()
+           else:
+>>>>>>         start = clock()
+>>>>>>         for i in items:
+>>>>>>             func(); func(); func(); func(); func()
+>>>>>>         stop = clock()
+>>>>>>     print "%15s: %.2f us" % (msg, ((stop-start)*1e6/5/rep))
+       
+    1: def check_perf():
+           # Construct 5 objects
+>>>>>>     from ctypes import c_int
+       
+>>>>>>     REP = 200000
+       
+>>>>>>     run_test(REP, "int()", int)
+>>>>>>     run_test(REP, "int(999)", int)
+>>>>>>     run_test(REP, "c_int()", c_int)
+>>>>>>     run_test(REP, "c_int(999)", c_int)
+>>>>>>     run_test(REP, "c_int_S()", c_int_S)
+>>>>>>     run_test(REP, "c_int_S(999)", c_int_S)
+       
+       # Python 2.3 -OO, win2k, P4 700 MHz:
+       #
+       #          int(): 0.87 us
+       #       int(999): 0.87 us
+       #        c_int(): 3.35 us
+       #     c_int(999): 3.34 us
+       #      c_int_S(): 3.23 us
+       #   c_int_S(999): 3.24 us
+       
+       # Python 2.2 -OO, win2k, P4 700 MHz:
+       #
+       #          int(): 0.89 us
+       #       int(999): 0.89 us
+       #        c_int(): 9.99 us
+       #     c_int(999): 10.02 us
+       #      c_int_S(): 9.87 us
+       #   c_int_S(999): 9.85 us
+       
+    1: if __name__ == '__main__':
+       ##    check_perf()
+>>>>>>     unittest.main()

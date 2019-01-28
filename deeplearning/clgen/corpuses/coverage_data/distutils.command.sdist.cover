@@ -1,0 +1,477 @@
+       """distutils.command.sdist
+       
+    1: Implements the Distutils 'sdist' command (create a source distribution)."""
+       
+    1: __revision__ = "$Id$"
+       
+    1: import os
+    1: import string
+    1: import sys
+    1: from glob import glob
+    1: from warnings import warn
+       
+    1: from distutils.core import Command
+    1: from distutils import dir_util, dep_util, file_util, archive_util
+    1: from distutils.text_file import TextFile
+    1: from distutils.errors import (DistutilsPlatformError, DistutilsOptionError,
+                                     DistutilsTemplateError)
+    1: from distutils.filelist import FileList
+    1: from distutils import log
+    1: from distutils.util import convert_path
+       
+    1: def show_formats():
+           """Print all possible values for the 'formats' option (used by
+           the "--help-formats" command-line option).
+           """
+    1:     from distutils.fancy_getopt import FancyGetopt
+    1:     from distutils.archive_util import ARCHIVE_FORMATS
+    1:     formats = []
+    6:     for format in ARCHIVE_FORMATS.keys():
+    5:         formats.append(("formats=" + format, None,
+    5:                         ARCHIVE_FORMATS[format][2]))
+    1:     formats.sort()
+    1:     FancyGetopt(formats).print_help(
+    1:         "List of available source distribution formats:")
+       
+    2: class sdist(Command):
+       
+    1:     description = "create a source distribution (tarball, zip file, etc.)"
+       
+    1:     def checking_metadata(self):
+               """Callable used for the check sub-command.
+       
+               Placed here so user_options can view it"""
+   14:         return self.metadata_check
+       
+           user_options = [
+               ('template=', 't',
+    1:          "name of manifest template file [default: MANIFEST.in]"),
+               ('manifest=', 'm',
+    1:          "name of manifest file [default: MANIFEST]"),
+               ('use-defaults', None,
+    1:          "include the default file set in the manifest "
+                "[default; disable with --no-defaults]"),
+               ('no-defaults', None,
+    1:          "don't include the default file set"),
+               ('prune', None,
+    1:          "specifically exclude files/directories that should not be "
+                "distributed (build tree, RCS/CVS dirs, etc.) "
+                "[default; disable with --no-prune]"),
+               ('no-prune', None,
+    1:          "don't automatically exclude anything"),
+               ('manifest-only', 'o',
+    1:          "just regenerate the manifest and then stop "
+                "(implies --force-manifest)"),
+               ('force-manifest', 'f',
+    1:          "forcibly regenerate the manifest and carry on as usual. "
+                "Deprecated: now the manifest is always regenerated."),
+               ('formats=', None,
+    1:          "formats for source distribution (comma-separated list)"),
+    1:         ('keep-temp', 'k',
+    1:          "keep the distribution tree around after creating " +
+    1:          "archive file(s)"),
+               ('dist-dir=', 'd',
+    1:          "directory to put the source distribution archive(s) in "
+                "[default: dist]"),
+               ('metadata-check', None,
+    1:          "Ensure that all required elements of meta-data "
+                "are supplied. Warn if any missing. [default]"),
+               ('owner=', 'u',
+    1:          "Owner name used when creating a tar file [default: current user]"),
+               ('group=', 'g',
+    1:          "Group name used when creating a tar file [default: current group]"),
+               ]
+       
+    1:     boolean_options = ['use-defaults', 'prune',
+    1:                        'manifest-only', 'force-manifest',
+    1:                        'keep-temp', 'metadata-check']
+       
+           help_options = [
+    1:         ('help-formats', None,
+    1:          "list available distribution formats", show_formats),
+               ]
+       
+    1:     negative_opt = {'no-defaults': 'use-defaults',
+    1:                     'no-prune': 'prune' }
+       
+    1:     default_format = {'posix': 'gztar',
+    1:                       'nt': 'zip' }
+       
+    1:     sub_commands = [('check', checking_metadata)]
+       
+    1:     def initialize_options(self):
+               # 'template' and 'manifest' are, respectively, the names of
+               # the manifest template and manifest file.
+   16:         self.template = None
+   16:         self.manifest = None
+       
+               # 'use_defaults': if true, we will include the default file set
+               # in the manifest
+   16:         self.use_defaults = 1
+   16:         self.prune = 1
+       
+   16:         self.manifest_only = 0
+   16:         self.force_manifest = 0
+       
+   16:         self.formats = None
+   16:         self.keep_temp = 0
+   16:         self.dist_dir = None
+       
+   16:         self.archive_files = None
+   16:         self.metadata_check = 1
+   16:         self.owner = None
+   16:         self.group = None
+       
+    1:     def finalize_options(self):
+   18:         if self.manifest is None:
+   15:             self.manifest = "MANIFEST"
+   18:         if self.template is None:
+   15:             self.template = "MANIFEST.in"
+       
+   18:         self.ensure_string_list('formats')
+   17:         if self.formats is None:
+    7:             try:
+    7:                 self.formats = [self.default_format[os.name]]
+>>>>>>             except KeyError:
+>>>>>>                 raise DistutilsPlatformError, \
+>>>>>>                       "don't know how to create source distributions " + \
+>>>>>>                       "on platform %s" % os.name
+       
+   17:         bad_format = archive_util.check_archive_formats(self.formats)
+   17:         if bad_format:
+    1:             raise DistutilsOptionError, \
+    1:                   "unknown archive format '%s'" % bad_format
+       
+   16:         if self.dist_dir is None:
+>>>>>>             self.dist_dir = "dist"
+       
+    1:     def run(self):
+               # 'filelist' contains the list of files that will make up the
+               # manifest
+   14:         self.filelist = FileList()
+       
+               # Run sub commands
+   27:         for cmd_name in self.get_sub_commands():
+   13:             self.run_command(cmd_name)
+       
+               # Do whatever it takes to get the list of files to process
+               # (process the manifest template, read an existing manifest,
+               # whatever).  File list is accumulated in 'self.filelist'.
+   14:         self.get_file_list()
+       
+               # If user just wanted us to regenerate the manifest, stop now.
+   14:         if self.manifest_only:
+>>>>>>             return
+       
+               # Otherwise, go ahead and create the source distribution tarball,
+               # or zipfile, or whatever.
+   14:         self.make_distribution()
+       
+    1:     def check_metadata(self):
+               """Deprecated API."""
+    1:         warn("distutils.command.sdist.check_metadata is deprecated, \
+    1:               use the check command instead", PendingDeprecationWarning)
+    1:         check = self.distribution.get_command_obj('check')
+    1:         check.ensure_finalized()
+    1:         check.run()
+       
+    1:     def get_file_list(self):
+               """Figure out the list of files to include in the source
+               distribution, and put it in 'self.filelist'.  This might involve
+               reading the manifest template (and writing the manifest), or just
+               reading the manifest, or just using the default file set -- it all
+               depends on the user's options.
+               """
+               # new behavior when using a template:
+               # the file list is recalculated every time because
+               # even if MANIFEST.in or setup.py are not changed
+               # the user might have added some files in the tree that
+               # need to be included.
+               #
+               #  This makes --force the default and only behavior with templates.
+   14:         template_exists = os.path.isfile(self.template)
+   14:         if not template_exists and self._manifest_is_not_generated():
+    2:             self.read_manifest()
+    2:             self.filelist.sort()
+    2:             self.filelist.remove_duplicates()
+    2:             return
+       
+   12:         if not template_exists:
+   12:             self.warn(("manifest template '%s' does not exist " +
+   12:                         "(using default file list)") %
+   12:                         self.template)
+   12:         self.filelist.findall()
+       
+   12:         if self.use_defaults:
+   12:             self.add_defaults()
+       
+   12:         if template_exists:
+>>>>>>             self.read_template()
+       
+   12:         if self.prune:
+   12:             self.prune_file_list()
+       
+   12:         self.filelist.sort()
+   12:         self.filelist.remove_duplicates()
+   12:         self.write_manifest()
+       
+    1:     def add_defaults(self):
+               """Add all the default files to self.filelist:
+                 - README or README.txt
+                 - setup.py
+                 - test/test*.py
+                 - all pure Python modules mentioned in setup script
+                 - all files pointed by package_data (build_py)
+                 - all files defined in data_files.
+                 - all files defined as scripts.
+                 - all C sources listed as part of extensions or C libraries
+                   in the setup script (doesn't catch C headers!)
+               Warns if (README or README.txt) or setup.py are missing; everything
+               else is optional.
+               """
+       
+   12:         standards = [('README', 'README.txt'), self.distribution.script_name]
+   36:         for fn in standards:
+   24:             if isinstance(fn, tuple):
+   12:                 alts = fn
+   12:                 got_it = 0
+   12:                 for fn in alts:
+   12:                     if os.path.exists(fn):
+   12:                         got_it = 1
+   12:                         self.filelist.append(fn)
+   12:                         break
+       
+   12:                 if not got_it:
+>>>>>>                     self.warn("standard file not found: should have one of " +
+>>>>>>                               string.join(alts, ', '))
+                   else:
+   12:                 if os.path.exists(fn):
+   12:                     self.filelist.append(fn)
+                       else:
+>>>>>>                     self.warn("standard file '%s' not found" % fn)
+       
+   12:         optional = ['test/test*.py', 'setup.cfg']
+   36:         for pattern in optional:
+   24:             files = filter(os.path.isfile, glob(pattern))
+   24:             if files:
+>>>>>>                 self.filelist.extend(files)
+       
+               # build_py is used to get:
+               #  - python modules
+               #  - files defined in package_data
+   12:         build_py = self.get_finalized_command('build_py')
+       
+               # getting python files
+   12:         if self.distribution.has_pure_modules():
+   12:             self.filelist.extend(build_py.get_source_files())
+       
+               # getting package_data files
+               # (computed in build_py.data_files by build_py.finalize_options)
+   24:         for pkg, src_dir, build_dir, filenames in build_py.data_files:
+   17:             for filename in filenames:
+    5:                 self.filelist.append(os.path.join(src_dir, filename))
+       
+               # getting distribution.data_files
+   12:         if self.distribution.has_data_files():
+    4:             for item in self.distribution.data_files:
+    3:                 if isinstance(item, str): # plain file
+    2:                     item = convert_path(item)
+    2:                     if os.path.isfile(item):
+    2:                         self.filelist.append(item)
+                       else:    # a (dirname, filenames) tuple
+    1:                     dirname, filenames = item
+    5:                     for f in filenames:
+    4:                         f = convert_path(f)
+    4:                         if os.path.isfile(f):
+    3:                             self.filelist.append(f)
+       
+   12:         if self.distribution.has_ext_modules():
+>>>>>>             build_ext = self.get_finalized_command('build_ext')
+>>>>>>             self.filelist.extend(build_ext.get_source_files())
+       
+   12:         if self.distribution.has_c_libraries():
+>>>>>>             build_clib = self.get_finalized_command('build_clib')
+>>>>>>             self.filelist.extend(build_clib.get_source_files())
+       
+   12:         if self.distribution.has_scripts():
+    1:             build_scripts = self.get_finalized_command('build_scripts')
+    1:             self.filelist.extend(build_scripts.get_source_files())
+       
+    1:     def read_template(self):
+               """Read and parse manifest template file named by self.template.
+       
+               (usually "MANIFEST.in") The parsing and processing is done by
+               'self.filelist', which updates itself accordingly.
+               """
+    2:         log.info("reading manifest template '%s'", self.template)
+    2:         template = TextFile(self.template,
+    2:                             strip_comments=1,
+    2:                             skip_blanks=1,
+    2:                             join_lines=1,
+    2:                             lstrip_ws=1,
+    2:                             rstrip_ws=1,
+    2:                             collapse_join=1)
+       
+    2:         try:
+    2:             while 1:
+    4:                 line = template.readline()
+    4:                 if line is None:            # end of file
+    2:                     break
+       
+    2:                 try:
+    2:                     self.filelist.process_template_line(line)
+                       # the call above can raise a DistutilsTemplateError for
+                       # malformed lines, or a ValueError from the lower-level
+                       # convert_path function
+    2:                 except (DistutilsTemplateError, ValueError) as msg:
+    2:                     self.warn("%s, line %d: %s" % (template.filename,
+    2:                                                    template.current_line,
+    2:                                                    msg))
+               finally:
+    2:             template.close()
+       
+    1:     def prune_file_list(self):
+               """Prune off branches that might slip into the file list as created
+               by 'read_template()', but really don't belong there:
+                 * the build tree (typically "build")
+                 * the release tree itself (only an issue if we ran "sdist"
+                   previously with --keep-temp, or it aborted)
+                 * any RCS, CVS, .svn, .hg, .git, .bzr, _darcs directories
+               """
+   12:         build = self.get_finalized_command('build')
+   12:         base_dir = self.distribution.get_fullname()
+       
+   12:         self.filelist.exclude_pattern(None, prefix=build.build_base)
+   12:         self.filelist.exclude_pattern(None, prefix=base_dir)
+       
+               # pruning out vcs directories
+               # both separators are used under win32
+   12:         if sys.platform == 'win32':
+>>>>>>             seps = r'/|\\'
+               else:
+   12:             seps = '/'
+       
+   12:         vcs_dirs = ['RCS', 'CVS', r'\.svn', r'\.hg', r'\.git', r'\.bzr',
+   12:                     '_darcs']
+   12:         vcs_ptrn = r'(^|%s)(%s)(%s).*' % (seps, '|'.join(vcs_dirs), seps)
+   12:         self.filelist.exclude_pattern(vcs_ptrn, is_regex=1)
+       
+    1:     def write_manifest(self):
+               """Write the file list in 'self.filelist' (presumably as filled in
+               by 'add_defaults()' and 'read_template()') to the manifest file
+               named by 'self.manifest'.
+               """
+   12:         if self._manifest_is_not_generated():
+>>>>>>             log.info("not writing to manually maintained "
+>>>>>>                      "manifest file '%s'" % self.manifest)
+>>>>>>             return
+       
+   12:         content = self.filelist.files[:]
+   12:         content.insert(0, '# file GENERATED by distutils, do NOT edit')
+   12:         self.execute(file_util.write_file, (self.manifest, content),
+   12:                      "writing manifest file '%s'" % self.manifest)
+       
+    1:     def _manifest_is_not_generated(self):
+               # check for special comment used in 2.7.1 and higher
+   26:         if not os.path.isfile(self.manifest):
+   16:             return False
+       
+   10:         fp = open(self.manifest, 'rU')
+   10:         try:
+   10:             first_line = fp.readline()
+               finally:
+   10:             fp.close()
+   10:         return first_line != '# file GENERATED by distutils, do NOT edit\n'
+       
+    1:     def read_manifest(self):
+               """Read the manifest file (named by 'self.manifest') and use it to
+               fill in 'self.filelist', the list of files to include in the source
+               distribution.
+               """
+    2:         log.info("reading manifest file '%s'", self.manifest)
+    2:         manifest = open(self.manifest)
+    6:         for line in manifest:
+                   # ignore comments and blank lines
+    4:             line = line.strip()
+    4:             if line.startswith('#') or not line:
+>>>>>>                 continue
+    2:             self.filelist.append(line)
+    2:         manifest.close()
+       
+    1:     def make_release_tree(self, base_dir, files):
+               """Create the directory tree that will become the source
+               distribution archive.  All directories implied by the filenames in
+               'files' are created under 'base_dir', and then we hard link or copy
+               (if hard linking is unavailable) those files into place.
+               Essentially, this duplicates the developer's source tree, but in a
+               directory named after the distribution, containing only the files
+               to be distributed.
+               """
+               # Create all the directories under 'base_dir' necessary to
+               # put 'files' there; the 'mkpath()' is just so we don't die
+               # if the manifest happens to be empty.
+   14:         self.mkpath(base_dir)
+   14:         dir_util.create_tree(base_dir, files, dry_run=self.dry_run)
+       
+               # And walk over the list of files, either making a hard link (if
+               # os.link exists) to each one that doesn't already exist in its
+               # corresponding location under 'base_dir', or copying each file
+               # that's out-of-date in 'base_dir'.  (Usually, all files will be
+               # out-of-date, because by default we blow away 'base_dir' when
+               # we're done making the distribution archives.)
+       
+   14:         if hasattr(os, 'link'):        # can make hard links on this system
+   14:             link = 'hard'
+   14:             msg = "making hard links in %s..." % base_dir
+               else:                           # nope, have to copy
+>>>>>>             link = None
+>>>>>>             msg = "copying files to %s..." % base_dir
+       
+   14:         if not files:
+>>>>>>             log.warn("no files to distribute -- empty manifest?")
+               else:
+   14:             log.info(msg)
+   63:         for file in files:
+   49:             if not os.path.isfile(file):
+>>>>>>                 log.warn("'%s' not a regular file -- skipping" % file)
+                   else:
+   49:                 dest = os.path.join(base_dir, file)
+   49:                 self.copy_file(file, dest, link=link)
+       
+   14:         self.distribution.metadata.write_pkg_info(base_dir)
+       
+    1:     def make_distribution(self):
+               """Create the source distribution(s).  First, we create the release
+               tree with 'make_release_tree()'; then, we create all required
+               archive files (according to 'self.formats') from the release tree.
+               Finally, we clean up by blowing away the release tree (unless
+               'self.keep_temp' is true).  The list of archive files created is
+               stored so it can be retrieved later by 'get_archive_files()'.
+               """
+               # Don't warn about missing meta-data here -- should be (and is!)
+               # done elsewhere.
+   14:         base_dir = self.distribution.get_fullname()
+   14:         base_name = os.path.join(self.dist_dir, base_dir)
+       
+   14:         self.make_release_tree(base_dir, self.filelist.files)
+   14:         archive_files = []              # remember names of files we create
+               # tar archive must be created last to avoid overwrite and remove
+   14:         if 'tar' in self.formats:
+    2:             self.formats.append(self.formats.pop(self.formats.index('tar')))
+       
+   30:         for fmt in self.formats:
+   16:             file = self.make_archive(base_name, fmt, base_dir=base_dir,
+   16:                                      owner=self.owner, group=self.group)
+   16:             archive_files.append(file)
+   16:             self.distribution.dist_files.append(('sdist', '', file))
+       
+   14:         self.archive_files = archive_files
+       
+   14:         if not self.keep_temp:
+   14:             dir_util.remove_tree(base_dir, dry_run=self.dry_run)
+       
+    1:     def get_archive_files(self):
+               """Return the list of archive files created when the command
+               was run, or None if the command hasn't run yet.
+               """
+>>>>>>         return self.archive_files

@@ -1,0 +1,292 @@
+       # Test packages (dotted-name import)
+       
+    2: import sys
+    2: import os
+    2: import tempfile
+    2: import textwrap
+    2: import unittest
+    2: from test import test_support
+       
+       
+       # Helpers to create and destroy hierarchies.
+       
+    2: def cleanout(root):
+   24:     names = os.listdir(root)
+   88:     for name in names:
+   64:         fullname = os.path.join(root, name)
+   64:         if os.path.isdir(fullname) and not os.path.islink(fullname):
+   16:             cleanout(fullname)
+               else:
+   48:             os.remove(fullname)
+   24:     os.rmdir(root)
+       
+    2: def fixdir(lst):
+    8:     if "__builtins__" in lst:
+    8:         lst.remove("__builtins__")
+    8:     return lst
+       
+       
+       # XXX Things to test
+       #
+       # import package without __init__
+       # import package with __init__
+       # __init__ importing submodule
+       # __init__ importing global module
+       # __init__ defining variables
+       # submodule importing other submodule
+       # submodule importing global module
+       # submodule import submodule via global name
+       # from package import submodule
+       # from package import subpackage
+       # from package import variable (defined in __init__)
+       # from package import * (defined in __init__)
+       
+       
+    4: class Test(unittest.TestCase):
+       
+    2:     def setUp(self):
+    8:         self.root = None
+    8:         self.pkgname = None
+    8:         self.syspath = list(sys.path)
+       
+    2:     def tearDown(self):
+    8:         sys.path[:] = self.syspath
+    8:         if self.root: # Only clean if the test was actually run
+    8:             cleanout(self.root)
+       
+               # delete all modules concerning the tested hierarchy
+    8:         if self.pkgname:
+11134:             modules = [name for name in sys.modules
+11126:                        if self.pkgname in name.split('.')]
+   34:             for name in modules:
+   26:                 del sys.modules[name]
+       
+    2:     def run_code(self, code):
+    5:         exec(textwrap.dedent(code), globals(), {"self": self})
+       
+    2:     def mkhier(self, descr):
+    8:         root = tempfile.mkdtemp()
+    8:         sys.path.insert(0, root)
+    8:         if not os.path.isdir(root):
+>>>>>>             os.mkdir(root)
+   51:         for name, contents in descr:
+   43:             comps = name.split()
+   43:             fullname = root
+  137:             for c in comps:
+   94:                 fullname = os.path.join(fullname, c)
+   43:             if contents is None:
+   16:                 os.mkdir(fullname)
+                   else:
+   27:                 f = open(fullname, "w")
+   27:                 f.write(contents)
+   27:                 if contents and contents[-1] != '\n':
+   15:                     f.write('\n')
+   27:                 f.close()
+    8:         self.root = root
+               # package name is the name of the first item
+    8:         self.pkgname = descr[0][0]
+       
+    2:     def test_1(self):
+    1:         hier = [("t1", None), ("t1 __init__"+os.extsep+"py", "")]
+    1:         self.mkhier(hier)
+    1:         import t1
+       
+    2:     def test_2(self):
+               hier = [
+    1:          ("t2", None),
+    1:          ("t2 __init__"+os.extsep+"py", "'doc for t2'"),
+    1:          ("t2 sub", None),
+    1:          ("t2 sub __init__"+os.extsep+"py", ""),
+    1:          ("t2 sub subsub", None),
+    1:          ("t2 sub subsub __init__"+os.extsep+"py", "spam = 1"),
+               ]
+    1:         self.mkhier(hier)
+       
+    1:         import t2.sub
+    1:         import t2.sub.subsub
+    1:         self.assertEqual(t2.__name__, "t2")
+    1:         self.assertEqual(t2.sub.__name__, "t2.sub")
+    1:         self.assertEqual(t2.sub.subsub.__name__, "t2.sub.subsub")
+       
+               # This exec crap is needed because Py3k forbids 'import *' outside
+               # of module-scope and __import__() is insufficient for what we need.
+               s = """
+                   import t2
+                   from t2 import *
+                   self.assertEqual(dir(), ['self', 'sub', 't2'])
+    1:             """
+    1:         self.run_code(s)
+       
+    1:         from t2 import sub
+    1:         from t2.sub import subsub
+    1:         from t2.sub.subsub import spam
+    1:         self.assertEqual(sub.__name__, "t2.sub")
+    1:         self.assertEqual(subsub.__name__, "t2.sub.subsub")
+    1:         self.assertEqual(sub.subsub.__name__, "t2.sub.subsub")
+    5:         for name in ['spam', 'sub', 'subsub', 't2']:
+    4:             self.assertTrue(locals()["name"], "Failed to import %s" % name)
+       
+    1:         import t2.sub
+    1:         import t2.sub.subsub
+    1:         self.assertEqual(t2.__name__, "t2")
+    1:         self.assertEqual(t2.sub.__name__, "t2.sub")
+    1:         self.assertEqual(t2.sub.subsub.__name__, "t2.sub.subsub")
+       
+               s = """
+                   from t2 import *
+                   self.assertTrue(dir(), ['self', 'sub'])
+    1:             """
+    1:         self.run_code(s)
+       
+    2:     def test_3(self):
+               hier = [
+    1:                 ("t3", None),
+    1:                 ("t3 __init__"+os.extsep+"py", ""),
+    1:                 ("t3 sub", None),
+    1:                 ("t3 sub __init__"+os.extsep+"py", ""),
+    1:                 ("t3 sub subsub", None),
+    1:                 ("t3 sub subsub __init__"+os.extsep+"py", "spam = 1"),
+                      ]
+    1:         self.mkhier(hier)
+       
+    1:         import t3.sub.subsub
+    1:         self.assertEqual(t3.__name__, "t3")
+    1:         self.assertEqual(t3.sub.__name__, "t3.sub")
+    1:         self.assertEqual(t3.sub.subsub.__name__, "t3.sub.subsub")
+       
+    2:     def test_4(self):
+               hier = [
+    1:         ("t4.py", "raise RuntimeError('Shouldnt load t4.py')"),
+    1:         ("t4", None),
+    1:         ("t4 __init__"+os.extsep+"py", ""),
+    1:         ("t4 sub.py", "raise RuntimeError('Shouldnt load sub.py')"),
+    1:         ("t4 sub", None),
+    1:         ("t4 sub __init__"+os.extsep+"py", ""),
+    1:         ("t4 sub subsub"+os.extsep+"py",
+    1:          "raise RuntimeError('Shouldnt load subsub.py')"),
+    1:         ("t4 sub subsub", None),
+    1:         ("t4 sub subsub __init__"+os.extsep+"py", "spam = 1"),
+                      ]
+    1:         self.mkhier(hier)
+       
+               s = """
+                   from t4.sub.subsub import *
+                   self.assertEqual(spam, 1)
+    1:             """
+    1:         self.run_code(s)
+       
+    2:     def test_5(self):
+               hier = [
+    1:         ("t5", None),
+    1:         ("t5 __init__"+os.extsep+"py", "import t5.foo"),
+    1:         ("t5 string"+os.extsep+"py", "spam = 1"),
+    1:         ("t5 foo"+os.extsep+"py",
+    1:          "from . import string; assert string.spam == 1"),
+                ]
+    1:         self.mkhier(hier)
+       
+    1:         import t5
+               s = """
+                   from t5 import *
+                   self.assertEqual(dir(), ['foo', 'self', 'string', 't5'])
+    1:             """
+    1:         self.run_code(s)
+       
+    1:         import t5
+    1:         self.assertEqual(fixdir(dir(t5)),
+    1:                          ['__doc__', '__file__', '__name__',
+    1:                           '__package__', '__path__', 'foo', 'string', 't5'])
+    1:         self.assertEqual(fixdir(dir(t5.foo)),
+    1:                          ['__doc__', '__file__', '__name__', '__package__',
+    1:                           'string'])
+    1:         self.assertEqual(fixdir(dir(t5.string)),
+    1:                          ['__doc__', '__file__', '__name__','__package__',
+    1:                           'spam'])
+       
+    2:     def test_6(self):
+               hier = [
+    1:                 ("t6", None),
+    1:                 ("t6 __init__"+os.extsep+"py",
+    1:                  "__all__ = ['spam', 'ham', 'eggs']"),
+    1:                 ("t6 spam"+os.extsep+"py", ""),
+    1:                 ("t6 ham"+os.extsep+"py", ""),
+    1:                 ("t6 eggs"+os.extsep+"py", ""),
+                      ]
+    1:         self.mkhier(hier)
+       
+    1:         import t6
+    1:         self.assertEqual(fixdir(dir(t6)),
+    1:                          ['__all__', '__doc__', '__file__',
+    1:                           '__name__', '__package__', '__path__'])
+               s = """
+                   import t6
+                   from t6 import *
+                   self.assertEqual(fixdir(dir(t6)),
+                                    ['__all__', '__doc__', '__file__',
+                                     '__name__', '__package__', '__path__',
+                                     'eggs', 'ham', 'spam'])
+                   self.assertEqual(dir(), ['eggs', 'ham', 'self', 'spam', 't6'])
+    1:             """
+    1:         self.run_code(s)
+       
+    2:     def test_7(self):
+               hier = [
+    1:                 ("t7", None),
+    1:                 ("t7"+os.extsep+"py", ""),
+    1:                 ("t7 __init__"+os.extsep+"py", ""),
+    1:                 ("t7 sub"+os.extsep+"py",
+    1:                  "raise RuntimeError('Shouldnt load sub.py')"),
+    1:                 ("t7 sub", None),
+    1:                 ("t7 sub __init__"+os.extsep+"py", ""),
+    1:                 ("t7 sub "+os.extsep+"py",
+    1:                  "raise RuntimeError('Shouldnt load subsub.py')"),
+    1:                 ("t7 sub subsub", None),
+    1:                 ("t7 sub subsub __init__"+os.extsep+"py",
+    1:                  "spam = 1"),
+                      ]
+    1:         self.mkhier(hier)
+       
+       
+    1:         t7, sub, subsub = None, None, None
+    1:         import t7 as tas
+    1:         self.assertEqual(fixdir(dir(tas)),
+    1:                          ['__doc__', '__file__', '__name__',
+    1:                           '__package__', '__path__'])
+    1:         self.assertFalse(t7)
+    1:         from t7 import sub as subpar
+    1:         self.assertEqual(fixdir(dir(subpar)),
+    1:                          ['__doc__', '__file__', '__name__',
+    1:                           '__package__', '__path__'])
+    1:         self.assertFalse(t7)
+    1:         self.assertFalse(sub)
+    1:         from t7.sub import subsub as subsubsub
+    1:         self.assertEqual(fixdir(dir(subsubsub)),
+    1:                          ['__doc__', '__file__', '__name__',
+    1:                          '__package__', '__path__', 'spam'])
+    1:         self.assertFalse(t7)
+    1:         self.assertFalse(sub)
+    1:         self.assertFalse(subsub)
+    1:         from t7.sub.subsub import spam as ham
+    1:         self.assertEqual(ham, 1)
+    1:         self.assertFalse(t7)
+    1:         self.assertFalse(sub)
+    1:         self.assertFalse(subsub)
+       
+    2:     @unittest.skipIf(sys.flags.optimize >= 2,
+    2:                      "Docstrings are omitted with -O2 and above")
+           def test_8(self):
+               hier = [
+    1:                 ("t8", None),
+    1:                 ("t8 __init__"+os.extsep+"py", "'doc for t8'"),
+                      ]
+    1:         self.mkhier(hier)
+       
+    1:         import t8
+    1:         self.assertEqual(t8.__doc__, "doc for t8")
+       
+    2: def test_main():
+    1:     test_support.run_unittest(__name__)
+       
+       
+    2: if __name__ == "__main__":
+>>>>>>     test_main()

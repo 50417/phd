@@ -1,0 +1,1397 @@
+       """Create portable serialized representations of Python objects.
+       
+       See module cPickle for a (much) faster implementation.
+       See module copy_reg for a mechanism for registering custom picklers.
+       See module pickletools source for extensive comments.
+       
+       Classes:
+       
+           Pickler
+           Unpickler
+       
+       Functions:
+       
+           dump(object, file)
+           dumps(object) -> string
+           load(file) -> object
+           loads(string) -> object
+       
+       Misc variables:
+       
+           __version__
+           format_version
+           compatible_formats
+       
+       """
+       
+>>>>>> __version__ = "$Revision: 72223 $"       # Code version
+       
+>>>>>> from types import *
+>>>>>> from copy_reg import dispatch_table
+>>>>>> from copy_reg import _extension_registry, _inverted_registry, _extension_cache
+>>>>>> import marshal
+>>>>>> import sys
+>>>>>> import struct
+>>>>>> import re
+       
+>>>>>> __all__ = ["PickleError", "PicklingError", "UnpicklingError", "Pickler",
+>>>>>>            "Unpickler", "dump", "dumps", "load", "loads"]
+       
+       # These are purely informational; no code uses these.
+>>>>>> format_version = "2.0"                  # File format version we write
+>>>>>> compatible_formats = ["1.0",            # Original protocol 0
+>>>>>>                       "1.1",            # Protocol 0 with INST added
+>>>>>>                       "1.2",            # Original protocol 1
+>>>>>>                       "1.3",            # Protocol 1 with BINFLOAT added
+>>>>>>                       "2.0",            # Protocol 2
+                             ]                 # Old format versions we can read
+       
+       # Keep in synch with cPickle.  This is the highest protocol number we
+       # know how to read.
+>>>>>> HIGHEST_PROTOCOL = 2
+       
+       # Why use struct.pack() for pickling but marshal.loads() for
+       # unpickling?  struct.pack() is 40% faster than marshal.dumps(), but
+       # marshal.loads() is twice as fast as struct.unpack()!
+>>>>>> mloads = marshal.loads
+       
+>>>>>> class PickleError(Exception):
+           """A common base class for the other pickling exceptions."""
+>>>>>>     pass
+       
+>>>>>> class PicklingError(PickleError):
+           """This exception is raised when an unpicklable object is passed to the
+           dump() method.
+       
+           """
+>>>>>>     pass
+       
+>>>>>> class UnpicklingError(PickleError):
+           """This exception is raised when there is a problem unpickling an object,
+           such as a security violation.
+       
+           Note that other exceptions may also be raised during unpickling, including
+           (but not necessarily limited to) AttributeError, EOFError, ImportError,
+           and IndexError.
+       
+           """
+>>>>>>     pass
+       
+       # An instance of _Stop is raised by Unpickler.load_stop() in response to
+       # the STOP opcode, passing the object that is the result of unpickling.
+>>>>>> class _Stop(Exception):
+>>>>>>     def __init__(self, value):
+ 6978:         self.value = value
+       
+       # Jython has PyStringMap; it's a dict subclass with string keys
+>>>>>> try:
+>>>>>>     from org.python.core import PyStringMap
+>>>>>> except ImportError:
+>>>>>>     PyStringMap = None
+       
+       # UnicodeType may or may not be exported (normally imported from types)
+>>>>>> try:
+>>>>>>     UnicodeType
+>>>>>> except NameError:
+>>>>>>     UnicodeType = None
+       
+       # Pickle opcodes.  See pickletools.py for extensive docs.  The listing
+       # here is in kind-of alphabetical order of 1-character pickle code.
+       # pickletools groups them by purpose.
+       
+>>>>>> MARK            = '('   # push special markobject on stack
+>>>>>> STOP            = '.'   # every pickle ends with STOP
+>>>>>> POP             = '0'   # discard topmost stack item
+>>>>>> POP_MARK        = '1'   # discard stack top through topmost markobject
+>>>>>> DUP             = '2'   # duplicate top stack item
+>>>>>> FLOAT           = 'F'   # push float object; decimal string argument
+>>>>>> INT             = 'I'   # push integer or bool; decimal string argument
+>>>>>> BININT          = 'J'   # push four-byte signed int
+>>>>>> BININT1         = 'K'   # push 1-byte unsigned int
+>>>>>> LONG            = 'L'   # push long; decimal string argument
+>>>>>> BININT2         = 'M'   # push 2-byte unsigned int
+>>>>>> NONE            = 'N'   # push None
+>>>>>> PERSID          = 'P'   # push persistent object; id is taken from string arg
+>>>>>> BINPERSID       = 'Q'   #  "       "         "  ;  "  "   "     "  stack
+>>>>>> REDUCE          = 'R'   # apply callable to argtuple, both on stack
+>>>>>> STRING          = 'S'   # push string; NL-terminated string argument
+>>>>>> BINSTRING       = 'T'   # push string; counted binary string argument
+>>>>>> SHORT_BINSTRING = 'U'   #  "     "   ;    "      "       "      " < 256 bytes
+>>>>>> UNICODE         = 'V'   # push Unicode string; raw-unicode-escaped'd argument
+>>>>>> BINUNICODE      = 'X'   #   "     "       "  ; counted UTF-8 string argument
+>>>>>> APPEND          = 'a'   # append stack top to list below it
+>>>>>> BUILD           = 'b'   # call __setstate__ or __dict__.update()
+>>>>>> GLOBAL          = 'c'   # push self.find_class(modname, name); 2 string args
+>>>>>> DICT            = 'd'   # build a dict from stack items
+>>>>>> EMPTY_DICT      = '}'   # push empty dict
+>>>>>> APPENDS         = 'e'   # extend list on stack by topmost stack slice
+>>>>>> GET             = 'g'   # push item from memo on stack; index is string arg
+>>>>>> BINGET          = 'h'   #   "    "    "    "   "   "  ;   "    " 1-byte arg
+>>>>>> INST            = 'i'   # build & push class instance
+>>>>>> LONG_BINGET     = 'j'   # push item from memo on stack; index is 4-byte arg
+>>>>>> LIST            = 'l'   # build list from topmost stack items
+>>>>>> EMPTY_LIST      = ']'   # push empty list
+>>>>>> OBJ             = 'o'   # build & push class instance
+>>>>>> PUT             = 'p'   # store stack top in memo; index is string arg
+>>>>>> BINPUT          = 'q'   #   "     "    "   "   " ;   "    " 1-byte arg
+>>>>>> LONG_BINPUT     = 'r'   #   "     "    "   "   " ;   "    " 4-byte arg
+>>>>>> SETITEM         = 's'   # add key+value pair to dict
+>>>>>> TUPLE           = 't'   # build tuple from topmost stack items
+>>>>>> EMPTY_TUPLE     = ')'   # push empty tuple
+>>>>>> SETITEMS        = 'u'   # modify dict by adding topmost key+value pairs
+>>>>>> BINFLOAT        = 'G'   # push float; arg is 8-byte float encoding
+       
+>>>>>> TRUE            = 'I01\n'  # not an opcode; see INT docs in pickletools.py
+>>>>>> FALSE           = 'I00\n'  # not an opcode; see INT docs in pickletools.py
+       
+       # Protocol 2
+       
+>>>>>> PROTO           = '\x80'  # identify pickle protocol
+>>>>>> NEWOBJ          = '\x81'  # build object by applying cls.__new__ to argtuple
+>>>>>> EXT1            = '\x82'  # push object from extension registry; 1-byte index
+>>>>>> EXT2            = '\x83'  # ditto, but 2-byte index
+>>>>>> EXT4            = '\x84'  # ditto, but 4-byte index
+>>>>>> TUPLE1          = '\x85'  # build 1-tuple from stack top
+>>>>>> TUPLE2          = '\x86'  # build 2-tuple from two topmost stack items
+>>>>>> TUPLE3          = '\x87'  # build 3-tuple from three topmost stack items
+>>>>>> NEWTRUE         = '\x88'  # push True
+>>>>>> NEWFALSE        = '\x89'  # push False
+>>>>>> LONG1           = '\x8a'  # push long from < 256 bytes
+>>>>>> LONG4           = '\x8b'  # push really big long
+       
+>>>>>> _tuplesize2code = [EMPTY_TUPLE, TUPLE1, TUPLE2, TUPLE3]
+       
+       
+>>>>>> __all__.extend([x for x in dir() if re.match("[A-Z][A-Z0-9_]+$",x)])
+>>>>>> del x
+       
+       
+       # Pickling machinery
+       
+>>>>>> class Pickler:
+       
+>>>>>>     def __init__(self, file, protocol=None):
+               """This takes a file-like object for writing a pickle data stream.
+       
+               The optional protocol argument tells the pickler to use the
+               given protocol; supported protocols are 0, 1, 2.  The default
+               protocol is 0, to be backwards compatible.  (Protocol 0 is the
+               only protocol that can be written to a file opened in text
+               mode and read back successfully.  When using a protocol higher
+               than 0, make sure the file is opened in binary mode, both when
+               pickling and unpickling.)
+       
+               Protocol 1 is more efficient than protocol 0; protocol 2 is
+               more efficient than protocol 1.
+       
+               Specifying a negative protocol version selects the highest
+               protocol version supported.  The higher the protocol used, the
+               more recent the version of Python needed to read the pickle
+               produced.
+       
+               The file parameter must have a write() method that accepts a single
+               string argument.  It can thus be an open file object, a StringIO
+               object, or any other custom object that meets this interface.
+       
+               """
+ 4083:         if protocol is None:
+   32:             protocol = 0
+ 4083:         if protocol < 0:
+   15:             protocol = HIGHEST_PROTOCOL
+ 4068:         elif not 0 <= protocol <= HIGHEST_PROTOCOL:
+>>>>>>             raise ValueError("pickle protocol must be <= %d" % HIGHEST_PROTOCOL)
+ 4083:         self.write = file.write
+ 4083:         self.memo = {}
+ 4083:         self.proto = int(protocol)
+ 4083:         self.bin = protocol >= 1
+ 4083:         self.fast = 0
+       
+>>>>>>     def clear_memo(self):
+               """Clears the pickler's "memo".
+       
+               The memo is the data structure that remembers which objects the
+               pickler has already seen, so that shared or recursive objects are
+               pickled by reference and not by value.  This method is useful when
+               re-using picklers.
+       
+               """
+    1:         self.memo.clear()
+       
+>>>>>>     def dump(self, obj):
+               """Write a pickled representation of obj to the open file."""
+ 4082:         if self.proto >= 2:
+ 1402:             self.write(PROTO + chr(self.proto))
+ 4082:         self.save(obj)
+ 3995:         self.write(STOP)
+       
+>>>>>>     def memoize(self, obj):
+               """Store an object in the memo."""
+       
+               # The Pickler memo is a dictionary mapping object ids to 2-tuples
+               # that contain the Unpickler memo key and the object being memoized.
+               # The memo key is written to the pickle and will become
+               # the key in the Unpickler's memo.  The object is stored in the
+               # Pickler memo so that transient objects are kept alive during
+               # pickling.
+       
+               # The use of the Unpickler memo length as the memo key is just a
+               # convention.  The only requirement is that the memo values be unique.
+               # But there appears no advantage to any other scheme, and this
+               # scheme allows the Unpickler memo to be implemented as a plain (but
+               # growable) array, indexed by memo key.
+48063:         if self.fast:
+>>>>>>             return
+48063:         assert id(obj) not in self.memo
+48063:         memo_len = len(self.memo)
+48063:         self.write(self.put(memo_len))
+48063:         self.memo[id(obj)] = memo_len, obj
+       
+           # Return a PUT (BINPUT, LONG_BINPUT) opcode string, with argument i.
+>>>>>>     def put(self, i, pack=struct.pack):
+48063:         if self.bin:
+34504:             if i < 256:
+11744:                 return BINPUT + chr(i)
+                   else:
+22760:                 return LONG_BINPUT + pack("<i", i)
+       
+13559:         return PUT + repr(i) + '\n'
+       
+           # Return a GET (BINGET, LONG_BINGET) opcode string, with argument i.
+>>>>>>     def get(self, i, pack=struct.pack):
+ 7941:         if self.bin:
+ 5236:             if i < 256:
+ 4990:                 return BINGET + chr(i)
+                   else:
+  246:                 return LONG_BINGET + pack("<i", i)
+       
+ 2705:         return GET + repr(i) + '\n'
+       
+>>>>>>     def save(self, obj):
+               # Check for persistent id (defined by a subclass)
+182573:         pid = self.persistent_id(obj)
+182572:         if pid is not None:
+   18:             self.save_pers(pid)
+   18:             return
+       
+               # Check the memo
+182554:         x = self.memo.get(id(obj))
+182554:         if x:
+ 7862:             self.write(self.get(x[0]))
+ 7862:             return
+       
+               # Check the type dispatch table
+174692:         t = type(obj)
+174692:         f = self.dispatch.get(t)
+174692:         if f:
+172109:             f(self, obj) # Call unbound method with explicit self
+171912:             return
+       
+               # Check copy_reg.dispatch_table
+ 2583:         reduce = dispatch_table.get(t)
+ 2583:         if reduce:
+   84:             rv = reduce(obj)
+               else:
+                   # Check for a class with a custom metaclass; treat as regular class
+ 2499:             try:
+ 2499:                 issc = issubclass(t, TypeType)
+>>>>>>             except TypeError: # t is not a class (old Boost; see SF #502085)
+>>>>>>                 issc = 0
+ 2499:             if issc:
+   69:                 self.save_global(obj)
+   69:                 return
+       
+                   # Check for a __reduce_ex__ method, fall back to __reduce__
+ 2430:             reduce = getattr(obj, "__reduce_ex__", None)
+ 2430:             if reduce:
+ 2424:                 rv = reduce(self.proto)
+                   else:
+    6:                 reduce = getattr(obj, "__reduce__", None)
+    6:                 if reduce:
+>>>>>>                     rv = reduce()
+                       else:
+    6:                     raise PicklingError("Can't pickle %r object: %r" %
+    6:                                         (t.__name__, obj))
+       
+               # Check for string returned by reduce(), meaning "save as global"
+ 2448:         if type(rv) is StringType:
+>>>>>>             self.save_global(obj, rv)
+>>>>>>             return
+       
+               # Assert that reduce() returned a tuple
+ 2448:         if type(rv) is not TupleType:
+>>>>>>             raise PicklingError("%s must return string or tuple" % reduce)
+       
+               # Assert that it returned an appropriately sized tuple
+ 2448:         l = len(rv)
+ 2448:         if not (2 <= l <= 5):
+>>>>>>             raise PicklingError("Tuple returned by %s must have "
+>>>>>>                                 "two to five elements" % reduce)
+       
+               # Save the reduce() output and finally memoize the object
+ 2448:         self.save_reduce(obj=obj, *rv)
+       
+>>>>>>     def persistent_id(self, obj):
+               # This exists so a subclass can override it
+182524:         return None
+       
+>>>>>>     def save_pers(self, pid):
+               # Save a persistent id reference
+   18:         if self.bin:
+   12:             self.save(pid)
+   12:             self.write(BINPERSID)
+               else:
+    6:             self.write(PERSID + str(pid) + '\n')
+       
+>>>>>>     def save_reduce(self, func, args, state=None,
+>>>>>>                     listitems=None, dictitems=None, obj=None):
+               # This API is called by some subclasses
+       
+               # Assert that args is a tuple or None
+ 2448:         if not isinstance(args, TupleType):
+>>>>>>             raise PicklingError("args from reduce() should be a tuple")
+       
+               # Assert that func is callable
+ 2448:         if not hasattr(func, '__call__'):
+>>>>>>             raise PicklingError("func from reduce should be callable")
+       
+ 2448:         save = self.save
+ 2448:         write = self.write
+       
+               # Protocol 2 special case: if func's name is __newobj__, use NEWOBJ
+ 2448:         if self.proto >= 2 and getattr(func, "__name__", "") == "__newobj__":
+                   # A __reduce__ implementation can direct protocol 2 to
+                   # use the more efficient NEWOBJ opcode, while still
+                   # allowing protocol 0 and 1 to work normally.  For this to
+                   # work, the function returned by __reduce__ should be
+                   # called __newobj__, and its first argument should be a
+                   # new-style class.  The implementation for __newobj__
+                   # should be as follows, although pickle has no way to
+                   # verify this:
+                   #
+                   # def __newobj__(cls, *args):
+                   #     return cls.__new__(cls, *args)
+                   #
+                   # Protocols 0 and 1 will pickle a reference to __newobj__,
+                   # while protocol 2 (and above) will pickle a reference to
+                   # cls, the remaining args tuple, and the NEWOBJ code,
+                   # which calls cls.__new__(cls, *args) at unpickling time
+                   # (see load_newobj below).  If __reduce__ returns a
+                   # three-tuple, the state from the third tuple item will be
+                   # pickled regardless of the protocol, calling __setstate__
+                   # at unpickling time (see load_build below).
+                   #
+                   # Note that no standard __newobj__ implementation exists;
+                   # you have to provide your own.  This is to enforce
+                   # compatibility with Python 2.2 (pickles written using
+                   # protocol 0 or 1 in Python 2.3 should be unpicklable by
+                   # Python 2.2).
+  250:             cls = args[0]
+  250:             if not hasattr(cls, "__new__"):
+>>>>>>                 raise PicklingError(
+>>>>>>                     "args[0] from __newobj__ args has no __new__")
+  250:             if obj is not None and cls is not obj.__class__:
+>>>>>>                 raise PicklingError(
+>>>>>>                     "args[0] from __newobj__ args has the wrong class")
+  250:             args = args[1:]
+  250:             save(cls)
+  250:             save(args)
+  250:             write(NEWOBJ)
+               else:
+ 2198:             save(func)
+ 2198:             save(args)
+ 2007:             write(REDUCE)
+       
+ 2257:         if obj is not None:
+                   # If the object is already in the memo, this means it is
+                   # recursive. In this case, throw away everything we put on the
+                   # stack, and fetch the object back from the memo.
+ 2257:             if id(obj) in self.memo:
+   52:                 write(POP + self.get(self.memo[id(obj)][0]))
+                   else:
+ 2205:                 self.memoize(obj)
+       
+               # More new special cases (that work with older protocols as
+               # well): when __reduce__ returns a tuple with 4 or 5 items,
+               # the 4th and 5th item should be iterators that provide list
+               # items and dict items (as (key, value) tuples), or None.
+       
+ 2257:         if listitems is not None:
+   86:             self._batch_appends(listitems)
+       
+ 2249:         if dictitems is not None:
+   46:             self._batch_setitems(dictitems)
+       
+ 2241:         if state is not None:
+ 1394:             save(state)
+ 1392:             write(BUILD)
+       
+           # Methods below this point are dispatched through the dispatch table
+       
+>>>>>>     dispatch = {}
+       
+>>>>>>     def save_none(self, obj):
+30818:         self.write(NONE)
+>>>>>>     dispatch[NoneType] = save_none
+       
+>>>>>>     def save_bool(self, obj):
+  189:         if self.proto >= 2:
+   37:             self.write(obj and NEWTRUE or NEWFALSE)
+               else:
+  152:             self.write(obj and TRUE or FALSE)
+>>>>>>     dispatch[bool] = save_bool
+       
+>>>>>>     def save_int(self, obj, pack=struct.pack):
+91191:         if self.bin:
+                   # If the int is small enough to fit in a signed 4-byte 2's-comp
+                   # format, we can store it more efficiently than the general
+                   # case.
+                   # First one- and two-byte unsigned ints:
+63926:             if obj >= 0:
+63286:                 if obj <= 0xff:
+18534:                     self.write(BININT1 + chr(obj))
+18534:                     return
+44752:                 if obj <= 0xffff:
+44176:                     self.write("%c%c%c" % (BININT2, obj&0xff, obj>>8))
+44176:                     return
+                   # Next check for 4-byte signed ints:
+ 1216:             high_bits = obj >> 31  # note that Python shift sign-extends
+ 1216:             if high_bits == 0 or high_bits == -1:
+                       # All high bits are copies of bit 2**31, so the value
+                       # fits in a 4-byte signed int.
+  604:                 self.write(BININT + pack("<i", obj))
+  604:                 return
+               # Text pickle, or int too big to fit in signed 4-byte format.
+27877:         self.write(INT + repr(obj) + '\n')
+>>>>>>     dispatch[IntType] = save_int
+       
+>>>>>>     def save_long(self, obj, pack=struct.pack):
+ 2376:         if self.proto >= 2:
+  796:             bytes = encode_long(obj)
+  796:             n = len(bytes)
+  796:             if n < 256:
+  712:                 self.write(LONG1 + chr(n) + bytes)
+                   else:
+   84:                 self.write(LONG4 + pack("<i", n) + bytes)
+  796:             return
+ 1580:         self.write(LONG + repr(obj) + '\n')
+>>>>>>     dispatch[LongType] = save_long
+       
+>>>>>>     def save_float(self, obj, pack=struct.pack):
+  427:         if self.bin:
+  282:             self.write(BINFLOAT + pack('>d', obj))
+               else:
+  145:             self.write(FLOAT + repr(obj) + '\n')
+>>>>>>     dispatch[FloatType] = save_float
+       
+>>>>>>     def save_string(self, obj, pack=struct.pack):
+17396:         if self.bin:
+11622:             n = len(obj)
+11622:             if n < 256:
+11612:                 self.write(SHORT_BINSTRING + chr(n) + obj)
+                   else:
+   10:                 self.write(BINSTRING + pack("<i", n) + obj)
+               else:
+ 5774:             self.write(STRING + repr(obj) + '\n')
+17396:         self.memoize(obj)
+>>>>>>     dispatch[StringType] = save_string
+       
+>>>>>>     def save_unicode(self, obj, pack=struct.pack):
+  318:         if self.bin:
+  172:             encoding = obj.encode('utf-8')
+  172:             n = len(encoding)
+  172:             self.write(BINUNICODE + pack("<i", n) + encoding)
+               else:
+  146:             obj = obj.replace("\\", "\\u005c")
+  146:             obj = obj.replace("\n", "\\u000a")
+  146:             self.write(UNICODE + obj.encode('raw-unicode-escape') + '\n')
+  318:         self.memoize(obj)
+>>>>>>     dispatch[UnicodeType] = save_unicode
+       
+>>>>>>     if StringType is UnicodeType:
+               # This is true for Jython
+>>>>>>         def save_string(self, obj, pack=struct.pack):
+>>>>>>             unicode = obj.isunicode()
+       
+>>>>>>             if self.bin:
+>>>>>>                 if unicode:
+>>>>>>                     obj = obj.encode("utf-8")
+>>>>>>                 l = len(obj)
+>>>>>>                 if l < 256 and not unicode:
+>>>>>>                     self.write(SHORT_BINSTRING + chr(l) + obj)
+                       else:
+>>>>>>                     s = pack("<i", l)
+>>>>>>                     if unicode:
+>>>>>>                         self.write(BINUNICODE + s + obj)
+                           else:
+>>>>>>                         self.write(BINSTRING + s + obj)
+                   else:
+>>>>>>                 if unicode:
+>>>>>>                     obj = obj.replace("\\", "\\u005c")
+>>>>>>                     obj = obj.replace("\n", "\\u000a")
+>>>>>>                     obj = obj.encode('raw-unicode-escape')
+>>>>>>                     self.write(UNICODE + obj + '\n')
+                       else:
+>>>>>>                     self.write(STRING + repr(obj) + '\n')
+>>>>>>             self.memoize(obj)
+>>>>>>         dispatch[StringType] = save_string
+       
+>>>>>>     def save_tuple(self, obj):
+18590:         write = self.write
+18590:         proto = self.proto
+       
+18590:         n = len(obj)
+18590:         if n == 0:
+ 1069:             if proto:
+  773:                 write(EMPTY_TUPLE)
+                   else:
+  296:                 write(MARK + TUPLE)
+ 1069:             return
+       
+17521:         save = self.save
+17521:         memo = self.memo
+17521:         if n <= 3 and proto >= 2:
+23033:             for element in obj:
+15265:                 save(element)
+                   # Subtle.  Same as in the big comment below.
+ 7768:             if id(obj) in memo:
+    9:                 get = self.get(memo[id(obj)][0])
+    9:                 write(POP * n + get)
+                   else:
+ 7759:                 write(_tuplesize2code[n])
+ 7759:                 self.memoize(obj)
+ 7768:             return
+       
+               # proto 0 or proto 1 and tuple isn't empty, or proto > 1 and tuple
+               # has more than 3 elements.
+ 9753:         write(MARK)
+32020:         for element in obj:
+22458:             save(element)
+       
+ 9562:         if id(obj) in memo:
+                   # Subtle.  d was not in memo when we entered save_tuple(), so
+                   # the process of saving the tuple's elements must have saved
+                   # the tuple itself:  the tuple is recursive.  The proper action
+                   # now is to throw away everything we put on the stack, and
+                   # simply GET the tuple (it's already constructed).  This check
+                   # could have been done in the "for element" loop instead, but
+                   # recursive tuples are a rare thing.
+   18:             get = self.get(memo[id(obj)][0])
+   18:             if proto:
+    9:                 write(POP_MARK + get)
+                   else:   # proto 0 -- POP_MARK not available
+    9:                 write(POP * (n+1) + get)
+   18:             return
+       
+               # No recursion.
+ 9544:         self.write(TUPLE)
+ 9544:         self.memoize(obj)
+       
+>>>>>>     dispatch[TupleType] = save_tuple
+       
+           # save_empty_tuple() isn't used by anything in Python 2.3.  However, I
+           # found a Pickler subclass in Zope3 that calls it, so it's not harmless
+           # to remove it.
+>>>>>>     def save_empty_tuple(self, obj):
+>>>>>>         self.write(EMPTY_TUPLE)
+       
+>>>>>>     def save_list(self, obj):
+ 6349:         write = self.write
+       
+ 6349:         if self.bin:
+ 5696:             write(EMPTY_LIST)
+               else:   # proto 0 -- can't use EMPTY_LIST
+  653:             write(MARK + LIST)
+       
+ 6349:         self.memoize(obj)
+ 6349:         self._batch_appends(iter(obj))
+       
+>>>>>>     dispatch[ListType] = save_list
+       
+           # Keep in synch with cPickle's BATCHSIZE.  Nothing will break if it gets
+           # out of synch, though.
+>>>>>>     _BATCHSIZE = 1000
+       
+>>>>>>     def _batch_appends(self, items):
+               # Helper to batch up APPENDS sequences
+ 6435:         save = self.save
+ 6435:         write = self.write
+       
+ 6435:         if not self.bin:
+16414:             for x in items:
+15753:                 save(x)
+15753:                 write(APPEND)
+  661:             return
+       
+ 5774:         r = xrange(self._BATCHSIZE)
+11564:         while items is not None:
+ 5798:             tmp = []
+48903:             for i in r:
+48879:                 try:
+48879:                     x = items.next()
+43105:                     tmp.append(x)
+ 5774:                 except StopIteration:
+ 5766:                     items = None
+ 5766:                     break
+ 5790:             n = len(tmp)
+ 5790:             if n > 1:
+ 4420:                 write(MARK)
+46241:                 for x in tmp:
+41821:                     save(x)
+ 4420:                 write(APPENDS)
+ 1370:             elif n:
+ 1284:                 save(tmp[0])
+ 1284:                 write(APPEND)
+                   # else tmp is empty, and we're done
+       
+>>>>>>     def save_dict(self, obj):
+ 1699:         write = self.write
+       
+ 1699:         if self.bin:
+ 1137:             write(EMPTY_DICT)
+               else:   # proto 0 -- can't use EMPTY_DICT
+  562:             write(MARK + DICT)
+       
+ 1699:         self.memoize(obj)
+ 1699:         self._batch_setitems(obj.iteritems())
+       
+>>>>>>     dispatch[DictionaryType] = save_dict
+>>>>>>     if not PyStringMap is None:
+>>>>>>         dispatch[PyStringMap] = save_dict
+       
+>>>>>>     def _batch_setitems(self, items):
+               # Helper to batch up SETITEMS sequences; proto >= 1 only
+ 1745:         save = self.save
+ 1745:         write = self.write
+       
+ 1745:         if not self.bin:
+13281:             for k, v in items:
+12711:                 save(k)
+12711:                 save(v)
+12711:                 write(SETITEM)
+  570:             return
+       
+ 1175:         r = xrange(self._BATCHSIZE)
+ 2356:         while items is not None:
+ 1191:             tmp = []
+26207:             for i in r:
+26191:                 try:
+26191:                     tmp.append(items.next())
+ 1175:                 except StopIteration:
+ 1167:                     items = None
+ 1167:                     break
+ 1183:             n = len(tmp)
+ 1183:             if n > 1:
+  633:                 write(MARK)
+25213:                 for k, v in tmp:
+24582:                     save(k)
+24582:                     save(v)
+  631:                 write(SETITEMS)
+  550:             elif n:
+  410:                 k, v = tmp[0]
+  410:                 save(k)
+  410:                 save(v)
+  410:                 write(SETITEM)
+                   # else tmp is empty, and we're done
+       
+>>>>>>     def save_inst(self, obj):
+  107:         cls = obj.__class__
+       
+  107:         memo  = self.memo
+  107:         write = self.write
+  107:         save  = self.save
+       
+  107:         if hasattr(obj, '__getinitargs__'):
+   12:             args = obj.__getinitargs__()
+   12:             len(args) # XXX Assert it's a sequence
+   12:             _keep_alive(args, memo)
+               else:
+   95:             args = ()
+       
+  107:         write(MARK)
+       
+  107:         if self.bin:
+   71:             save(cls)
+   87:             for arg in args:
+   16:                 save(arg)
+   71:             write(OBJ)
+               else:
+   44:             for arg in args:
+    8:                 save(arg)
+   36:             write(INST + cls.__module__ + '\n' + cls.__name__ + '\n')
+       
+  107:         self.memoize(obj)
+       
+  107:         try:
+  107:             getstate = obj.__getstate__
+  107:         except AttributeError:
+  107:             stuff = obj.__dict__
+               else:
+>>>>>>             stuff = getstate()
+>>>>>>             _keep_alive(stuff, memo)
+  107:         save(stuff)
+  107:         write(BUILD)
+       
+>>>>>>     dispatch[InstanceType] = save_inst
+       
+>>>>>>     def save_global(self, obj, name=None, pack=struct.pack):
+ 2718:         write = self.write
+ 2718:         memo = self.memo
+       
+ 2718:         if name is None:
+ 2718:             name = obj.__name__
+       
+ 2718:         module = getattr(obj, "__module__", None)
+ 2718:         if module is None:
+>>>>>>             module = whichmodule(obj, name)
+       
+ 2718:         try:
+ 2718:             __import__(module)
+ 2718:             mod = sys.modules[module]
+ 2718:             klass = getattr(mod, name)
+>>>>>>         except (ImportError, KeyError, AttributeError):
+>>>>>>             raise PicklingError(
+>>>>>>                 "Can't pickle %r: it's not found as %s.%s" %
+>>>>>>                 (obj, module, name))
+               else:
+ 2718:             if klass is not obj:
+>>>>>>                 raise PicklingError(
+>>>>>>                     "Can't pickle %r: it's not the same object as %s.%s" %
+>>>>>>                     (obj, module, name))
+       
+ 2718:         if self.proto >= 2:
+  724:             code = _extension_registry.get((module, name))
+  724:             if code:
+   32:                 assert code > 0
+   32:                 if code <= 0xff:
+    8:                     write(EXT1 + chr(code))
+   24:                 elif code <= 0xffff:
+   12:                     write("%c%c%c" % (EXT2, code&0xff, code>>8))
+                       else:
+   12:                     write(EXT4 + pack("<i", code))
+   32:                 return
+       
+ 2686:         write(GLOBAL + module + '\n' + name + '\n')
+ 2686:         self.memoize(obj)
+       
+>>>>>>     dispatch[ClassType] = save_global
+>>>>>>     dispatch[FunctionType] = save_global
+>>>>>>     dispatch[BuiltinFunctionType] = save_global
+>>>>>>     dispatch[TypeType] = save_global
+       
+       # Pickling helpers
+       
+>>>>>> def _keep_alive(x, memo):
+           """Keeps a reference to the object x in the memo.
+       
+           Because we remember objects by their id, we have
+           to assure that possibly temporary objects are kept
+           alive by referencing them.
+           We store a reference at the id of the memo, which should
+           normally not be used unless someone tries to deepcopy
+           the memo itself...
+           """
+   12:     try:
+   12:         memo[id(memo)].append(x)
+   12:     except KeyError:
+               # aha, this is the first one :-)
+   12:         memo[id(memo)]=[x]
+       
+       
+       # A cache for whichmodule(), mapping a function object to the name of
+       # the module in which the function was found.
+       
+>>>>>> classmap = {} # called classmap for backwards compatibility
+       
+>>>>>> def whichmodule(func, funcname):
+           """Figure out the module in which a function occurs.
+       
+           Search sys.modules for the module.
+           Cache in classmap.
+           Return a module name.
+           If the function cannot be found, return "__main__".
+           """
+           # Python functions should always get an __module__ from their globals.
+>>>>>>     mod = getattr(func, "__module__", None)
+>>>>>>     if mod is not None:
+>>>>>>         return mod
+>>>>>>     if func in classmap:
+>>>>>>         return classmap[func]
+       
+>>>>>>     for name, module in sys.modules.items():
+>>>>>>         if module is None:
+>>>>>>             continue # skip dummy package entries
+>>>>>>         if name != '__main__' and getattr(module, funcname, None) is func:
+>>>>>>             break
+           else:
+>>>>>>         name = '__main__'
+>>>>>>     classmap[func] = name
+>>>>>>     return name
+       
+       
+       # Unpickling machinery
+       
+>>>>>> class Unpickler:
+       
+>>>>>>     def __init__(self, file):
+               """This takes a file-like object for reading a pickle data stream.
+       
+               The protocol version of the pickle is detected automatically, so no
+               proto argument is needed.
+       
+               The file-like object must have two methods, a read() method that
+               takes an integer argument, and a readline() method that requires no
+               arguments.  Both methods should return a string.  Thus file-like
+               object can be a file object opened for reading, a StringIO object,
+               or any other custom object that meets this interface.
+               """
+ 7235:         self.readline = file.readline
+ 7235:         self.read = file.read
+ 7235:         self.memo = {}
+       
+>>>>>>     def load(self):
+               """Read a pickled object representation from the open file.
+       
+               Return the reconstituted object hierarchy specified in the file.
+               """
+ 7266:         self.mark = object() # any new unique object
+ 7266:         self.stack = []
+ 7266:         self.append = self.stack.append
+ 7266:         read = self.read
+ 7266:         dispatch = self.dispatch
+ 7266:         try:
+ 7266:             while 1:
+1917268:                 key = read(1)
+1917268:                 dispatch[key](self)
+ 7266:         except _Stop, stopinst:
+ 6978:             return stopinst.value
+       
+           # Return largest index k such that self.stack[k] is self.mark.
+           # If the stack doesn't contain a mark, eventually raises IndexError.
+           # This could be sped by maintaining another stack, of indices at which
+           # the mark appears.  For that matter, the latter stack would suffice,
+           # and we wouldn't need to push mark objects on self.stack at all.
+           # Doing so is probably a good thing, though, since if the pickle is
+           # corrupt (or hostile) we may get a clue from finding self.mark embedded
+           # in unpickled objects.
+>>>>>>     def marker(self):
+168341:         stack = self.stack
+168341:         mark = self.mark
+168341:         k = len(stack)-1
+744130:         while stack[k] is not mark: k = k-1
+168325:         return k
+       
+>>>>>>     dispatch = {}
+       
+>>>>>>     def load_eof(self):
+   94:         raise EOFError
+>>>>>>     dispatch[''] = load_eof
+       
+>>>>>>     def load_proto(self):
+ 2260:         proto = ord(self.read(1))
+ 2258:         if not 0 <= proto <= 2:
+    4:             raise ValueError, "unsupported pickle protocol: %d" % proto
+>>>>>>     dispatch[PROTO] = load_proto
+       
+>>>>>>     def load_persid(self):
+    6:         pid = self.readline()[:-1]
+    6:         self.append(self.persistent_load(pid))
+>>>>>>     dispatch[PERSID] = load_persid
+       
+>>>>>>     def load_binpersid(self):
+   12:         pid = self.stack.pop()
+   12:         self.append(self.persistent_load(pid))
+>>>>>>     dispatch[BINPERSID] = load_binpersid
+       
+>>>>>>     def load_none(self):
+51406:         self.append(None)
+>>>>>>     dispatch[NONE] = load_none
+       
+>>>>>>     def load_false(self):
+   18:         self.append(False)
+>>>>>>     dispatch[NEWFALSE] = load_false
+       
+>>>>>>     def load_true(self):
+   21:         self.append(True)
+>>>>>>     dispatch[NEWTRUE] = load_true
+       
+>>>>>>     def load_int(self):
+49873:         data = self.readline()
+49873:         if data == FALSE[1:]:
+   68:             val = False
+49805:         elif data == TRUE[1:]:
+   84:             val = True
+               else:
+49721:             try:
+49721:                 val = int(data)
+    4:             except ValueError:
+    4:                 val = long(data)
+49869:         self.append(val)
+>>>>>>     dispatch[INT] = load_int
+       
+>>>>>>     def load_binint(self):
+  640:         self.append(mloads('i' + self.read(4)))
+>>>>>>     dispatch[BININT] = load_binint
+       
+>>>>>>     def load_binint1(self):
+317124:         self.append(ord(self.read(1)))
+>>>>>>     dispatch[BININT1] = load_binint1
+       
+>>>>>>     def load_binint2(self):
+97228:         self.append(mloads('i' + self.read(2) + '\000\000'))
+>>>>>>     dispatch[BININT2] = load_binint2
+       
+>>>>>>     def load_long(self):
+ 3469:         self.append(long(self.readline()[:-1], 0))
+>>>>>>     dispatch[LONG] = load_long
+       
+>>>>>>     def load_long1(self):
+  716:         n = ord(self.read(1))
+  714:         bytes = self.read(n)
+  714:         self.append(decode_long(bytes))
+>>>>>>     dispatch[LONG1] = load_long1
+       
+>>>>>>     def load_long4(self):
+   88:         n = mloads('i' + self.read(4))
+   88:         bytes = self.read(n)
+   88:         self.append(decode_long(bytes))
+>>>>>>     dispatch[LONG4] = load_long4
+       
+>>>>>>     def load_float(self):
+  153:         self.append(float(self.readline()[:-1]))
+>>>>>>     dispatch[FLOAT] = load_float
+       
+>>>>>>     def load_binfloat(self, unpack=struct.unpack):
+  298:         self.append(unpack('>d', self.read(8))[0])
+>>>>>>     dispatch[BINFLOAT] = load_binfloat
+       
+>>>>>>     def load_string(self):
+28027:         rep = self.readline()[:-1]
+56052:         for q in "\"'": # double or single quote
+56040:             if rep.startswith(q):
+28015:                 if len(rep) < 2 or not rep.endswith(q):
+   20:                     raise ValueError, "insecure string pickle"
+27995:                 rep = rep[len(q):-len(q)]
+27995:                 break
+               else:
+   12:             raise ValueError, "insecure string pickle"
+27995:         self.append(rep.decode("string-escape"))
+>>>>>>     dispatch[STRING] = load_string
+       
+>>>>>>     def load_binstring(self):
+   18:         len = mloads('i' + self.read(4))
+   18:         self.append(self.read(len))
+>>>>>>     dispatch[BINSTRING] = load_binstring
+       
+>>>>>>     def load_unicode(self):
+  151:         self.append(unicode(self.readline()[:-1],'raw-unicode-escape'))
+>>>>>>     dispatch[UNICODE] = load_unicode
+       
+>>>>>>     def load_binunicode(self):
+  181:         len = mloads('i' + self.read(4))
+  181:         self.append(unicode(self.read(len),'utf-8'))
+>>>>>>     dispatch[BINUNICODE] = load_binunicode
+       
+>>>>>>     def load_short_binstring(self):
+65087:         len = ord(self.read(1))
+65085:         self.append(self.read(len))
+>>>>>>     dispatch[SHORT_BINSTRING] = load_short_binstring
+       
+>>>>>>     def load_tuple(self):
+43934:         k = self.marker()
+43932:         self.stack[k:] = [tuple(self.stack[k+1:])]
+>>>>>>     dispatch[TUPLE] = load_tuple
+       
+>>>>>>     def load_empty_tuple(self):
+  765:         self.stack.append(())
+>>>>>>     dispatch[EMPTY_TUPLE] = load_empty_tuple
+       
+>>>>>>     def load_tuple1(self):
+12851:         self.stack[-1] = (self.stack[-1],)
+>>>>>>     dispatch[TUPLE1] = load_tuple1
+       
+>>>>>>     def load_tuple2(self):
+150504:         self.stack[-2:] = [(self.stack[-2], self.stack[-1])]
+>>>>>>     dispatch[TUPLE2] = load_tuple2
+       
+>>>>>>     def load_tuple3(self):
+  111:         self.stack[-3:] = [(self.stack[-3], self.stack[-2], self.stack[-1])]
+>>>>>>     dispatch[TUPLE3] = load_tuple3
+       
+>>>>>>     def load_empty_list(self):
+161902:         self.stack.append([])
+>>>>>>     dispatch[EMPTY_LIST] = load_empty_list
+       
+>>>>>>     def load_empty_dictionary(self):
+ 1157:         self.stack.append({})
+>>>>>>     dispatch[EMPTY_DICT] = load_empty_dictionary
+       
+>>>>>>     def load_list(self):
+  666:         k = self.marker()
+  664:         self.stack[k:] = [self.stack[k+1:]]
+>>>>>>     dispatch[LIST] = load_list
+       
+>>>>>>     def load_dict(self):
+ 2636:         k = self.marker()
+ 2634:         d = {}
+ 2634:         items = self.stack[k+1:]
+ 2634:         for i in range(0, len(items), 2):
+    2:             key = items[i]
+    2:             value = items[i+1]
+>>>>>>             d[key] = value
+ 2632:         self.stack[k:] = [d]
+>>>>>>     dispatch[DICT] = load_dict
+       
+           # INST and OBJ differ only in how they get a class object.  It's not
+           # only sensible to do the rest in a common routine, the two routines
+           # previously diverged and grew different bugs.
+           # klass is the class to instantiate, and k points to the topmost mark
+           # object, following which are the arguments for klass.__init__.
+>>>>>>     def _instantiate(self, klass, k):
+  133:         args = tuple(self.stack[k+1:])
+  133:         del self.stack[k:]
+  133:         instantiated = 0
+  133:         if (not args and
+  121:                 type(klass) is ClassType and
+  121:                 not hasattr(klass, "__getinitargs__")):
+  111:             try:
+  111:                 value = _EmptyClass()
+  111:                 value.__class__ = klass
+  111:                 instantiated = 1
+>>>>>>             except RuntimeError:
+                       # In restricted execution, assignment to inst.__class__ is
+                       # prohibited
+>>>>>>                 pass
+  133:         if not instantiated:
+   22:             try:
+   22:                 value = klass(*args)
+    4:             except TypeError, err:
+>>>>>>                 raise TypeError, "in constructor for %s: %s" % (
+>>>>>>                     klass.__name__, str(err)), sys.exc_info()[2]
+  129:         self.append(value)
+       
+>>>>>>     def load_inst(self):
+   55:         module = self.readline()[:-1]
+   55:         name = self.readline()[:-1]
+   55:         klass = self.find_class(module, name)
+   47:         self._instantiate(klass, self.marker())
+>>>>>>     dispatch[INST] = load_inst
+       
+>>>>>>     def load_obj(self):
+               # Stack is ... markobject classobject arg1 arg2 ...
+   92:         k = self.marker()
+   90:         klass = self.stack.pop(k+1)
+   88:         self._instantiate(klass, k)
+>>>>>>     dispatch[OBJ] = load_obj
+       
+>>>>>>     def load_newobj(self):
+  250:         args = self.stack.pop()
+  248:         cls = self.stack[-1]
+  246:         obj = cls.__new__(cls, *args)
+  242:         self.stack[-1] = obj
+>>>>>>     dispatch[NEWOBJ] = load_newobj
+       
+>>>>>>     def load_global(self):
+ 5672:         module = self.readline()[:-1]
+ 5672:         name = self.readline()[:-1]
+ 5672:         klass = self.find_class(module, name)
+ 5664:         self.append(klass)
+>>>>>>     dispatch[GLOBAL] = load_global
+       
+>>>>>>     def load_ext1(self):
+   10:         code = ord(self.read(1))
+    8:         self.get_extension(code)
+>>>>>>     dispatch[EXT1] = load_ext1
+       
+>>>>>>     def load_ext2(self):
+   14:         code = mloads('i' + self.read(2) + '\000\000')
+   14:         self.get_extension(code)
+>>>>>>     dispatch[EXT2] = load_ext2
+       
+>>>>>>     def load_ext4(self):
+   18:         code = mloads('i' + self.read(4))
+   18:         self.get_extension(code)
+>>>>>>     dispatch[EXT4] = load_ext4
+       
+>>>>>>     def get_extension(self, code):
+   40:         nil = []
+   40:         obj = _extension_cache.get(code, nil)
+   40:         if obj is not nil:
+>>>>>>             self.append(obj)
+>>>>>>             return
+   40:         key = _inverted_registry.get(code)
+   40:         if not key:
+    8:             raise ValueError("unregistered extension code %d" % code)
+   32:         obj = self.find_class(*key)
+   32:         _extension_cache[code] = obj
+   32:         self.append(obj)
+       
+>>>>>>     def find_class(self, module, name):
+               # Subclasses may override this
+ 5759:         __import__(module)
+ 5751:         mod = sys.modules[module]
+ 5751:         klass = getattr(mod, name)
+ 5743:         return klass
+       
+>>>>>>     def load_reduce(self):
+16560:         stack = self.stack
+16560:         args = stack.pop()
+16558:         func = stack[-1]
+16556:         value = func(*args)
+16552:         stack[-1] = value
+>>>>>>     dispatch[REDUCE] = load_reduce
+       
+>>>>>>     def load_pop(self):
+   78:         del self.stack[-1]
+>>>>>>     dispatch[POP] = load_pop
+       
+>>>>>>     def load_pop_mark(self):
+   10:         k = self.marker()
+    8:         del self.stack[k:]
+>>>>>>     dispatch[POP_MARK] = load_pop_mark
+       
+>>>>>>     def load_dup(self):
+    6:         self.append(self.stack[-1])
+>>>>>>     dispatch[DUP] = load_dup
+       
+>>>>>>     def load_get(self):
+ 2522:         self.append(self.memo[self.readline()[:-1]])
+>>>>>>     dispatch[GET] = load_get
+       
+>>>>>>     def load_binget(self):
+23681:         i = ord(self.read(1))
+23679:         self.append(self.memo[repr(i)])
+>>>>>>     dispatch[BINGET] = load_binget
+       
+>>>>>>     def load_long_binget(self):
+  375:         i = mloads('i' + self.read(4))
+  375:         self.append(self.memo[repr(i)])
+>>>>>>     dispatch[LONG_BINGET] = load_long_binget
+       
+>>>>>>     def load_put(self):
+59657:         self.memo[self.readline()[:-1]] = self.stack[-1]
+>>>>>>     dispatch[PUT] = load_put
+       
+>>>>>>     def load_binput(self):
+241707:         i = ord(self.read(1))
+241705:         self.memo[repr(i)] = self.stack[-1]
+>>>>>>     dispatch[BINPUT] = load_binput
+       
+>>>>>>     def load_long_binput(self):
+186613:         i = mloads('i' + self.read(4))
+186613:         self.memo[repr(i)] = self.stack[-1]
+>>>>>>     dispatch[LONG_BINPUT] = load_long_binput
+       
+>>>>>>     def load_append(self):
+73424:         stack = self.stack
+73424:         value = stack.pop()
+73422:         list = stack[-1]
+73420:         list.append(value)
+>>>>>>     dispatch[APPEND] = load_append
+       
+>>>>>>     def load_appends(self):
+120317:         stack = self.stack
+120317:         mark = self.marker()
+120315:         list = stack[mark - 1]
+120315:         list.extend(stack[mark + 1:])
+120315:         del stack[mark:]
+>>>>>>     dispatch[APPENDS] = load_appends
+       
+>>>>>>     def load_setitem(self):
+15199:         stack = self.stack
+15199:         value = stack.pop()
+15197:         key = stack.pop()
+15195:         dict = stack[-1]
+15193:         dict[key] = value
+>>>>>>     dispatch[SETITEM] = load_setitem
+       
+>>>>>>     def load_setitems(self):
+  639:         stack = self.stack
+  639:         mark = self.marker()
+  637:         dict = stack[mark - 1]
+25213:         for i in range(mark + 1, len(stack), 2):
+24578:             dict[stack[i]] = stack[i + 1]
+       
+  635:         del stack[mark:]
+>>>>>>     dispatch[SETITEMS] = load_setitems
+       
+>>>>>>     def load_build(self):
+ 3602:         stack = self.stack
+ 3602:         state = stack.pop()
+ 3600:         inst = stack[-1]
+ 3598:         setstate = getattr(inst, "__setstate__", None)
+ 3598:         if setstate:
+ 2179:             setstate(state)
+ 2179:             return
+ 1419:         slotstate = None
+ 1419:         if isinstance(state, tuple) and len(state) == 2:
+    4:             state, slotstate = state
+ 1419:         if state:
+ 1250:             try:
+ 1250:                 d = inst.__dict__
+ 1248:                 try:
+ 4688:                     for k, v in state.iteritems():
+ 3440:                         d[intern(k)] = v
+                       # keys in state don't have to be strings
+                       # don't blow up, but don't go out of our way
+>>>>>>                 except TypeError:
+>>>>>>                     d.update(state)
+       
+    2:             except RuntimeError:
+                       # XXX In restricted execution, the instance's __dict__
+                       # is not accessible.  Use the old way of unpickling
+                       # the instance variables.  This is a semantic
+                       # difference when unpickling in restricted
+                       # vs. unrestricted modes.
+                       # Note, however, that cPickle has never tried to do the
+                       # .update() business, and always uses
+                       #     PyObject_SetItem(inst.__dict__, key, value) in a
+                       # loop over state.items().
+>>>>>>                 for k, v in state.items():
+>>>>>>                     setattr(inst, k, v)
+ 1417:         if slotstate:
+    8:             for k, v in slotstate.items():
+    4:                 setattr(inst, k, v)
+>>>>>>     dispatch[BUILD] = load_build
+       
+>>>>>>     def load_mark(self):
+168391:         self.append(self.mark)
+>>>>>>     dispatch[MARK] = load_mark
+       
+>>>>>>     def load_stop(self):
+ 6980:         value = self.stack.pop()
+ 6978:         raise _Stop(value)
+>>>>>>     dispatch[STOP] = load_stop
+       
+       # Helper class for load_inst/load_obj
+       
+>>>>>> class _EmptyClass:
+>>>>>>     pass
+       
+       # Encode/decode longs in linear time.
+       
+>>>>>> import binascii as _binascii
+       
+>>>>>> def encode_long(x):
+           r"""Encode a long to a two's complement little-endian binary string.
+           Note that 0L is a special case, returning an empty string, to save a
+           byte in the LONG1 pickling context.
+       
+           >>> encode_long(0L)
+           ''
+           >>> encode_long(255L)
+           '\xff\x00'
+           >>> encode_long(32767L)
+           '\xff\x7f'
+           >>> encode_long(-256L)
+           '\x00\xff'
+           >>> encode_long(-32768L)
+           '\x00\x80'
+           >>> encode_long(-128L)
+           '\x80'
+           >>> encode_long(127L)
+           '\x7f'
+           >>>
+           """
+       
+  803:     if x == 0:
+    1:         return ''
+  802:     if x > 0:
+  723:         ashex = hex(x)
+  723:         assert ashex.startswith("0x")
+  723:         njunkchars = 2 + ashex.endswith('L')
+  723:         nibbles = len(ashex) - njunkchars
+  723:         if nibbles & 1:
+                   # need an even # of nibbles for unhexlify
+   98:             ashex = "0x0" + ashex[2:]
+  625:         elif int(ashex[2], 16) >= 8:
+                   # "looks negative", so need a byte of sign bits
+  358:             ashex = "0x00" + ashex[2:]
+           else:
+               # Build the 256's-complement:  (1L << nbytes) + x.  The trick is
+               # to find the number of bytes in linear time (although that should
+               # really be a constant-time task).
+   79:         ashex = hex(-x)
+   79:         assert ashex.startswith("0x")
+   79:         njunkchars = 2 + ashex.endswith('L')
+   79:         nibbles = len(ashex) - njunkchars
+   79:         if nibbles & 1:
+                   # Extend to a full byte.
+   53:             nibbles += 1
+   79:         nbits = nibbles * 4
+   79:         x += 1L << nbits
+   79:         assert x > 0
+   79:         ashex = hex(x)
+   79:         njunkchars = 2 + ashex.endswith('L')
+   79:         newnibbles = len(ashex) - njunkchars
+   79:         if newnibbles < nibbles:
+   20:             ashex = "0x" + "0" * (nibbles - newnibbles) + ashex[2:]
+   79:         if int(ashex[2], 16) < 8:
+                   # "looks positive", so need a byte of sign bits
+   24:             ashex = "0xff" + ashex[2:]
+       
+  802:     if ashex.endswith('L'):
+  802:         ashex = ashex[2:-1]
+           else:
+>>>>>>         ashex = ashex[2:]
+  802:     assert len(ashex) & 1 == 0, (x, ashex)
+  802:     binary = _binascii.unhexlify(ashex)
+  802:     return binary[::-1]
+       
+>>>>>> def decode_long(data):
+           r"""Decode a long from a two's complement little-endian binary string.
+       
+           >>> decode_long('')
+           0L
+           >>> decode_long("\xff\x00")
+           255L
+           >>> decode_long("\xff\x7f")
+           32767L
+           >>> decode_long("\x00\xff")
+           -256L
+           >>> decode_long("\x00\x80")
+           -32768L
+           >>> decode_long("\x80")
+           -128L
+           >>> decode_long("\x7f")
+           127L
+           """
+       
+  887:     nbytes = len(data)
+  887:     if nbytes == 0:
+    7:         return 0L
+  880:     ashex = _binascii.hexlify(data[::-1])
+  880:     n = long(ashex, 16) # quadratic time before Python 2.3; linear now
+  880:     if data[-1] >= '\x80':
+  102:         n -= 1L << (nbytes * 8)
+  880:     return n
+       
+       # Shorthands
+       
+>>>>>> try:
+>>>>>>     from cStringIO import StringIO
+>>>>>> except ImportError:
+>>>>>>     from StringIO import StringIO
+       
+>>>>>> def dump(obj, file, protocol=None):
+   12:     Pickler(file, protocol).dump(obj)
+       
+>>>>>> def dumps(obj, protocol=None):
+ 3217:     file = StringIO()
+ 3217:     Pickler(file, protocol).dump(obj)
+ 3138:     return file.getvalue()
+       
+>>>>>> def load(file):
+  902:     return Unpickler(file).load()
+       
+>>>>>> def loads(str):
+ 5328:     file = StringIO(str)
+ 5328:     return Unpickler(file).load()
+       
+       # Doctest
+       
+>>>>>> def _test():
+>>>>>>     import doctest
+>>>>>>     return doctest.testmod()
+       
+>>>>>> if __name__ == "__main__":
+>>>>>>     _test()

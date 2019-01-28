@@ -1,0 +1,229 @@
+       #-*- coding: ISO-8859-1 -*-
+       # pysqlite2/test/hooks.py: tests for various SQLite-specific hooks
+       #
+       # Copyright (C) 2006-2007 Gerhard Häring <gh@ghaering.de>
+       #
+       # This file is part of pysqlite.
+       #
+       # This software is provided 'as-is', without any express or implied
+       # warranty.  In no event will the authors be held liable for any damages
+       # arising from the use of this software.
+       #
+       # Permission is granted to anyone to use this software for any purpose,
+       # including commercial applications, and to alter it and redistribute it
+       # freely, subject to the following restrictions:
+       #
+       # 1. The origin of this software must not be misrepresented; you must not
+       #    claim that you wrote the original software. If you use this software
+       #    in a product, an acknowledgment in the product documentation would be
+       #    appreciated but is not required.
+       # 2. Altered source versions must be plainly marked as such, and must not be
+       #    misrepresented as being the original software.
+       # 3. This notice may not be removed or altered from any source distribution.
+       
+    1: import os, unittest
+    1: import sqlite3 as sqlite
+       
+    2: class CollationTests(unittest.TestCase):
+    1:     def setUp(self):
+    8:         pass
+       
+    1:     def tearDown(self):
+    8:         pass
+       
+    1:     def CheckCreateCollationNotString(self):
+    1:         con = sqlite.connect(":memory:")
+    1:         with self.assertRaises(TypeError):
+    1:             con.create_collation(None, lambda x, y: (x > y) - (x < y))
+       
+    1:     def CheckCreateCollationNotCallable(self):
+    1:         con = sqlite.connect(":memory:")
+    1:         try:
+    1:             con.create_collation("X", 42)
+>>>>>>             self.fail("should have raised a TypeError")
+    1:         except TypeError, e:
+    1:             self.assertEqual(e.args[0], "parameter must be callable")
+       
+    1:     def CheckCreateCollationNotAscii(self):
+    1:         con = sqlite.connect(":memory:")
+    1:         try:
+    1:             con.create_collation("collä", cmp)
+>>>>>>             self.fail("should have raised a ProgrammingError")
+    1:         except sqlite.ProgrammingError, e:
+    1:             pass
+       
+    1:     def CheckCreateCollationBadUpper(self):
+    2:         class BadUpperStr(str):
+    1:             def upper(self):
+>>>>>>                 return None
+    1:         con = sqlite.connect(":memory:")
+    2:         mycoll = lambda x, y: -((x > y) - (x < y))
+    1:         con.create_collation(BadUpperStr("mycoll"), mycoll)
+    1:         result = con.execute("""
+                   select x from (
+                   select 'a' as x
+                   union
+                   select 'b' as x
+                   ) order by x collate mycoll
+    1:             """).fetchall()
+    1:         self.assertEqual(result[0][0], 'b')
+    1:         self.assertEqual(result[1][0], 'a')
+       
+    1:     def CheckCollationIsUsed(self):
+    1:         if sqlite.version_info < (3, 2, 1):  # old SQLite versions crash on this test
+    1:             return
+>>>>>>         def mycoll(x, y):
+                   # reverse order
+>>>>>>             return -cmp(x, y)
+       
+>>>>>>         con = sqlite.connect(":memory:")
+>>>>>>         con.create_collation("mycoll", mycoll)
+               sql = """
+                   select x from (
+                   select 'a' as x
+                   union
+                   select 'b' as x
+                   union
+                   select 'c' as x
+                   ) order by x collate mycoll
+>>>>>>             """
+>>>>>>         result = con.execute(sql).fetchall()
+>>>>>>         if result[0][0] != "c" or result[1][0] != "b" or result[2][0] != "a":
+>>>>>>             self.fail("the expected order was not returned")
+       
+>>>>>>         con.create_collation("mycoll", None)
+>>>>>>         try:
+>>>>>>             result = con.execute(sql).fetchall()
+>>>>>>             self.fail("should have raised an OperationalError")
+>>>>>>         except sqlite.OperationalError, e:
+>>>>>>             self.assertEqual(e.args[0].lower(), "no such collation sequence: mycoll")
+       
+    1:     def CheckCollationReturnsLargeInteger(self):
+    1:         def mycoll(x, y):
+                   # reverse order
+    3:             return -((x > y) - (x < y)) * 2**32
+    1:         con = sqlite.connect(":memory:")
+    1:         con.create_collation("mycoll", mycoll)
+               sql = """
+                   select x from (
+                   select 'a' as x
+                   union
+                   select 'b' as x
+                   union
+                   select 'c' as x
+                   ) order by x collate mycoll
+    1:             """
+    1:         result = con.execute(sql).fetchall()
+    1:         self.assertEqual(result, [('c',), ('b',), ('a',)],
+    1:                          msg="the expected order was not returned")
+       
+    1:     def CheckCollationRegisterTwice(self):
+               """
+               Register two different collation functions under the same name.
+               Verify that the last one is actually used.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         con.create_collation("mycoll", cmp)
+    2:         con.create_collation("mycoll", lambda x, y: -cmp(x, y))
+    1:         result = con.execute("""
+                   select x from (select 'a' as x union select 'b' as x) order by x collate mycoll
+    1:             """).fetchall()
+    1:         if result[0][0] != 'b' or result[1][0] != 'a':
+>>>>>>             self.fail("wrong collation function is used")
+       
+    1:     def CheckDeregisterCollation(self):
+               """
+               Register a collation, then deregister it. Make sure an error is raised if we try
+               to use it.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         con.create_collation("mycoll", cmp)
+    1:         con.create_collation("mycoll", None)
+    1:         try:
+    1:             con.execute("select 'a' as x union select 'b' as x order by x collate mycoll")
+>>>>>>             self.fail("should have raised an OperationalError")
+    1:         except sqlite.OperationalError, e:
+    1:             if not e.args[0].startswith("no such collation sequence"):
+>>>>>>                 self.fail("wrong OperationalError raised")
+       
+    2: class ProgressTests(unittest.TestCase):
+    1:     def CheckProgressHandlerUsed(self):
+               """
+               Test that the progress handler is invoked once it is set.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         progress_calls = []
+    1:         def progress():
+    8:             progress_calls.append(None)
+    8:             return 0
+    1:         con.set_progress_handler(progress, 1)
+    1:         con.execute("""
+                   create table foo(a, b)
+    1:             """)
+    1:         self.assertTrue(progress_calls)
+       
+       
+    1:     def CheckOpcodeCount(self):
+               """
+               Test that the opcode argument is respected.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         progress_calls = []
+    1:         def progress():
+   15:             progress_calls.append(None)
+   15:             return 0
+    1:         con.set_progress_handler(progress, 1)
+    1:         curs = con.cursor()
+    1:         curs.execute("""
+                   create table foo (a, b)
+    1:             """)
+    1:         first_count = len(progress_calls)
+    1:         progress_calls = []
+    1:         con.set_progress_handler(progress, 2)
+    1:         curs.execute("""
+                   create table bar (a, b)
+    1:             """)
+    1:         second_count = len(progress_calls)
+    1:         self.assertGreaterEqual(first_count, second_count)
+       
+    1:     def CheckCancelOperation(self):
+               """
+               Test that returning a non-zero value stops the operation in progress.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         progress_calls = []
+    1:         def progress():
+    1:             progress_calls.append(None)
+    1:             return 1
+    1:         con.set_progress_handler(progress, 1)
+    1:         curs = con.cursor()
+    1:         self.assertRaises(
+    1:             sqlite.OperationalError,
+    1:             curs.execute,
+    1:             "create table bar (a, b)")
+       
+    1:     def CheckClearHandler(self):
+               """
+               Test that setting the progress handler to None clears the previously set handler.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         action = []
+    1:         def progress():
+>>>>>>             action.append(1)
+>>>>>>             return 0
+    1:         con.set_progress_handler(progress, 1)
+    1:         con.set_progress_handler(None, 1)
+    1:         con.execute("select 1 union select 2 union select 3").fetchall()
+    1:         self.assertEqual(len(action), 0, "progress handler was not cleared")
+       
+    1: def suite():
+    1:     collation_suite = unittest.makeSuite(CollationTests, "Check")
+    1:     progress_suite = unittest.makeSuite(ProgressTests, "Check")
+    1:     return unittest.TestSuite((collation_suite, progress_suite))
+       
+    1: def test():
+>>>>>>     runner = unittest.TextTestRunner()
+>>>>>>     runner.run(suite())
+       
+    1: if __name__ == "__main__":
+>>>>>>     test()

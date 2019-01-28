@@ -1,0 +1,325 @@
+       # Some simple queue module tests, plus some failure conditions
+       # to ensure the Queue locks remain stable.
+    1: import Queue
+    1: import time
+    1: import unittest
+    1: from test import test_support
+    1: threading = test_support.import_module('threading')
+       
+    1: QUEUE_SIZE = 5
+       
+       # A thread to run a function that unclogs a blocked Queue.
+    2: class _TriggerThread(threading.Thread):
+    1:     def __init__(self, fn, args):
+   32:         self.fn = fn
+   32:         self.args = args
+   32:         self.startedEvent = threading.Event()
+   32:         threading.Thread.__init__(self)
+       
+    1:     def run(self):
+               # The sleep isn't necessary, but is intended to give the blocking
+               # function in the main thread a chance at actually blocking before
+               # we unclog it.  But if the sleep is longer than the timeout-based
+               # tests wait in their blocking functions, those tests will fail.
+               # So we give them much longer timeout values compared to the
+               # sleep here (I aimed at 10 seconds for blocking functions --
+               # they should never actually wait that long - they should make
+               # progress as soon as we call self.fn()).
+   32:         time.sleep(0.1)
+   32:         self.startedEvent.set()
+   32:         self.fn(*self.args)
+       
+       
+       # Execute a function that blocks, and in a separate thread, a function that
+       # triggers the release.  Returns the result of the blocking function.  Caution:
+       # block_func must guarantee to block until trigger_func is called, and
+       # trigger_func must guarantee to change queue state so that block_func can make
+       # enough progress to return.  In particular, a block_func that just raises an
+       # exception regardless of whether trigger_func is called will lead to
+       # timing-dependent sporadic failures, and one of those went rarely seen but
+       # undiagnosed for years.  Now block_func must be unexceptional.  If block_func
+       # is supposed to raise an exception, call do_exceptional_blocking_test()
+       # instead.
+       
+    2: class BlockingTestMixin:
+       
+    1:     def tearDown(self):
+   10:         self.t = None
+       
+    1:     def do_blocking_test(self, block_func, block_args, trigger_func, trigger_args):
+   28:         self.t = _TriggerThread(trigger_func, trigger_args)
+   28:         self.t.start()
+   28:         self.result = block_func(*block_args)
+               # If block_func returned before our thread made the call, we failed!
+   26:         if not self.t.startedEvent.is_set():
+>>>>>>             self.fail("blocking function '%r' appeared not to block" %
+>>>>>>                       block_func)
+   26:         self.t.join(10) # make sure the thread terminates
+   26:         if self.t.is_alive():
+>>>>>>             self.fail("trigger function '%r' appeared to not return" %
+>>>>>>                       trigger_func)
+   26:         return self.result
+       
+           # Call this instead if block_func is supposed to raise an exception.
+    1:     def do_exceptional_blocking_test(self,block_func, block_args, trigger_func,
+                                          trigger_args, expected_exception_class):
+    4:         self.t = _TriggerThread(trigger_func, trigger_args)
+    4:         self.t.start()
+    4:         try:
+    4:             try:
+    4:                 block_func(*block_args)
+    4:             except expected_exception_class:
+    4:                 raise
+                   else:
+>>>>>>                 self.fail("expected exception of kind %r" %
+>>>>>>                                  expected_exception_class)
+               finally:
+    4:             self.t.join(10) # make sure the thread terminates
+    4:             if self.t.is_alive():
+>>>>>>                 self.fail("trigger function '%r' appeared to not return" %
+>>>>>>                                  trigger_func)
+    4:             if not self.t.startedEvent.is_set():
+>>>>>>                 self.fail("trigger thread ended but event never set")
+       
+       
+    2: class BaseQueueTest(BlockingTestMixin):
+    1:     def setUp(self):
+    9:         self.cum = 0
+    9:         self.cumlock = threading.Lock()
+       
+    1:     def simple_queue_test(self, q):
+    6:         if not q.empty():
+>>>>>>             raise RuntimeError, "Call this function with an empty queue"
+               # I guess we better check things actually queue correctly a little :)
+    6:         q.put(111)
+    6:         q.put(333)
+    6:         q.put(222)
+    6:         target_order = dict(Queue = [111, 333, 222],
+    6:                             LifoQueue = [222, 333, 111],
+    6:                             PriorityQueue = [111, 222, 333])
+    6:         actual_order = [q.get(), q.get(), q.get()]
+    6:         self.assertEqual(actual_order, target_order[q.__class__.__name__],
+    6:                          "Didn't seem to queue the correct data!")
+   30:         for i in range(QUEUE_SIZE-1):
+   24:             q.put(i)
+   24:             self.assertTrue(not q.empty(), "Queue should not be empty")
+    6:         self.assertTrue(not q.full(), "Queue should not be full")
+    6:         last = 2 * QUEUE_SIZE
+    6:         full = 3 * 2 * QUEUE_SIZE
+    6:         q.put(last)
+    6:         self.assertTrue(q.full(), "Queue should be full")
+    6:         try:
+    6:             q.put(full, block=0)
+>>>>>>             self.fail("Didn't appear to block with a full queue")
+    6:         except Queue.Full:
+    6:             pass
+    6:         try:
+    6:             q.put(full, timeout=0.01)
+>>>>>>             self.fail("Didn't appear to time-out with a full queue")
+    6:         except Queue.Full:
+    6:             pass
+               # Test a blocking put
+    6:         self.do_blocking_test(q.put, (full,), q.get, ())
+    6:         self.do_blocking_test(q.put, (full, True, 10), q.get, ())
+               # Empty it
+   36:         for i in range(QUEUE_SIZE):
+   30:             q.get()
+    6:         self.assertTrue(q.empty(), "Queue should be empty")
+    6:         try:
+    6:             q.get(block=0)
+>>>>>>             self.fail("Didn't appear to block with an empty queue")
+    6:         except Queue.Empty:
+    6:             pass
+    6:         try:
+    6:             q.get(timeout=0.01)
+>>>>>>             self.fail("Didn't appear to time-out with an empty queue")
+    6:         except Queue.Empty:
+    6:             pass
+               # Test a blocking get
+    6:         self.do_blocking_test(q.get, (), q.put, ('empty',))
+    6:         self.do_blocking_test(q.get, (True, 10), q.put, ('empty',))
+       
+       
+    1:     def worker(self, q):
+  612:         while True:
+  612:             x = q.get()
+  610:             if x is None:
+   12:                 q.task_done()
+   12:                 return
+  600:             with self.cumlock:
+  600:                 self.cum += x
+  600:             q.task_done()
+       
+    1:     def queue_join_test(self, q):
+    6:         self.cum = 0
+   18:         for i in (0,1):
+   12:             threading.Thread(target=self.worker, args=(q,)).start()
+  606:         for i in xrange(100):
+  600:             q.put(i)
+    6:         q.join()
+    6:         self.assertEqual(self.cum, sum(range(100)),
+    6:                          "q.join() did not block until all tasks were done")
+   18:         for i in (0,1):
+   12:             q.put(None)         # instruct the threads to close
+    6:         q.join()                # verify that you can join twice
+       
+    1:     def test_queue_task_done(self):
+               # Test to make sure a queue task completed successfully.
+    3:         q = self.type2test()
+    3:         try:
+    3:             q.task_done()
+    3:         except ValueError:
+    3:             pass
+               else:
+>>>>>>             self.fail("Did not detect task count going negative")
+       
+    1:     def test_queue_join(self):
+               # Test that a queue join()s successfully, and before anything else
+               # (done twice for insurance).
+    3:         q = self.type2test()
+    3:         self.queue_join_test(q)
+    3:         self.queue_join_test(q)
+    3:         try:
+    3:             q.task_done()
+    3:         except ValueError:
+    3:             pass
+               else:
+>>>>>>             self.fail("Did not detect task count going negative")
+       
+    1:     def test_simple_queue(self):
+               # Do it a couple of times on the same queue.
+               # Done twice to make sure works with same instance reused.
+    3:         q = self.type2test(QUEUE_SIZE)
+    3:         self.simple_queue_test(q)
+    3:         self.simple_queue_test(q)
+       
+       
+    2: class QueueTest(BaseQueueTest, unittest.TestCase):
+    1:     type2test = Queue.Queue
+       
+    2: class LifoQueueTest(BaseQueueTest, unittest.TestCase):
+    1:     type2test = Queue.LifoQueue
+       
+    2: class PriorityQueueTest(BaseQueueTest, unittest.TestCase):
+    1:     type2test = Queue.PriorityQueue
+       
+       
+       
+       # A Queue subclass that can provoke failure at a moment's notice :)
+    2: class FailingQueueException(Exception):
+    1:     pass
+       
+    2: class FailingQueue(Queue.Queue):
+    1:     def __init__(self, *args):
+    1:         self.fail_next_put = False
+    1:         self.fail_next_get = False
+    1:         Queue.Queue.__init__(self, *args)
+    1:     def _put(self, item):
+   30:         if self.fail_next_put:
+    8:             self.fail_next_put = False
+    8:             raise FailingQueueException, "You Lose"
+   22:         return Queue.Queue._put(self, item)
+    1:     def _get(self):
+   28:         if self.fail_next_get:
+    6:             self.fail_next_get = False
+    6:             raise FailingQueueException, "You Lose"
+   22:         return Queue.Queue._get(self)
+       
+    2: class FailingQueueTest(BlockingTestMixin, unittest.TestCase):
+       
+    1:     def failing_queue_test(self, q):
+    2:         if not q.empty():
+>>>>>>             raise RuntimeError, "Call this function with an empty queue"
+   10:         for i in range(QUEUE_SIZE-1):
+    8:             q.put(i)
+               # Test a failing non-blocking put.
+    2:         q.fail_next_put = True
+    2:         try:
+    2:             q.put("oops", block=0)
+>>>>>>             self.fail("The queue didn't fail when it should have")
+    2:         except FailingQueueException:
+    2:             pass
+    2:         q.fail_next_put = True
+    2:         try:
+    2:             q.put("oops", timeout=0.1)
+>>>>>>             self.fail("The queue didn't fail when it should have")
+    2:         except FailingQueueException:
+    2:             pass
+    2:         q.put("last")
+    2:         self.assertTrue(q.full(), "Queue should be full")
+               # Test a failing blocking put
+    2:         q.fail_next_put = True
+    2:         try:
+    2:             self.do_blocking_test(q.put, ("full",), q.get, ())
+>>>>>>             self.fail("The queue didn't fail when it should have")
+    2:         except FailingQueueException:
+    2:             pass
+               # Check the Queue isn't damaged.
+               # put failed, but get succeeded - re-add
+    2:         q.put("last")
+               # Test a failing timeout put
+    2:         q.fail_next_put = True
+    2:         try:
+    2:             self.do_exceptional_blocking_test(q.put, ("full", True, 10), q.get, (),
+    2:                                               FailingQueueException)
+>>>>>>             self.fail("The queue didn't fail when it should have")
+    2:         except FailingQueueException:
+    2:             pass
+               # Check the Queue isn't damaged.
+               # put failed, but get succeeded - re-add
+    2:         q.put("last")
+    2:         self.assertTrue(q.full(), "Queue should be full")
+    2:         q.get()
+    2:         self.assertTrue(not q.full(), "Queue should not be full")
+    2:         q.put("last")
+    2:         self.assertTrue(q.full(), "Queue should be full")
+               # Test a blocking put
+    2:         self.do_blocking_test(q.put, ("full",), q.get, ())
+               # Empty it
+   12:         for i in range(QUEUE_SIZE):
+   10:             q.get()
+    2:         self.assertTrue(q.empty(), "Queue should be empty")
+    2:         q.put("first")
+    2:         q.fail_next_get = True
+    2:         try:
+    2:             q.get()
+>>>>>>             self.fail("The queue didn't fail when it should have")
+    2:         except FailingQueueException:
+    2:             pass
+    2:         self.assertTrue(not q.empty(), "Queue should not be empty")
+    2:         q.fail_next_get = True
+    2:         try:
+    2:             q.get(timeout=0.1)
+>>>>>>             self.fail("The queue didn't fail when it should have")
+    2:         except FailingQueueException:
+    2:             pass
+    2:         self.assertTrue(not q.empty(), "Queue should not be empty")
+    2:         q.get()
+    2:         self.assertTrue(q.empty(), "Queue should be empty")
+    2:         q.fail_next_get = True
+    2:         try:
+    2:             self.do_exceptional_blocking_test(q.get, (), q.put, ('empty',),
+    2:                                               FailingQueueException)
+>>>>>>             self.fail("The queue didn't fail when it should have")
+    2:         except FailingQueueException:
+    2:             pass
+               # put succeeded, but get failed.
+    2:         self.assertTrue(not q.empty(), "Queue should not be empty")
+    2:         q.get()
+    2:         self.assertTrue(q.empty(), "Queue should be empty")
+       
+    1:     def test_failing_queue(self):
+               # Test to make sure a queue is functioning correctly.
+               # Done twice to the same instance.
+    1:         q = FailingQueue(QUEUE_SIZE)
+    1:         self.failing_queue_test(q)
+    1:         self.failing_queue_test(q)
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(QueueTest, LifoQueueTest, PriorityQueueTest,
+    1:                               FailingQueueTest)
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

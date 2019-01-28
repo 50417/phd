@@ -1,0 +1,675 @@
+    1: import errno
+    1: import imp
+    1: import marshal
+    1: import os
+    1: import py_compile
+    1: import random
+    1: import stat
+    1: import struct
+    1: import sys
+    1: import unittest
+    1: import textwrap
+    1: import shutil
+       
+    1: from test.test_support import (unlink, TESTFN, unload, run_unittest, rmtree,
+                                      is_jython, check_warnings, EnvironmentVarGuard)
+    1: from test import symlink_support
+    1: from test import script_helper
+       
+    1: def _files(name):
+    7:     return (name + os.extsep + "py",
+    7:             name + os.extsep + "pyc",
+    7:             name + os.extsep + "pyo",
+    7:             name + os.extsep + "pyw",
+    7:             name + "$py.class")
+       
+    1: def chmod_files(name):
+    6:     for f in _files(name):
+    5:         try:
+    5:             os.chmod(f, 0600)
+    4:         except OSError as exc:
+    4:             if exc.errno != errno.ENOENT:
+>>>>>>                 raise
+       
+    1: def remove_files(name):
+   36:     for f in _files(name):
+   30:         unlink(f)
+       
+       
+    2: class ImportTests(unittest.TestCase):
+       
+    1:     def tearDown(self):
+   38:         unload(TESTFN)
+    1:     setUp = tearDown
+       
+    1:     def test_case_sensitivity(self):
+               # Brief digression to test that import is case-sensitive:  if we got
+               # this far, we know for sure that "random" exists.
+    1:         try:
+    1:             import RAnDoM
+    1:         except ImportError:
+    1:             pass
+               else:
+>>>>>>             self.fail("import of RAnDoM should have failed (case mismatch)")
+       
+    1:     def test_double_const(self):
+               # Another brief digression to test the accuracy of manifest float
+               # constants.
+    1:         from test import double_const  # don't blink -- that *was* the test
+       
+    1:     def test_import(self):
+    1:         def test_with_extension(ext):
+                   # The extension is normally ".py", perhaps ".pyw".
+    1:             source = TESTFN + ext
+    1:             pyo = TESTFN + os.extsep + "pyo"
+    1:             if is_jython:
+>>>>>>                 pyc = TESTFN + "$py.class"
+                   else:
+    1:                 pyc = TESTFN + os.extsep + "pyc"
+       
+    1:             with open(source, "w") as f:
+    1:                 print >> f, ("# This tests Python's ability to import a", ext,
+    1:                              "file.")
+    1:                 a = random.randrange(1000)
+    1:                 b = random.randrange(1000)
+    1:                 print >> f, "a =", a
+    1:                 print >> f, "b =", b
+       
+    1:             try:
+    1:                 mod = __import__(TESTFN)
+>>>>>>             except ImportError, err:
+>>>>>>                 self.fail("import from %s failed: %s" % (ext, err))
+                   else:
+    1:                 self.assertEqual(mod.a, a,
+    1:                     "module loaded (%s) but contents invalid" % mod)
+    1:                 self.assertEqual(mod.b, b,
+    1:                     "module loaded (%s) but contents invalid" % mod)
+                   finally:
+    1:                 unlink(source)
+       
+    1:             try:
+    1:                 if not sys.dont_write_bytecode:
+    1:                     imp.reload(mod)
+>>>>>>             except ImportError, err:
+>>>>>>                 self.fail("import from .pyc/.pyo failed: %s" % err)
+                   finally:
+    1:                 unlink(pyc)
+    1:                 unlink(pyo)
+    1:                 unload(TESTFN)
+       
+    1:         sys.path.insert(0, os.curdir)
+    1:         try:
+    1:             test_with_extension(os.extsep + "py")
+    1:             if sys.platform.startswith("win"):
+>>>>>>                 for ext in [".PY", ".Py", ".pY", ".pyw", ".PYW", ".pYw"]:
+>>>>>>                     test_with_extension(ext)
+               finally:
+    1:             del sys.path[0]
+       
+    1:     @unittest.skipUnless(os.name == 'posix',
+    1:         "test meaningful only on posix systems")
+    1:     @unittest.skipIf(sys.dont_write_bytecode,
+    1:         "test meaningful only when writing bytecode")
+           def test_execute_bit_not_copied(self):
+               # Issue 6070: under posix .pyc files got their execute bit set if
+               # the .py file had the execute bit set, but they aren't executable.
+    1:         oldmask = os.umask(022)
+    1:         sys.path.insert(0, os.curdir)
+    1:         try:
+    1:             fname = TESTFN + os.extsep + "py"
+    1:             f = open(fname, 'w').close()
+    1:             os.chmod(fname, (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH |
+    1:                              stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+    1:             __import__(TESTFN)
+    1:             fn = fname + 'c'
+    1:             if not os.path.exists(fn):
+>>>>>>                 fn = fname + 'o'
+>>>>>>                 if not os.path.exists(fn):
+>>>>>>                     self.fail("__import__ did not result in creation of "
+                                     "either a .pyc or .pyo file")
+    1:             s = os.stat(fn)
+    1:             self.assertEqual(stat.S_IMODE(s.st_mode),
+    1:                              stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+               finally:
+    1:             os.umask(oldmask)
+    1:             remove_files(TESTFN)
+    1:             unload(TESTFN)
+    1:             del sys.path[0]
+       
+    1:     @unittest.skipIf(sys.dont_write_bytecode,
+    1:         "test meaningful only when writing bytecode")
+           def test_rewrite_pyc_with_read_only_source(self):
+               # Issue 6074: a long time ago on posix, and more recently on Windows,
+               # a read only source file resulted in a read only pyc file, which
+               # led to problems with updating it later
+    1:         sys.path.insert(0, os.curdir)
+    1:         fname = TESTFN + os.extsep + "py"
+    1:         try:
+                   # Write a Python file, make it read-only and import it
+    1:             with open(fname, 'w') as f:
+    1:                 f.write("x = 'original'\n")
+                   # Tweak the mtime of the source to ensure pyc gets updated later
+    1:             s = os.stat(fname)
+    1:             os.utime(fname, (s.st_atime, s.st_mtime-100000000))
+    1:             os.chmod(fname, 0400)
+    1:             m1 = __import__(TESTFN)
+    1:             self.assertEqual(m1.x, 'original')
+                   # Change the file and then reimport it
+    1:             os.chmod(fname, 0600)
+    1:             with open(fname, 'w') as f:
+    1:                 f.write("x = 'rewritten'\n")
+    1:             unload(TESTFN)
+    1:             m2 = __import__(TESTFN)
+    1:             self.assertEqual(m2.x, 'rewritten')
+                   # Now delete the source file and check the pyc was rewritten
+    1:             unlink(fname)
+    1:             unload(TESTFN)
+    1:             m3 = __import__(TESTFN)
+    1:             self.assertEqual(m3.x, 'rewritten')
+               finally:
+    1:             chmod_files(TESTFN)
+    1:             remove_files(TESTFN)
+    1:             unload(TESTFN)
+    1:             del sys.path[0]
+       
+    1:     def test_imp_module(self):
+               # Verify that the imp module can correctly load and find .py files
+       
+               # XXX (ncoghlan): It would be nice to use test_support.CleanImport
+               # here, but that breaks because the os module registers some
+               # handlers in copy_reg on import. Since CleanImport doesn't
+               # revert that registration, the module is left in a broken
+               # state after reversion. Reinitialising the module contents
+               # and just reverting os.environ to its previous state is an OK
+               # workaround
+    1:         orig_path = os.path
+    1:         orig_getenv = os.getenv
+    1:         with EnvironmentVarGuard():
+    1:             x = imp.find_module("os")
+    1:             new_os = imp.load_module("os", *x)
+    1:             self.assertIs(os, new_os)
+    1:             self.assertIs(orig_path, new_os.path)
+    1:             self.assertIsNot(orig_getenv, new_os.getenv)
+       
+    1:     def test_module_with_large_stack(self, module='longlist'):
+               # Regression test for http://bugs.python.org/issue561858.
+    1:         filename = module + os.extsep + 'py'
+       
+               # Create a file with a list of 65000 elements.
+    1:         with open(filename, 'w+') as f:
+    1:             f.write('d = [\n')
+65001:             for i in range(65000):
+65000:                 f.write('"",\n')
+    1:             f.write(']')
+       
+               # Compile & remove .py file, we only need .pyc (or .pyo).
+    1:         with open(filename, 'r') as f:
+    1:             py_compile.compile(filename)
+    1:         unlink(filename)
+       
+               # Need to be able to load from current dir.
+    1:         sys.path.append('')
+       
+               # This used to crash.
+    1:         exec 'import ' + module
+       
+               # Cleanup.
+    1:         del sys.path[-1]
+    1:         unlink(filename + 'c')
+    1:         unlink(filename + 'o')
+       
+    1:     def test_failing_import_sticks(self):
+    1:         source = TESTFN + os.extsep + "py"
+    1:         with open(source, "w") as f:
+    1:             print >> f, "a = 1 // 0"
+       
+               # New in 2.4, we shouldn't be able to import that no matter how often
+               # we try.
+    1:         sys.path.insert(0, os.curdir)
+    1:         try:
+    4:             for i in [1, 2, 3]:
+    3:                 self.assertRaises(ZeroDivisionError, __import__, TESTFN)
+    3:                 self.assertNotIn(TESTFN, sys.modules,
+    3:                                  "damaged module in sys.modules on %i try" % i)
+               finally:
+    1:             del sys.path[0]
+    1:             remove_files(TESTFN)
+       
+    1:     def test_failing_reload(self):
+               # A failing reload should leave the module object in sys.modules.
+    1:         source = TESTFN + os.extsep + "py"
+    1:         with open(source, "w") as f:
+    1:             print >> f, "a = 1"
+    1:             print >> f, "b = 2"
+       
+    1:         sys.path.insert(0, os.curdir)
+    1:         try:
+    1:             mod = __import__(TESTFN)
+    1:             self.assertIn(TESTFN, sys.modules)
+    1:             self.assertEqual(mod.a, 1, "module has wrong attribute values")
+    1:             self.assertEqual(mod.b, 2, "module has wrong attribute values")
+       
+                   # On WinXP, just replacing the .py file wasn't enough to
+                   # convince reload() to reparse it.  Maybe the timestamp didn't
+                   # move enough.  We force it to get reparsed by removing the
+                   # compiled file too.
+    1:             remove_files(TESTFN)
+       
+                   # Now damage the module.
+    1:             with open(source, "w") as f:
+    1:                 print >> f, "a = 10"
+    1:                 print >> f, "b = 20//0"
+       
+    1:             self.assertRaises(ZeroDivisionError, imp.reload, mod)
+       
+                   # But we still expect the module to be in sys.modules.
+    1:             mod = sys.modules.get(TESTFN)
+    1:             self.assertIsNot(mod, None, "expected module to be in sys.modules")
+       
+                   # We should have replaced a w/ 10, but the old b value should
+                   # stick.
+    1:             self.assertEqual(mod.a, 10, "module has wrong attribute values")
+    1:             self.assertEqual(mod.b, 2, "module has wrong attribute values")
+       
+               finally:
+    1:             del sys.path[0]
+    1:             remove_files(TESTFN)
+    1:             unload(TESTFN)
+       
+    1:     def test_infinite_reload(self):
+               # http://bugs.python.org/issue742342 reports that Python segfaults
+               # (infinite recursion in C) when faced with self-recursive reload()ing.
+       
+    1:         sys.path.insert(0, os.path.dirname(__file__))
+    1:         try:
+    1:             import infinite_reload
+               finally:
+    1:             del sys.path[0]
+       
+    1:     def test_import_name_binding(self):
+               # import x.y.z binds x in the current namespace.
+    1:         import test as x
+    1:         import test.test_support
+    1:         self.assertIs(x, test, x.__name__)
+    1:         self.assertTrue(hasattr(test.test_support, "__file__"))
+       
+               # import x.y.z as w binds z as w.
+    1:         import test.test_support as y
+    1:         self.assertIs(y, test.test_support, y.__name__)
+       
+    1:     def test_import_initless_directory_warning(self):
+    1:         with check_warnings(('', ImportWarning)):
+                   # Just a random non-package directory we always expect to be
+                   # somewhere in sys.path...
+    1:             self.assertRaises(ImportError, __import__, "site-packages")
+       
+    1:     def test_import_by_filename(self):
+    1:         path = os.path.abspath(TESTFN)
+    1:         with self.assertRaises(ImportError) as c:
+    1:             __import__(path)
+    1:         self.assertEqual("Import by filename is not supported.",
+    1:                          c.exception.args[0])
+       
+    1:     def test_import_in_del_does_not_crash(self):
+               # Issue 4236
+    1:         testfn = script_helper.make_script('', TESTFN, textwrap.dedent("""\
+                   import sys
+                   class C:
+                      def __del__(self):
+                         import imp
+                   sys.argv.insert(0, C())
+    1:             """))
+    1:         try:
+    1:             script_helper.assert_python_ok(testfn)
+               finally:
+    1:             unlink(testfn)
+       
+    1:     def test_bug7732(self):
+    1:         source = TESTFN + '.py'
+    1:         os.mkdir(source)
+    1:         try:
+    1:             self.assertRaises((ImportError, IOError),
+    1:                               imp.find_module, TESTFN, ["."])
+               finally:
+    1:             os.rmdir(source)
+       
+    1:     def test_timestamp_overflow(self):
+               # A modification timestamp larger than 2**32 should not be a problem
+               # when importing a module (issue #11235).
+    1:         sys.path.insert(0, os.curdir)
+    1:         try:
+    1:             source = TESTFN + ".py"
+    1:             compiled = source + ('c' if __debug__ else 'o')
+    1:             with open(source, 'w') as f:
+    1:                 pass
+    1:             try:
+    1:                 os.utime(source, (2 ** 33 - 5, 2 ** 33 - 5))
+>>>>>>             except OverflowError:
+>>>>>>                 self.skipTest("cannot set modification time to large integer")
+>>>>>>             except OSError as e:
+>>>>>>                 if e.errno != getattr(errno, 'EOVERFLOW', None):
+>>>>>>                     raise
+>>>>>>                 self.skipTest("cannot set modification time to large integer ({})".format(e))
+    1:             __import__(TESTFN)
+                   # The pyc file was created.
+    1:             os.stat(compiled)
+               finally:
+    1:             del sys.path[0]
+    1:             remove_files(TESTFN)
+       
+    1:     def test_pyc_mtime(self):
+               # Test for issue #13863: .pyc timestamp sometimes incorrect on Windows.
+    1:         sys.path.insert(0, os.curdir)
+    1:         try:
+                   # Jan 1, 2012; Jul 1, 2012.
+    1:             mtimes = 1325376000, 1341100800
+       
+                   # Different names to avoid running into import caching.
+    1:             tails = "spam", "eggs"
+    3:             for mtime, tail in zip(mtimes, tails):
+    2:                 module = TESTFN + tail
+    2:                 source = module + ".py"
+    2:                 compiled = source + ('c' if __debug__ else 'o')
+       
+                       # Create a new Python file with the given mtime.
+    2:                 with open(source, 'w') as f:
+    2:                     f.write("# Just testing\nx=1, 2, 3\n")
+    2:                 os.utime(source, (mtime, mtime))
+       
+                       # Generate the .pyc/o file; if it couldn't be created
+                       # for some reason, skip the test.
+    2:                 m = __import__(module)
+    2:                 if not os.path.exists(compiled):
+>>>>>>                     unlink(source)
+>>>>>>                     self.skipTest("Couldn't create .pyc/.pyo file.")
+       
+                       # Actual modification time of .py file.
+    2:                 mtime1 = int(os.stat(source).st_mtime) & 0xffffffff
+       
+                       # mtime that was encoded in the .pyc file.
+    2:                 with open(compiled, 'rb') as f:
+    2:                     mtime2 = struct.unpack('<L', f.read(8)[4:])[0]
+       
+    2:                 unlink(compiled)
+    2:                 unlink(source)
+       
+    2:                 self.assertEqual(mtime1, mtime2)
+               finally:
+    1:             sys.path.pop(0)
+       
+    1:     def test_replace_parent_in_sys_modules(self):
+    1:         dir_name = os.path.abspath(TESTFN)
+    1:         os.mkdir(dir_name)
+    1:         self.addCleanup(rmtree, dir_name)
+    1:         pkg_dir = os.path.join(dir_name, 'sa')
+    1:         os.mkdir(pkg_dir)
+    1:         with open(os.path.join(pkg_dir, '__init__.py'), 'w') as init_file:
+    1:             init_file.write("import v1")
+    1:         with open(os.path.join(pkg_dir, 'v1.py'), 'w') as v1_file:
+    1:             v1_file.write("import sys;"
+                                 "sys.modules['sa'] = sys.modules[__name__];"
+                                 "import sa")
+    1:         sys.path.insert(0, dir_name)
+    1:         self.addCleanup(sys.path.pop, 0)
+               # a segfault means the test failed!
+    1:         import sa
+       
+    1:     def test_fromlist_type(self):
+    1:         with self.assertRaises(TypeError) as cm:
+    1:             __import__('encodings', fromlist=[u'aliases'])
+    1:         self.assertIn('must be str, not unicode', str(cm.exception))
+    1:         with self.assertRaises(TypeError) as cm:
+    1:             __import__('encodings', fromlist=[1])
+    1:         self.assertIn('must be str, not int', str(cm.exception))
+       
+       
+    2: class PycRewritingTests(unittest.TestCase):
+           # Test that the `co_filename` attribute on code objects always points
+           # to the right file, even when various things happen (e.g. both the .py
+           # and the .pyc file are renamed).
+       
+    1:     module_name = "unlikely_module_name"
+           module_source = """
+       import sys
+       code_filename = sys._getframe().f_code.co_filename
+       module_filename = __file__
+       constant = 1
+       def func():
+           pass
+       func_filename = func.func_code.co_filename
+    1: """
+    1:     dir_name = os.path.abspath(TESTFN)
+    1:     file_name = os.path.join(dir_name, module_name) + os.extsep + "py"
+    1:     compiled_name = file_name + ("c" if __debug__ else "o")
+       
+    1:     def setUp(self):
+    4:         self.sys_path = sys.path[:]
+    4:         self.orig_module = sys.modules.pop(self.module_name, None)
+    4:         os.mkdir(self.dir_name)
+    4:         with open(self.file_name, "w") as f:
+    4:             f.write(self.module_source)
+    4:         sys.path.insert(0, self.dir_name)
+       
+    1:     def tearDown(self):
+    4:         sys.path[:] = self.sys_path
+    4:         if self.orig_module is not None:
+>>>>>>             sys.modules[self.module_name] = self.orig_module
+               else:
+    4:             unload(self.module_name)
+    4:         unlink(self.file_name)
+    4:         unlink(self.compiled_name)
+    4:         rmtree(self.dir_name)
+       
+    1:     def import_module(self):
+    5:         ns = globals()
+    5:         __import__(self.module_name, ns, ns)
+    5:         return sys.modules[self.module_name]
+       
+    1:     def test_basics(self):
+    1:         mod = self.import_module()
+    1:         self.assertEqual(mod.module_filename, self.file_name)
+    1:         self.assertEqual(mod.code_filename, self.file_name)
+    1:         self.assertEqual(mod.func_filename, self.file_name)
+    1:         del sys.modules[self.module_name]
+    1:         mod = self.import_module()
+    1:         if not sys.dont_write_bytecode:
+    1:             self.assertEqual(mod.module_filename, self.compiled_name)
+    1:         self.assertEqual(mod.code_filename, self.file_name)
+    1:         self.assertEqual(mod.func_filename, self.file_name)
+       
+    1:     def test_incorrect_code_name(self):
+    1:         py_compile.compile(self.file_name, dfile="another_module.py")
+    1:         mod = self.import_module()
+    1:         self.assertEqual(mod.module_filename, self.compiled_name)
+    1:         self.assertEqual(mod.code_filename, self.file_name)
+    1:         self.assertEqual(mod.func_filename, self.file_name)
+       
+    1:     def test_module_without_source(self):
+    1:         target = "another_module.py"
+    1:         py_compile.compile(self.file_name, dfile=target)
+    1:         os.remove(self.file_name)
+    1:         mod = self.import_module()
+    1:         self.assertEqual(mod.module_filename, self.compiled_name)
+    1:         self.assertEqual(mod.code_filename, target)
+    1:         self.assertEqual(mod.func_filename, target)
+       
+    1:     def test_foreign_code(self):
+    1:         py_compile.compile(self.file_name)
+    1:         with open(self.compiled_name, "rb") as f:
+    1:             header = f.read(8)
+    1:             code = marshal.load(f)
+    1:         constants = list(code.co_consts)
+    1:         foreign_code = test_main.func_code
+    1:         pos = constants.index(1)
+    1:         constants[pos] = foreign_code
+    1:         code = type(code)(code.co_argcount, code.co_nlocals, code.co_stacksize,
+    1:                           code.co_flags, code.co_code, tuple(constants),
+    1:                           code.co_names, code.co_varnames, code.co_filename,
+    1:                           code.co_name, code.co_firstlineno, code.co_lnotab,
+    1:                           code.co_freevars, code.co_cellvars)
+    1:         with open(self.compiled_name, "wb") as f:
+    1:             f.write(header)
+    1:             marshal.dump(code, f)
+    1:         mod = self.import_module()
+    1:         self.assertEqual(mod.constant.co_filename, foreign_code.co_filename)
+       
+       
+    2: class PathsTests(unittest.TestCase):
+    1:     path = TESTFN
+       
+    1:     def setUp(self):
+    1:         os.mkdir(self.path)
+    1:         self.syspath = sys.path[:]
+       
+    1:     def tearDown(self):
+    1:         rmtree(self.path)
+    1:         sys.path[:] = self.syspath
+       
+           # Regression test for http://bugs.python.org/issue1293.
+    1:     def test_trailing_slash(self):
+    1:         with open(os.path.join(self.path, 'test_trailing_slash.py'), 'w') as f:
+    1:             f.write("testdata = 'test_trailing_slash'")
+    1:         sys.path.append(self.path+'/')
+    1:         mod = __import__("test_trailing_slash")
+    1:         self.assertEqual(mod.testdata, 'test_trailing_slash')
+    1:         unload("test_trailing_slash")
+       
+           # Regression test for http://bugs.python.org/issue3677.
+    1:     def _test_UNC_path(self):
+>>>>>>         with open(os.path.join(self.path, 'test_trailing_slash.py'), 'w') as f:
+>>>>>>             f.write("testdata = 'test_trailing_slash'")
+               # Create the UNC path, like \\myhost\c$\foo\bar.
+>>>>>>         path = os.path.abspath(self.path)
+>>>>>>         import socket
+>>>>>>         hn = socket.gethostname()
+>>>>>>         drive = path[0]
+>>>>>>         unc = "\\\\%s\\%s$"%(hn, drive)
+>>>>>>         unc += path[2:]
+>>>>>>         try:
+>>>>>>             os.listdir(unc)
+>>>>>>         except OSError as e:
+>>>>>>             if e.errno in (errno.EPERM, errno.EACCES, errno.ENOENT):
+                       # See issue #15338
+>>>>>>                 self.skipTest("cannot access administrative share %r" % (unc,))
+>>>>>>             raise
+>>>>>>         sys.path.append(path)
+>>>>>>         mod = __import__("test_trailing_slash")
+>>>>>>         self.assertEqual(mod.testdata, 'test_trailing_slash')
+>>>>>>         unload("test_trailing_slash")
+       
+    1:     if sys.platform == "win32":
+>>>>>>         test_UNC_path = _test_UNC_path
+       
+       
+    2: class RelativeImportTests(unittest.TestCase):
+       
+    1:     def tearDown(self):
+    6:         unload("test.relimport")
+    1:     setUp = tearDown
+       
+    1:     def test_relimport_star(self):
+               # This will import * from .test_import.
+    1:         from . import relimport
+    1:         self.assertTrue(hasattr(relimport, "RelativeImportTests"))
+       
+    1:     def test_issue3221(self):
+               # Regression test for http://bugs.python.org/issue3221.
+    1:         def check_absolute():
+    5:             exec "from os import path" in ns
+    1:         def check_relative():
+    5:             exec "from . import relimport" in ns
+       
+               # Check both OK with __package__ and __name__ correct
+    1:         ns = dict(__package__='test', __name__='test.notarealmodule')
+    1:         check_absolute()
+    1:         check_relative()
+       
+               # Check both OK with only __name__ wrong
+    1:         ns = dict(__package__='test', __name__='notarealpkg.notarealmodule')
+    1:         check_absolute()
+    1:         check_relative()
+       
+               # Check relative fails with only __package__ wrong
+    1:         ns = dict(__package__='foo', __name__='test.notarealmodule')
+    1:         with check_warnings(('.+foo', RuntimeWarning)):
+    1:             check_absolute()
+    1:         self.assertRaises(SystemError, check_relative)
+       
+               # Check relative fails with __package__ and __name__ wrong
+    1:         ns = dict(__package__='foo', __name__='notarealpkg.notarealmodule')
+    1:         with check_warnings(('.+foo', RuntimeWarning)):
+    1:             check_absolute()
+    1:         self.assertRaises(SystemError, check_relative)
+       
+               # Check both fail with package set to a non-string
+    1:         ns = dict(__package__=object())
+    1:         self.assertRaises(ValueError, check_absolute)
+    1:         self.assertRaises(ValueError, check_relative)
+       
+    1:     def test_absolute_import_without_future(self):
+               # If explicit relative import syntax is used, then do not try
+               # to perform an absolute import in the face of failure.
+               # Issue #7902.
+    1:         with self.assertRaises(ImportError):
+    1:             from .os import sep
+>>>>>>             self.fail("explicit relative import triggered an "
+                             "implicit absolute import")
+       
+       
+    2: class TestSymbolicallyLinkedPackage(unittest.TestCase):
+    1:     package_name = 'sample'
+       
+    1:     def setUp(self):
+    1:         if os.path.exists(self.tagged):
+>>>>>>             shutil.rmtree(self.tagged)
+    1:         if os.path.exists(self.package_name):
+>>>>>>             symlink_support.remove_symlink(self.package_name)
+    1:         self.orig_sys_path = sys.path[:]
+       
+               # create a sample package; imagine you have a package with a tag and
+               #  you want to symbolically link it from its untagged name.
+    1:         os.mkdir(self.tagged)
+    1:         init_file = os.path.join(self.tagged, '__init__.py')
+    1:         open(init_file, 'w').close()
+    1:         assert os.path.exists(init_file)
+       
+               # now create a symlink to the tagged package
+               # sample -> sample-tagged
+    1:         symlink_support.symlink(self.tagged, self.package_name)
+       
+    1:         assert os.path.isdir(self.package_name)
+    1:         assert os.path.isfile(os.path.join(self.package_name, '__init__.py'))
+       
+    1:     @property
+           def tagged(self):
+    6:         return self.package_name + '-tagged'
+       
+           # regression test for issue6727
+    1:     @unittest.skipUnless(
+    1:         not hasattr(sys, 'getwindowsversion')
+>>>>>>         or sys.getwindowsversion() >= (6, 0),
+    1:         "Windows Vista or later required")
+    1:     @symlink_support.skip_unless_symlink
+           def test_symlinked_dir_importable(self):
+               # make sure sample can only be imported from the current directory.
+    1:         sys.path[:] = ['.']
+       
+               # and try to import the package
+    1:         __import__(self.package_name)
+       
+    1:     def tearDown(self):
+               # now cleanup
+    1:         if os.path.exists(self.package_name):
+    1:             symlink_support.remove_symlink(self.package_name)
+    1:         if os.path.exists(self.tagged):
+    1:             shutil.rmtree(self.tagged)
+    1:         sys.path[:] = self.orig_sys_path
+       
+    1: def test_main(verbose=None):
+    1:     run_unittest(ImportTests, PycRewritingTests, PathsTests,
+    1:         RelativeImportTests, TestSymbolicallyLinkedPackage)
+       
+    1: if __name__ == '__main__':
+           # Test needs to be a package, so we can do relative imports.
+>>>>>>     from test.test_import import test_main
+>>>>>>     test_main()

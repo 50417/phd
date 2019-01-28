@@ -1,0 +1,284 @@
+    1: from test.test_support import findfile, TESTFN, unlink
+    1: import unittest
+    1: import array
+    1: import io
+    1: import pickle
+    1: import sys
+    1: import base64
+       
+    2: class UnseekableIO(file):
+    1:     def tell(self):
+   66:         raise io.UnsupportedOperation
+       
+    1:     def seek(self, *args, **kwargs):
+>>>>>>         raise io.UnsupportedOperation
+       
+    1: def fromhex(s):
+   13:     return base64.b16decode(s.replace(' ', ''))
+       
+    1: def byteswap2(data):
+    3:     a = array.array('h')
+    3:     a.fromstring(data)
+    3:     a.byteswap()
+    3:     return a.tostring()
+       
+    1: def byteswap3(data):
+    1:     ba = bytearray(data)
+    1:     ba[::3] = data[2::3]
+    1:     ba[2::3] = data[::3]
+    1:     return bytes(ba)
+       
+    1: def byteswap4(data):
+    1:     a = array.array('i')
+    1:     a.fromstring(data)
+    1:     a.byteswap()
+    1:     return a.tostring()
+       
+       
+    2: class AudioTests:
+    1:     close_fd = False
+       
+    1:     def setUp(self):
+  196:         self.f = self.fout = None
+       
+    1:     def tearDown(self):
+  196:         if self.f is not None:
+   62:             self.f.close()
+  196:         if self.fout is not None:
+  137:             self.fout.close()
+  196:         unlink(TESTFN)
+       
+    1:     def check_params(self, f, nchannels, sampwidth, framerate, nframes,
+                            comptype, compname):
+   30:         self.assertEqual(f.getnchannels(), nchannels)
+   30:         self.assertEqual(f.getsampwidth(), sampwidth)
+   30:         self.assertEqual(f.getframerate(), framerate)
+   30:         self.assertEqual(f.getnframes(), nframes)
+   30:         self.assertEqual(f.getcomptype(), comptype)
+   30:         self.assertEqual(f.getcompname(), compname)
+       
+   30:         params = f.getparams()
+   30:         self.assertEqual(params,
+   30:                 (nchannels, sampwidth, framerate, nframes, comptype, compname))
+       
+  120:         for proto in range(pickle.HIGHEST_PROTOCOL + 1):
+   90:             dump = pickle.dumps(params, proto)
+   90:             self.assertEqual(pickle.loads(dump), params)
+       
+       
+    2: class AudioWriteTests(AudioTests):
+       
+    1:     def create_file(self, testfile):
+  117:         f = self.fout = self.module.open(testfile, 'wb')
+  117:         f.setnchannels(self.nchannels)
+  117:         f.setsampwidth(self.sampwidth)
+  117:         f.setframerate(self.framerate)
+  117:         f.setcomptype(self.comptype, self.compname)
+  117:         return f
+       
+    1:     def check_file(self, testfile, nframes, frames):
+  102:         f = self.module.open(testfile, 'rb')
+  102:         try:
+  102:             self.assertEqual(f.getnchannels(), self.nchannels)
+  102:             self.assertEqual(f.getsampwidth(), self.sampwidth)
+  102:             self.assertEqual(f.getframerate(), self.framerate)
+  102:             self.assertEqual(f.getnframes(), nframes)
+  102:             self.assertEqual(f.readframes(nframes), frames)
+               finally:
+  102:             f.close()
+       
+    1:     def test_write_params(self):
+   15:         f = self.create_file(TESTFN)
+   15:         f.setnframes(self.nframes)
+   15:         f.writeframes(self.frames)
+   15:         self.check_params(f, self.nchannels, self.sampwidth, self.framerate,
+   15:                           self.nframes, self.comptype, self.compname)
+   15:         f.close()
+       
+    1:     def test_write(self):
+   15:         f = self.create_file(TESTFN)
+   15:         f.setnframes(self.nframes)
+   15:         f.writeframes(self.frames)
+   15:         f.close()
+       
+   15:         self.check_file(TESTFN, self.nframes, self.frames)
+       
+    1:     def test_incompleted_write(self):
+   15:         with open(TESTFN, 'wb') as testfile:
+   15:             testfile.write(b'ababagalamaga')
+   15:             f = self.create_file(testfile)
+   15:             f.setnframes(self.nframes + 1)
+   15:             f.writeframes(self.frames)
+   15:             f.close()
+       
+   15:         with open(TESTFN, 'rb') as testfile:
+   15:             self.assertEqual(testfile.read(13), b'ababagalamaga')
+   15:             self.check_file(testfile, self.nframes, self.frames)
+       
+    1:     def test_multiple_writes(self):
+   15:         with open(TESTFN, 'wb') as testfile:
+   15:             testfile.write(b'ababagalamaga')
+   15:             f = self.create_file(testfile)
+   15:             f.setnframes(self.nframes)
+   15:             framesize = self.nchannels * self.sampwidth
+   15:             f.writeframes(self.frames[:-framesize])
+   15:             f.writeframes(self.frames[-framesize:])
+   15:             f.close()
+       
+   15:         with open(TESTFN, 'rb') as testfile:
+   15:             self.assertEqual(testfile.read(13), b'ababagalamaga')
+   15:             self.check_file(testfile, self.nframes, self.frames)
+       
+    1:     def test_overflowed_write(self):
+   15:         with open(TESTFN, 'wb') as testfile:
+   15:             testfile.write(b'ababagalamaga')
+   15:             f = self.create_file(testfile)
+   15:             f.setnframes(self.nframes - 1)
+   15:             f.writeframes(self.frames)
+   15:             f.close()
+       
+   15:         with open(TESTFN, 'rb') as testfile:
+   15:             self.assertEqual(testfile.read(13), b'ababagalamaga')
+   15:             self.check_file(testfile, self.nframes, self.frames)
+       
+    1:     def test_unseekable_read(self):
+    9:         f = self.create_file(TESTFN)
+    9:         f.setnframes(self.nframes)
+    9:         f.writeframes(self.frames)
+    9:         f.close()
+       
+    9:         with UnseekableIO(TESTFN, 'rb') as testfile:
+    9:             self.check_file(testfile, self.nframes, self.frames)
+       
+    1:     def test_unseekable_write(self):
+   11:         with UnseekableIO(TESTFN, 'wb') as testfile:
+   11:             f = self.create_file(testfile)
+   11:             f.setnframes(self.nframes)
+   11:             f.writeframes(self.frames)
+   11:             f.close()
+   11:             self.fout = None
+       
+   11:         self.check_file(TESTFN, self.nframes, self.frames)
+       
+    1:     def test_unseekable_incompleted_write(self):
+   11:         with UnseekableIO(TESTFN, 'wb') as testfile:
+   11:             testfile.write(b'ababagalamaga')
+   11:             f = self.create_file(testfile)
+   11:             f.setnframes(self.nframes + 1)
+   11:             try:
+   11:                 f.writeframes(self.frames)
+   11:             except IOError:
+   11:                 pass
+   11:             try:
+   11:                 f.close()
+   11:             except IOError:
+   11:                 pass
+       
+   11:         with open(TESTFN, 'rb') as testfile:
+   11:             self.assertEqual(testfile.read(13), b'ababagalamaga')
+   11:             self.check_file(testfile, self.nframes + 1, self.frames)
+       
+    1:     def test_unseekable_overflowed_write(self):
+   11:         with UnseekableIO(TESTFN, 'wb') as testfile:
+   11:             testfile.write(b'ababagalamaga')
+   11:             f = self.create_file(testfile)
+   11:             f.setnframes(self.nframes - 1)
+   11:             try:
+   11:                 f.writeframes(self.frames)
+   11:             except IOError:
+   11:                 pass
+   11:             try:
+   11:                 f.close()
+   11:             except IOError:
+   11:                 pass
+       
+   11:         with open(TESTFN, 'rb') as testfile:
+   11:             self.assertEqual(testfile.read(13), b'ababagalamaga')
+   11:             framesize = self.nchannels * self.sampwidth
+   11:             self.check_file(testfile, self.nframes - 1, self.frames[:-framesize])
+       
+       
+    2: class AudioTestsWithSourceFile(AudioTests):
+       
+    1:     @classmethod
+           def setUpClass(cls):
+   13:         cls.sndfilepath = findfile(cls.sndfilename, subdir='audiodata')
+       
+    1:     def test_read_params(self):
+   15:         f = self.f = self.module.open(self.sndfilepath)
+               #self.assertEqual(f.getfp().name, self.sndfilepath)
+   15:         self.check_params(f, self.nchannels, self.sampwidth, self.framerate,
+   15:                           self.sndfilenframes, self.comptype, self.compname)
+       
+    1:     def test_close(self):
+   15:         with open(self.sndfilepath, 'rb') as testfile:
+   15:             f = self.f = self.module.open(testfile)
+   15:             self.assertFalse(testfile.closed)
+   15:             f.close()
+   15:             self.assertEqual(testfile.closed, self.close_fd)
+   15:         with open(TESTFN, 'wb') as testfile:
+   15:             fout = self.fout = self.module.open(testfile, 'wb')
+   15:             self.assertFalse(testfile.closed)
+   15:             with self.assertRaises(self.module.Error):
+   15:                 fout.close()
+   15:             self.assertEqual(testfile.closed, self.close_fd)
+   15:             fout.close() # do nothing
+       
+    1:     def test_read(self):
+   15:         framesize = self.nchannels * self.sampwidth
+   15:         chunk1 = self.frames[:2 * framesize]
+   15:         chunk2 = self.frames[2 * framesize: 4 * framesize]
+   15:         f = self.f = self.module.open(self.sndfilepath)
+   15:         self.assertEqual(f.readframes(0), b'')
+   15:         self.assertEqual(f.tell(), 0)
+   15:         self.assertEqual(f.readframes(2), chunk1)
+   15:         f.rewind()
+   15:         pos0 = f.tell()
+   15:         self.assertEqual(pos0, 0)
+   15:         self.assertEqual(f.readframes(2), chunk1)
+   15:         pos2 = f.tell()
+   15:         self.assertEqual(pos2, 2)
+   15:         self.assertEqual(f.readframes(2), chunk2)
+   15:         f.setpos(pos2)
+   15:         self.assertEqual(f.readframes(2), chunk2)
+   15:         f.setpos(pos0)
+   15:         self.assertEqual(f.readframes(2), chunk1)
+   15:         with self.assertRaises(self.module.Error):
+   15:             f.setpos(-1)
+   15:         with self.assertRaises(self.module.Error):
+   15:             f.setpos(f.getnframes() + 1)
+       
+    1:     def test_copy(self):
+   15:         f = self.f = self.module.open(self.sndfilepath)
+   15:         fout = self.fout = self.module.open(TESTFN, 'wb')
+   15:         fout.setparams(f.getparams())
+   15:         i = 0
+   15:         n = f.getnframes()
+ 1230:         while n > 0:
+ 1215:             i += 1
+ 1215:             fout.writeframes(f.readframes(i))
+ 1215:             n -= i
+   15:         fout.close()
+   15:         fout = self.fout = self.module.open(TESTFN, 'rb')
+   15:         f.rewind()
+   15:         self.assertEqual(f.getparams(), fout.getparams())
+   15:         self.assertEqual(f.readframes(f.getnframes()),
+   15:                          fout.readframes(fout.getnframes()))
+       
+    1:     def test_read_not_from_start(self):
+   15:         with open(TESTFN, 'wb') as testfile:
+   15:             testfile.write(b'ababagalamaga')
+   15:             with open(self.sndfilepath, 'rb') as f:
+   15:                 testfile.write(f.read())
+       
+   15:         with open(TESTFN, 'rb') as testfile:
+   15:             self.assertEqual(testfile.read(13), b'ababagalamaga')
+   15:             f = self.module.open(testfile, 'rb')
+   15:             try:
+   15:                 self.assertEqual(f.getnchannels(), self.nchannels)
+   15:                 self.assertEqual(f.getsampwidth(), self.sampwidth)
+   15:                 self.assertEqual(f.getframerate(), self.framerate)
+   15:                 self.assertEqual(f.getnframes(), self.sndfilenframes)
+   15:                 self.assertEqual(f.readframes(self.nframes), self.frames)
+                   finally:
+   15:                 f.close()

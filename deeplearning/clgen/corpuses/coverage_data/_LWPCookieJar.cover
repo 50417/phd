@@ -1,0 +1,170 @@
+       """Load / save to libwww-perl (LWP) format files.
+       
+       Actually, the format is slightly extended from that used by LWP's
+       (libwww-perl's) HTTP::Cookies, to avoid losing some RFC 2965 information
+       not recorded by LWP.
+       
+       It uses the version string "2.0", though really there isn't an LWP Cookies
+       2.0 format.  This indicates that there is extra information in here
+       (domain_dot and # port_spec) while still being compatible with
+       libwww-perl, I hope.
+       
+    1: """
+       
+    1: import time, re
+    1: from cookielib import (_warn_unhandled_exception, FileCookieJar, LoadError,
+                              Cookie, MISSING_FILENAME_TEXT,
+                              join_header_words, split_header_words,
+                              iso2time, time2isoz)
+       
+    1: def lwp_cookie_str(cookie):
+           """Return string representation of Cookie in the LWP cookie file format.
+       
+           Actually, the format is extended a bit -- see module docstring.
+       
+           """
+    8:     h = [(cookie.name, cookie.value),
+    8:          ("path", cookie.path),
+    8:          ("domain", cookie.domain)]
+    8:     if cookie.port is not None: h.append(("port", cookie.port))
+    8:     if cookie.path_specified: h.append(("path_spec", None))
+    8:     if cookie.port_specified: h.append(("port_spec", None))
+    8:     if cookie.domain_initial_dot: h.append(("domain_dot", None))
+    8:     if cookie.secure: h.append(("secure", None))
+    8:     if cookie.expires: h.append(("expires",
+    2:                                time2isoz(float(cookie.expires))))
+    8:     if cookie.discard: h.append(("discard", None))
+    8:     if cookie.comment: h.append(("comment", cookie.comment))
+    8:     if cookie.comment_url: h.append(("commenturl", cookie.comment_url))
+       
+    8:     keys = cookie._rest.keys()
+    8:     keys.sort()
+    8:     for k in keys:
+>>>>>>         h.append((k, str(cookie._rest[k])))
+       
+    8:     h.append(("version", str(cookie.version)))
+       
+    8:     return join_header_words([h])
+       
+    2: class LWPCookieJar(FileCookieJar):
+           """
+           The LWPCookieJar saves a sequence of "Set-Cookie3" lines.
+           "Set-Cookie3" is the format used by the libwww-perl library, not known
+           to be compatible with any browser, but which is easy to read and
+           doesn't lose information about RFC 2965 cookies.
+       
+           Additional methods
+       
+           as_lwp_str(ignore_discard=True, ignore_expired=True)
+       
+    1:     """
+       
+    1:     def as_lwp_str(self, ignore_discard=True, ignore_expires=True):
+               """Return cookies as a string of "\\n"-separated "Set-Cookie3" headers.
+       
+               ignore_discard and ignore_expires: see docstring for FileCookieJar.save
+       
+               """
+    2:         now = time.time()
+    2:         r = []
+    9:         for cookie in self:
+    7:             if not ignore_discard and cookie.discard:
+>>>>>>                 continue
+    7:             if not ignore_expires and cookie.is_expired(now):
+>>>>>>                 continue
+    7:             r.append("Set-Cookie3: %s" % lwp_cookie_str(cookie))
+    2:         return "\n".join(r+[""])
+       
+    1:     def save(self, filename=None, ignore_discard=False, ignore_expires=False):
+    2:         if filename is None:
+>>>>>>             if self.filename is not None: filename = self.filename
+>>>>>>             else: raise ValueError(MISSING_FILENAME_TEXT)
+       
+    2:         f = open(filename, "w")
+    2:         try:
+                   # There really isn't an LWP Cookies 2.0 format, but this indicates
+                   # that there is extra information in here (domain_dot and
+                   # port_spec) while still being compatible with libwww-perl, I hope.
+    2:             f.write("#LWP-Cookies-2.0\n")
+    2:             f.write(self.as_lwp_str(ignore_discard, ignore_expires))
+               finally:
+    2:             f.close()
+       
+    1:     def _really_load(self, f, filename, ignore_discard, ignore_expires):
+    3:         magic = f.readline()
+    3:         if not re.search(self.magic_re, magic):
+    1:             msg = ("%r does not look like a Set-Cookie3 (LWP) format "
+    1:                    "file" % filename)
+    1:             raise LoadError(msg)
+       
+    2:         now = time.time()
+       
+    2:         header = "Set-Cookie3:"
+               boolean_attrs = ("port_spec", "path_spec", "domain_dot",
+    2:                          "secure", "discard")
+               value_attrs = ("version",
+                              "port", "path", "domain",
+                              "expires",
+    2:                        "comment", "commenturl")
+       
+    2:         try:
+    2:             while 1:
+    9:                 line = f.readline()
+    9:                 if line == "": break
+    7:                 if not line.startswith(header):
+>>>>>>                     continue
+    7:                 line = line[len(header):].strip()
+       
+   14:                 for data in split_header_words([line]):
+    7:                     name, value = data[0]
+    7:                     standard = {}
+    7:                     rest = {}
+   42:                     for k in boolean_attrs:
+   35:                         standard[k] = False
+   45:                     for k, v in data[1:]:
+   38:                         if k is not None:
+   38:                             lc = k.lower()
+                               else:
+>>>>>>                             lc = None
+                               # don't lose case distinction for unknown fields
+   38:                         if (lc in value_attrs) or (lc in boolean_attrs):
+   38:                             k = lc
+   38:                         if k in boolean_attrs:
+   12:                             if v is None: v = True
+   12:                             standard[k] = v
+   26:                         elif k in value_attrs:
+   26:                             standard[k] = v
+                               else:
+>>>>>>                             rest[k] = v
+       
+    7:                     h = standard.get
+    7:                     expires = h("expires")
+    7:                     discard = h("discard")
+    7:                     if expires is not None:
+    2:                         expires = iso2time(expires)
+    7:                     if expires is None:
+    5:                         discard = True
+    7:                     domain = h("domain")
+    7:                     domain_specified = domain.startswith(".")
+    7:                     c = Cookie(h("version"), name, value,
+    7:                                h("port"), h("port_spec"),
+    7:                                domain, domain_specified, h("domain_dot"),
+    7:                                h("path"), h("path_spec"),
+    7:                                h("secure"),
+    7:                                expires,
+    7:                                discard,
+    7:                                h("comment"),
+    7:                                h("commenturl"),
+    7:                                rest)
+    7:                     if not ignore_discard and c.discard:
+>>>>>>                         continue
+    7:                     if not ignore_expires and c.is_expired(now):
+>>>>>>                         continue
+    7:                     self.set_cookie(c)
+       
+>>>>>>         except IOError:
+>>>>>>             raise
+>>>>>>         except Exception:
+>>>>>>             _warn_unhandled_exception()
+>>>>>>             raise LoadError("invalid Set-Cookie3 format file %r: %r" %
+>>>>>>                             (filename, line))

@@ -1,0 +1,769 @@
+       """distutils.command.build_ext
+       
+       Implements the Distutils 'build_ext' command, for building extension
+       modules (currently limited to C extensions, should accommodate C++
+    1: extensions ASAP)."""
+       
+       # This module should be kept compatible with Python 2.1.
+       
+    1: __revision__ = "$Id$"
+       
+    1: import sys, os, string, re
+    1: from types import *
+    1: from site import USER_BASE, USER_SITE
+    1: from distutils.core import Command
+    1: from distutils.errors import *
+    1: from distutils.sysconfig import customize_compiler, get_python_version
+    1: from distutils.dep_util import newer_group
+    1: from distutils.extension import Extension
+    1: from distutils.util import get_platform
+    1: from distutils import log
+       
+    1: if os.name == 'nt':
+>>>>>>     from distutils.msvccompiler import get_build_version
+>>>>>>     MSVC_VERSION = int(get_build_version())
+       
+       # An extension name is just a dot-separated list of Python NAMEs (ie.
+       # the same as a fully-qualified module name).
+    1: extension_name_re = re.compile \
+    1:     (r'^[a-zA-Z_][a-zA-Z_0-9]*(\.[a-zA-Z_][a-zA-Z_0-9]*)*$')
+       
+       
+    1: def show_compilers ():
+>>>>>>     from distutils.ccompiler import show_compilers
+>>>>>>     show_compilers()
+       
+       
+    2: class build_ext (Command):
+       
+    1:     description = "build C/C++ extensions (compile/link to build directory)"
+       
+           # XXX thoughts on how to deal with complex command-line options like
+           # these, i.e. how to make it so fancy_getopt can suck them off the
+           # command line and make it look like setup.py defined the appropriate
+           # lists of tuples of what-have-you.
+           #   - each command needs a callback to process its command-line options
+           #   - Command.__init__() needs access to its share of the whole
+           #     command line (must ultimately come from
+           #     Distribution.parse_command_line())
+           #   - it then calls the current command class' option-parsing
+           #     callback to deal with weird options like -D, which have to
+           #     parse the option text and churn out some custom data
+           #     structure
+           #   - that data structure (in this case, a list of 2-tuples)
+           #     will then be present in the command object by the time
+           #     we get to finalize_options() (i.e. the constructor
+           #     takes care of both command-line and client options
+           #     in between initialize_options() and finalize_options())
+       
+    1:     sep_by = " (separated by '%s')" % os.pathsep
+           user_options = [
+               ('build-lib=', 'b',
+    1:          "directory for compiled extension modules"),
+               ('build-temp=', 't',
+    1:          "directory for temporary files (build by-products)"),
+    1:         ('plat-name=', 'p',
+    1:          "platform name to cross-compile for, if supported "
+    1:          "(default: %s)" % get_platform()),
+    1:         ('inplace', 'i',
+    1:          "ignore build-lib and put compiled extensions into the source " +
+    1:          "directory alongside your pure Python modules"),
+    1:         ('include-dirs=', 'I',
+    1:          "list of directories to search for header files" + sep_by),
+               ('define=', 'D',
+    1:          "C preprocessor macros to define"),
+               ('undef=', 'U',
+    1:          "C preprocessor macros to undefine"),
+               ('libraries=', 'l',
+    1:          "external C libraries to link with"),
+    1:         ('library-dirs=', 'L',
+    1:          "directories to search for external C libraries" + sep_by),
+               ('rpath=', 'R',
+    1:          "directories to search for shared C libraries at runtime"),
+               ('link-objects=', 'O',
+    1:          "extra explicit link objects to include in the link"),
+               ('debug', 'g',
+    1:          "compile/link with debugging information"),
+               ('force', 'f',
+    1:          "forcibly build everything (ignore file timestamps)"),
+               ('compiler=', 'c',
+    1:          "specify the compiler type"),
+               ('swig-cpp', None,
+    1:          "make SWIG create C++ files (default is C)"),
+               ('swig-opts=', None,
+    1:          "list of SWIG command line options"),
+               ('swig=', None,
+    1:          "path to the SWIG executable"),
+               ('user', None,
+    1:          "add user include, library and rpath"),
+               ]
+       
+    1:     boolean_options = ['inplace', 'debug', 'force', 'swig-cpp', 'user']
+       
+           help_options = [
+    1:         ('help-compiler', None,
+    1:          "list available compilers", show_compilers),
+               ]
+       
+    1:     def initialize_options (self):
+   25:         self.extensions = None
+   25:         self.build_lib = None
+   25:         self.plat_name = None
+   25:         self.build_temp = None
+   25:         self.inplace = 0
+   25:         self.package = None
+       
+   25:         self.include_dirs = None
+   25:         self.define = None
+   25:         self.undef = None
+   25:         self.libraries = None
+   25:         self.library_dirs = None
+   25:         self.rpath = None
+   25:         self.link_objects = None
+   25:         self.debug = None
+   25:         self.force = None
+   25:         self.compiler = None
+   25:         self.swig = None
+   25:         self.swig_cpp = None
+   25:         self.swig_opts = None
+   25:         self.user = None
+       
+    1:     def finalize_options(self):
+   24:         from distutils import sysconfig
+       
+   24:         self.set_undefined_options('build',
+   24:                                    ('build_lib', 'build_lib'),
+   24:                                    ('build_temp', 'build_temp'),
+   24:                                    ('compiler', 'compiler'),
+   24:                                    ('debug', 'debug'),
+   24:                                    ('force', 'force'),
+   24:                                    ('plat_name', 'plat_name'),
+                                          )
+       
+   24:         if self.package is None:
+   24:             self.package = self.distribution.ext_package
+       
+   24:         self.extensions = self.distribution.ext_modules
+       
+               # Make sure Python's include directories (for Python.h, pyconfig.h,
+               # etc.) are in the include search path.
+   24:         py_include = sysconfig.get_python_inc()
+   24:         plat_py_include = sysconfig.get_python_inc(plat_specific=1)
+   24:         if self.include_dirs is None:
+   24:             self.include_dirs = self.distribution.include_dirs or []
+   24:         if isinstance(self.include_dirs, str):
+>>>>>>             self.include_dirs = self.include_dirs.split(os.pathsep)
+       
+               # Put the Python "system" include dir at the end, so that
+               # any local include dirs take precedence.
+   24:         self.include_dirs.append(py_include)
+   24:         if plat_py_include != py_include:
+>>>>>>             self.include_dirs.append(plat_py_include)
+       
+   24:         self.ensure_string_list('libraries')
+   24:         self.ensure_string_list('link_objects')
+       
+               # Life is easier if we're not forever checking for None, so
+               # simplify these options to empty lists if unset
+   24:         if self.libraries is None:
+   23:             self.libraries = []
+   24:         if self.library_dirs is None:
+   23:             self.library_dirs = []
+    1:         elif type(self.library_dirs) is StringType:
+    1:             self.library_dirs = string.split(self.library_dirs, os.pathsep)
+       
+   24:         if self.rpath is None:
+   23:             self.rpath = []
+    1:         elif type(self.rpath) is StringType:
+    1:             self.rpath = string.split(self.rpath, os.pathsep)
+       
+               # for extensions under windows use different directories
+               # for Release and Debug builds.
+               # also Python's library directory must be appended to library_dirs
+   24:         if os.name == 'nt':
+                   # the 'libs' directory is for binary installs - we assume that
+                   # must be the *native* platform.  But we don't really support
+                   # cross-compiling via a binary install anyway, so we let it go.
+>>>>>>             self.library_dirs.append(os.path.join(sys.exec_prefix, 'libs'))
+>>>>>>             if self.debug:
+>>>>>>                 self.build_temp = os.path.join(self.build_temp, "Debug")
+                   else:
+>>>>>>                 self.build_temp = os.path.join(self.build_temp, "Release")
+       
+                   # Append the source distribution include and library directories,
+                   # this allows distutils on windows to work in the source tree
+>>>>>>             self.include_dirs.append(os.path.join(sys.exec_prefix, 'PC'))
+>>>>>>             if MSVC_VERSION == 9:
+                       # Use the .lib files for the correct architecture
+>>>>>>                 if self.plat_name == 'win32':
+>>>>>>                     suffix = ''
+                       else:
+                           # win-amd64 or win-ia64
+>>>>>>                     suffix = self.plat_name[4:]
+                       # We could have been built in one of two places; add both
+>>>>>>                 for d in ('PCbuild',), ('PC', 'VS9.0'):
+>>>>>>                     new_lib = os.path.join(sys.exec_prefix, *d)
+>>>>>>                     if suffix:
+>>>>>>                         new_lib = os.path.join(new_lib, suffix)
+>>>>>>                     self.library_dirs.append(new_lib)
+       
+>>>>>>             elif MSVC_VERSION == 8:
+>>>>>>                 self.library_dirs.append(os.path.join(sys.exec_prefix,
+>>>>>>                                          'PC', 'VS8.0'))
+>>>>>>             elif MSVC_VERSION == 7:
+>>>>>>                 self.library_dirs.append(os.path.join(sys.exec_prefix,
+>>>>>>                                          'PC', 'VS7.1'))
+                   else:
+>>>>>>                 self.library_dirs.append(os.path.join(sys.exec_prefix,
+>>>>>>                                          'PC', 'VC6'))
+       
+               # OS/2 (EMX) doesn't support Debug vs Release builds, but has the
+               # import libraries in its "Config" subdirectory
+   24:         if os.name == 'os2':
+>>>>>>             self.library_dirs.append(os.path.join(sys.exec_prefix, 'Config'))
+       
+               # for extensions under Cygwin and AtheOS Python's library directory must be
+               # appended to library_dirs
+   24:         if sys.platform[:6] == 'cygwin' or sys.platform[:6] == 'atheos':
+>>>>>>             if sys.executable.startswith(os.path.join(sys.exec_prefix, "bin")):
+                       # building third party extensions
+>>>>>>                 self.library_dirs.append(os.path.join(sys.prefix, "lib",
+>>>>>>                                                       "python" + get_python_version(),
+>>>>>>                                                       "config"))
+                   else:
+                       # building python standard extensions
+>>>>>>                 self.library_dirs.append('.')
+       
+               # For building extensions with a shared Python library,
+               # Python's library directory must be appended to library_dirs
+               # See Issues: #1600860, #4366
+   24:         if (sysconfig.get_config_var('Py_ENABLE_SHARED')):
+    1:             if not sysconfig.python_build:
+                       # building third party extensions
+    1:                 self.library_dirs.append(sysconfig.get_config_var('LIBDIR'))
+                   else:
+                       # building python standard extensions
+>>>>>>                 self.library_dirs.append('.')
+       
+               # The argument parsing will result in self.define being a string, but
+               # it has to be a list of 2-tuples.  All the preprocessor symbols
+               # specified by the 'define' option will be set to '1'.  Multiple
+               # symbols can be separated with commas.
+       
+   24:         if self.define:
+    1:             defines = self.define.split(',')
+    3:             self.define = map(lambda symbol: (symbol, '1'), defines)
+       
+               # The option for macros to undefine is also a string from the
+               # option parsing, but has to be a list.  Multiple symbols can also
+               # be separated with commas here.
+   24:         if self.undef:
+    1:             self.undef = self.undef.split(',')
+       
+   24:         if self.swig_opts is None:
+   23:             self.swig_opts = []
+               else:
+    1:             self.swig_opts = self.swig_opts.split(' ')
+       
+               # Finally add the user include and library directories if requested
+   24:         if self.user:
+    1:             user_include = os.path.join(USER_BASE, "include")
+    1:             user_lib = os.path.join(USER_BASE, "lib")
+    1:             if os.path.isdir(user_include):
+    1:                 self.include_dirs.append(user_include)
+    1:             if os.path.isdir(user_lib):
+    1:                 self.library_dirs.append(user_lib)
+    1:                 self.rpath.append(user_lib)
+       
+    1:     def run(self):
+    8:         from distutils.ccompiler import new_compiler
+       
+               # 'self.extensions', as supplied by setup.py, is a list of
+               # Extension instances.  See the documentation for Extension (in
+               # distutils.extension) for details.
+               #
+               # For backwards compatibility with Distutils 0.8.2 and earlier, we
+               # also allow the 'extensions' list to be a list of tuples:
+               #    (ext_name, build_info)
+               # where build_info is a dictionary containing everything that
+               # Extension instances do except the name, with a few things being
+               # differently named.  We convert these 2-tuples to Extension
+               # instances as needed.
+       
+    8:         if not self.extensions:
+    1:             return
+       
+               # If we were asked to build any C/C++ libraries, make sure that the
+               # directory where we put them is in the library search path for
+               # linking extensions.
+    7:         if self.distribution.has_c_libraries():
+>>>>>>             build_clib = self.get_finalized_command('build_clib')
+>>>>>>             self.libraries.extend(build_clib.get_library_names() or [])
+>>>>>>             self.library_dirs.append(build_clib.build_clib)
+       
+               # Setup the CCompiler object that we'll use to do all the
+               # compiling and linking
+    7:         self.compiler = new_compiler(compiler=self.compiler,
+    7:                                      verbose=self.verbose,
+    7:                                      dry_run=self.dry_run,
+    7:                                      force=self.force)
+    7:         customize_compiler(self.compiler)
+               # If we are cross-compiling, init the compiler now (if we are not
+               # cross-compiling, init would not hurt, but people may rely on
+               # late initialization of compiler even if they shouldn't...)
+    7:         if os.name == 'nt' and self.plat_name != get_platform():
+>>>>>>             self.compiler.initialize(self.plat_name)
+       
+               # And make sure that any compile/link-related options (which might
+               # come from the command-line or from the setup script) are set in
+               # that CCompiler object -- that way, they automatically apply to
+               # all compiling and linking done here.
+    7:         if self.include_dirs is not None:
+    7:             self.compiler.set_include_dirs(self.include_dirs)
+    7:         if self.define is not None:
+                   # 'define' option is a list of (name,value) tuples
+>>>>>>             for (name, value) in self.define:
+>>>>>>                 self.compiler.define_macro(name, value)
+    7:         if self.undef is not None:
+>>>>>>             for macro in self.undef:
+>>>>>>                 self.compiler.undefine_macro(macro)
+    7:         if self.libraries is not None:
+    7:             self.compiler.set_libraries(self.libraries)
+    7:         if self.library_dirs is not None:
+    7:             self.compiler.set_library_dirs(self.library_dirs)
+    7:         if self.rpath is not None:
+    7:             self.compiler.set_runtime_library_dirs(self.rpath)
+    7:         if self.link_objects is not None:
+>>>>>>             self.compiler.set_link_objects(self.link_objects)
+       
+               # Now actually compile and link everything.
+    7:         self.build_extensions()
+       
+    1:     def check_extensions_list(self, extensions):
+               """Ensure that the list of extensions (presumably provided as a
+               command option 'extensions') is valid, i.e. it is a list of
+               Extension objects.  We also support the old-style list of 2-tuples,
+               where the tuples are (ext_name, build_info), which are converted to
+               Extension instances here.
+       
+               Raise DistutilsSetupError if the structure is invalid anywhere;
+               just returns otherwise.
+               """
+   20:         if not isinstance(extensions, list):
+    1:             raise DistutilsSetupError, \
+    1:                   "'ext_modules' option must be a list of Extension instances"
+       
+   34:         for i, ext in enumerate(extensions):
+   19:             if isinstance(ext, Extension):
+   13:                 continue                # OK! (assume type-checking done
+                                               # by Extension constructor)
+       
+    6:             if not isinstance(ext, tuple) or len(ext) != 2:
+    1:                 raise DistutilsSetupError, \
+    1:                       ("each element of 'ext_modules' option must be an "
+                              "Extension instance or 2-tuple")
+       
+    5:             ext_name, build_info = ext
+       
+    5:             log.warn(("old-style (ext_name, build_info) tuple found in "
+                             "ext_modules for extension '%s'"
+    5:                       "-- please convert to Extension instance" % ext_name))
+       
+    5:             if not (isinstance(ext_name, str) and
+    5:                     extension_name_re.match(ext_name)):
+    1:                 raise DistutilsSetupError, \
+    1:                       ("first element of each tuple in 'ext_modules' "
+                              "must be the extension name (a string)")
+       
+    4:             if not isinstance(build_info, dict):
+    1:                 raise DistutilsSetupError, \
+    1:                       ("second element of each tuple in 'ext_modules' "
+                              "must be a dictionary (build info)")
+       
+                   # OK, the (ext_name, build_info) dict is type-safe: convert it
+                   # to an Extension instance.
+    3:             ext = Extension(ext_name, build_info['sources'])
+       
+                   # Easy stuff: one-to-one mapping from dict elements to
+                   # instance attributes.
+    3:             for key in ('include_dirs', 'library_dirs', 'libraries',
+                               'extra_objects', 'extra_compile_args',
+   21:                         'extra_link_args'):
+   18:                 val = build_info.get(key)
+   18:                 if val is not None:
+    3:                     setattr(ext, key, val)
+       
+                   # Medium-easy stuff: same syntax/semantics, different names.
+    3:             ext.runtime_library_dirs = build_info.get('rpath')
+    3:             if 'def_file' in build_info:
+>>>>>>                 log.warn("'def_file' element of build info dict "
+                                "no longer supported")
+       
+                   # Non-trivial stuff: 'macros' split into 'define_macros'
+                   # and 'undef_macros'.
+    3:             macros = build_info.get('macros')
+    3:             if macros:
+    2:                 ext.define_macros = []
+    2:                 ext.undef_macros = []
+    4:                 for macro in macros:
+    3:                     if not (isinstance(macro, tuple) and len(macro) in (1, 2)):
+    1:                         raise DistutilsSetupError, \
+    1:                               ("'macros' element of build info dict "
+                                      "must be 1- or 2-tuple")
+    2:                     if len(macro) == 1:
+    1:                         ext.undef_macros.append(macro[0])
+    1:                     elif len(macro) == 2:
+    1:                         ext.define_macros.append(macro)
+       
+    2:             extensions[i] = ext
+       
+    1:     def get_source_files(self):
+    1:         self.check_extensions_list(self.extensions)
+    1:         filenames = []
+       
+               # Wouldn't it be neat if we knew the names of header files too...
+    2:         for ext in self.extensions:
+    1:             filenames.extend(ext.sources)
+       
+    1:         return filenames
+       
+    1:     def get_outputs(self):
+               # Sanity check the 'extensions' list -- can't assume this is being
+               # done in the same run as a 'build_extensions()' call (in fact, we
+               # can probably assume that it *isn't*!).
+    5:         self.check_extensions_list(self.extensions)
+       
+               # And build the list of output (built) filenames.  Note that this
+               # ignores the 'inplace' flag, and assumes everything goes in the
+               # "build" tree.
+    5:         outputs = []
+   10:         for ext in self.extensions:
+    5:             outputs.append(self.get_ext_fullpath(ext.name))
+    5:         return outputs
+       
+    1:     def build_extensions(self):
+               # First, sanity-check the 'extensions' list
+    7:         self.check_extensions_list(self.extensions)
+       
+    9:         for ext in self.extensions:
+    7:             self.build_extension(ext)
+       
+    1:     def build_extension(self, ext):
+    7:         sources = ext.sources
+    7:         if sources is None or type(sources) not in (ListType, TupleType):
+>>>>>>             raise DistutilsSetupError, \
+                         ("in 'ext_modules' option (extension '%s'), " +
+>>>>>>                    "'sources' must be present and must be " +
+>>>>>>                    "a list of source filenames") % ext.name
+    7:         sources = list(sources)
+       
+    7:         ext_path = self.get_ext_fullpath(ext.name)
+    7:         depends = sources + ext.depends
+    7:         if not (self.force or newer_group(depends, ext_path, 'newer')):
+>>>>>>             log.debug("skipping '%s' extension (up-to-date)", ext.name)
+>>>>>>             return
+               else:
+    7:             log.info("building '%s' extension", ext.name)
+       
+               # First, scan the sources for SWIG definition files (.i), run
+               # SWIG on 'em to create .c files, and modify the sources list
+               # accordingly.
+    7:         sources = self.swig_sources(sources, ext)
+       
+               # Next, compile the source code to object files.
+       
+               # XXX not honouring 'define_macros' or 'undef_macros' -- the
+               # CCompiler API needs to change to accommodate this, and I
+               # want to do one thing at a time!
+       
+               # Two possible sources for extra compiler arguments:
+               #   - 'extra_compile_args' in Extension object
+               #   - CFLAGS environment variable (not particularly
+               #     elegant, but people seem to expect it and I
+               #     guess it's useful)
+               # The environment variable should take precedence, and
+               # any sensible compiler will give precedence to later
+               # command line args.  Hence we combine them in order:
+    7:         extra_args = ext.extra_compile_args or []
+       
+    7:         macros = ext.define_macros[:]
+    7:         for undef in ext.undef_macros:
+>>>>>>             macros.append((undef,))
+       
+    7:         objects = self.compiler.compile(sources,
+    7:                                          output_dir=self.build_temp,
+    7:                                          macros=macros,
+    7:                                          include_dirs=ext.include_dirs,
+    7:                                          debug=self.debug,
+    7:                                          extra_postargs=extra_args,
+    7:                                          depends=ext.depends)
+       
+               # XXX -- this is a Vile HACK!
+               #
+               # The setup.py script for Python on Unix needs to be able to
+               # get this list so it can perform all the clean up needed to
+               # avoid keeping object files around when cleaning out a failed
+               # build of an extension module.  Since Distutils does not
+               # track dependencies, we have to get rid of intermediates to
+               # ensure all the intermediates will be properly re-built.
+               #
+    2:         self._built_objects = objects[:]
+       
+               # Now link the object files together into a "shared object" --
+               # of course, first we have to figure out all the other things
+               # that go into the mix.
+    2:         if ext.extra_objects:
+>>>>>>             objects.extend(ext.extra_objects)
+    2:         extra_args = ext.extra_link_args or []
+       
+               # Detect target language, if not provided
+    2:         language = ext.language or self.compiler.detect_language(sources)
+       
+    2:         self.compiler.link_shared_object(
+    2:             objects, ext_path,
+    2:             libraries=self.get_libraries(ext),
+    2:             library_dirs=ext.library_dirs,
+    2:             runtime_library_dirs=ext.runtime_library_dirs,
+    2:             extra_postargs=extra_args,
+    2:             export_symbols=self.get_export_symbols(ext),
+    2:             debug=self.debug,
+    2:             build_temp=self.build_temp,
+    2:             target_lang=language)
+       
+       
+    1:     def swig_sources (self, sources, extension):
+       
+               """Walk the list of source files in 'sources', looking for SWIG
+               interface (.i) files.  Run SWIG on all that are found, and
+               return a modified 'sources' list with SWIG source files replaced
+               by the generated C (or C++) files.
+               """
+       
+    7:         new_sources = []
+    7:         swig_sources = []
+    7:         swig_targets = {}
+       
+               # XXX this drops generated C/C++ files into the source tree, which
+               # is fine for developers who want to distribute the generated
+               # source -- but there should be an option to put SWIG output in
+               # the temp dir.
+       
+    7:         if self.swig_cpp:
+>>>>>>             log.warn("--swig-cpp is deprecated - use --swig-opts=-c++")
+       
+    7:         if self.swig_cpp or ('-c++' in self.swig_opts) or \
+    7:            ('-c++' in extension.swig_opts):
+>>>>>>             target_ext = '.cpp'
+               else:
+    7:             target_ext = '.c'
+       
+   14:         for source in sources:
+    7:             (base, ext) = os.path.splitext(source)
+    7:             if ext == ".i":             # SWIG interface file
+>>>>>>                 new_sources.append(base + '_wrap' + target_ext)
+>>>>>>                 swig_sources.append(source)
+>>>>>>                 swig_targets[source] = new_sources[-1]
+                   else:
+    7:                 new_sources.append(source)
+       
+    7:         if not swig_sources:
+    7:             return new_sources
+       
+>>>>>>         swig = self.swig or self.find_swig()
+>>>>>>         swig_cmd = [swig, "-python"]
+>>>>>>         swig_cmd.extend(self.swig_opts)
+>>>>>>         if self.swig_cpp:
+>>>>>>             swig_cmd.append("-c++")
+       
+               # Do not override commandline arguments
+>>>>>>         if not self.swig_opts:
+>>>>>>             for o in extension.swig_opts:
+>>>>>>                 swig_cmd.append(o)
+       
+>>>>>>         for source in swig_sources:
+>>>>>>             target = swig_targets[source]
+>>>>>>             log.info("swigging %s to %s", source, target)
+>>>>>>             self.spawn(swig_cmd + ["-o", target, source])
+       
+>>>>>>         return new_sources
+       
+           # swig_sources ()
+       
+    1:     def find_swig (self):
+               """Return the name of the SWIG executable.  On Unix, this is
+               just "swig" -- it should be in the PATH.  Tries a bit harder on
+               Windows.
+               """
+       
+>>>>>>         if os.name == "posix":
+>>>>>>             return "swig"
+>>>>>>         elif os.name == "nt":
+       
+                   # Look for SWIG in its standard installation directory on
+                   # Windows (or so I presume!).  If we find it there, great;
+                   # if not, act like Unix and assume it's in the PATH.
+>>>>>>             for vers in ("1.3", "1.2", "1.1"):
+>>>>>>                 fn = os.path.join("c:\\swig%s" % vers, "swig.exe")
+>>>>>>                 if os.path.isfile(fn):
+>>>>>>                     return fn
+                   else:
+>>>>>>                 return "swig.exe"
+       
+>>>>>>         elif os.name == "os2":
+                   # assume swig available in the PATH.
+>>>>>>             return "swig.exe"
+       
+               else:
+>>>>>>             raise DistutilsPlatformError, \
+>>>>>>                   ("I don't know how to find (much less run) SWIG "
+>>>>>>                    "on platform '%s'") % os.name
+       
+           # find_swig ()
+       
+           # -- Name generators -----------------------------------------------
+           # (extension names, filenames, whatever)
+    1:     def get_ext_fullpath(self, ext_name):
+               """Returns the path of the filename for a given extension.
+       
+               The file is located in `build_lib` or directly in the package
+               (inplace option).
+               """
+               # makes sure the extension name is only using dots
+   20:         all_dots = string.maketrans('/'+os.sep, '..')
+   20:         ext_name = ext_name.translate(all_dots)
+       
+   20:         fullname = self.get_ext_fullname(ext_name)
+   20:         modpath = fullname.split('.')
+   20:         filename = self.get_ext_filename(ext_name)
+   20:         filename = os.path.split(filename)[-1]
+       
+   20:         if not self.inplace:
+                   # no further work needed
+                   # returning :
+                   #   build_dir/package/path/filename
+   14:             filename = os.path.join(*modpath[:-1]+[filename])
+   14:             return os.path.join(self.build_lib, filename)
+       
+               # the inplace option requires to find the package directory
+               # using the build_py command for that
+    6:         package = '.'.join(modpath[0:-1])
+    6:         build_py = self.get_finalized_command('build_py')
+    6:         package_dir = os.path.abspath(build_py.get_package_dir(package))
+       
+               # returning
+               #   package_dir/filename
+    6:         return os.path.join(package_dir, filename)
+       
+    1:     def get_ext_fullname(self, ext_name):
+               """Returns the fullname of a given extension name.
+       
+               Adds the `package.` prefix"""
+   20:         if self.package is None:
+   20:             return ext_name
+               else:
+>>>>>>             return self.package + '.' + ext_name
+       
+    1:     def get_ext_filename(self, ext_name):
+               r"""Convert the name of an extension (eg. "foo.bar") into the name
+               of the file from which it will be loaded (eg. "foo/bar.so", or
+               "foo\bar.pyd").
+               """
+   20:         from distutils.sysconfig import get_config_var
+   20:         ext_path = string.split(ext_name, '.')
+               # OS/2 has an 8 character module (extension) limit :-(
+   20:         if os.name == "os2":
+>>>>>>             ext_path[len(ext_path) - 1] = ext_path[len(ext_path) - 1][:8]
+               # extensions in debug_mode are named 'module_d.pyd' under windows
+   20:         so_ext = get_config_var('SO')
+   20:         if os.name == 'nt' and self.debug:
+>>>>>>             return os.path.join(*ext_path) + '_d' + so_ext
+   20:         return os.path.join(*ext_path) + so_ext
+       
+    1:     def get_export_symbols (self, ext):
+               """Return the list of symbols that a shared extension has to
+               export.  This either uses 'ext.export_symbols' or, if it's not
+               provided, "init" + module_name.  Only relevant on Windows, where
+               the .pyd file (DLL) must export the module "init" function.
+               """
+    2:         initfunc_name = "init" + ext.name.split('.')[-1]
+    2:         if initfunc_name not in ext.export_symbols:
+    1:             ext.export_symbols.append(initfunc_name)
+    2:         return ext.export_symbols
+       
+    1:     def get_libraries (self, ext):
+               """Return the list of libraries to link against when building a
+               shared extension.  On most platforms, this is just 'ext.libraries';
+               on Windows and OS/2, we add the Python library (eg. python20.dll).
+               """
+               # The python library is always needed on Windows.  For MSVC, this
+               # is redundant, since the library is mentioned in a pragma in
+               # pyconfig.h that MSVC groks.  The other Windows compilers all seem
+               # to need it mentioned explicitly, though, so that's what we do.
+               # Append '_d' to the python import library on debug builds.
+    2:         if sys.platform == "win32":
+>>>>>>             from distutils.msvccompiler import MSVCCompiler
+>>>>>>             if not isinstance(self.compiler, MSVCCompiler):
+>>>>>>                 template = "python%d%d"
+>>>>>>                 if self.debug:
+>>>>>>                     template = template + '_d'
+>>>>>>                 pythonlib = (template %
+>>>>>>                        (sys.hexversion >> 24, (sys.hexversion >> 16) & 0xff))
+                       # don't extend ext.libraries, it may be shared with other
+                       # extensions, it is a reference to the original list
+>>>>>>                 return ext.libraries + [pythonlib]
+                   else:
+>>>>>>                 return ext.libraries
+    2:         elif sys.platform == "os2emx":
+                   # EMX/GCC requires the python library explicitly, and I
+                   # believe VACPP does as well (though not confirmed) - AIM Apr01
+>>>>>>             template = "python%d%d"
+                   # debug versions of the main DLL aren't supported, at least
+                   # not at this time - AIM Apr01
+                   #if self.debug:
+                   #    template = template + '_d'
+>>>>>>             pythonlib = (template %
+>>>>>>                    (sys.hexversion >> 24, (sys.hexversion >> 16) & 0xff))
+                   # don't extend ext.libraries, it may be shared with other
+                   # extensions, it is a reference to the original list
+>>>>>>             return ext.libraries + [pythonlib]
+    2:         elif sys.platform[:6] == "cygwin":
+>>>>>>             template = "python%d.%d"
+>>>>>>             pythonlib = (template %
+>>>>>>                    (sys.hexversion >> 24, (sys.hexversion >> 16) & 0xff))
+                   # don't extend ext.libraries, it may be shared with other
+                   # extensions, it is a reference to the original list
+>>>>>>             return ext.libraries + [pythonlib]
+    2:         elif sys.platform[:6] == "atheos":
+>>>>>>             from distutils import sysconfig
+       
+>>>>>>             template = "python%d.%d"
+>>>>>>             pythonlib = (template %
+>>>>>>                    (sys.hexversion >> 24, (sys.hexversion >> 16) & 0xff))
+                   # Get SHLIBS from Makefile
+>>>>>>             extra = []
+>>>>>>             for lib in sysconfig.get_config_var('SHLIBS').split():
+>>>>>>                 if lib.startswith('-l'):
+>>>>>>                     extra.append(lib[2:])
+                       else:
+>>>>>>                     extra.append(lib)
+                   # don't extend ext.libraries, it may be shared with other
+                   # extensions, it is a reference to the original list
+>>>>>>             return ext.libraries + [pythonlib, "m"] + extra
+       
+    2:         elif sys.platform == 'darwin':
+                   # Don't use the default code below
+    2:             return ext.libraries
+>>>>>>         elif sys.platform[:3] == 'aix':
+                   # Don't use the default code below
+>>>>>>             return ext.libraries
+               else:
+>>>>>>             from distutils import sysconfig
+>>>>>>             if sysconfig.get_config_var('Py_ENABLE_SHARED'):
+>>>>>>                 template = "python%d.%d"
+>>>>>>                 pythonlib = (template %
+>>>>>>                              (sys.hexversion >> 24, (sys.hexversion >> 16) & 0xff))
+>>>>>>                 return ext.libraries + [pythonlib]
+                   else:
+>>>>>>                 return ext.libraries
+       
+       # class build_ext

@@ -1,0 +1,164 @@
+       """Module for parsing and testing package version predicate strings.
+    1: """
+    1: import re
+    1: import distutils.version
+    1: import operator
+       
+       
+    1: re_validPackage = re.compile(r"(?i)^\s*([a-z_]\w*(?:\.[a-z_]\w*)*)(.*)")
+       # (package) (rest)
+       
+    1: re_paren = re.compile(r"^\s*\((.*)\)\s*$") # (list) inside of parentheses
+    1: re_splitComparison = re.compile(r"^\s*(<=|>=|<|>|!=|==)\s*([^\s,]+)\s*$")
+       # (comp) (version)
+       
+       
+    1: def splitUp(pred):
+           """Parse a single version comparison.
+       
+           Return (comparison string, StrictVersion)
+           """
+   11:     res = re_splitComparison.match(pred)
+   11:     if not res:
+    2:         raise ValueError("bad package restriction syntax: %r" % pred)
+    9:     comp, verStr = res.groups()
+    9:     return (comp, distutils.version.StrictVersion(verStr))
+       
+    1: compmap = {"<": operator.lt, "<=": operator.le, "==": operator.eq,
+    1:            ">": operator.gt, ">=": operator.ge, "!=": operator.ne}
+       
+    2: class VersionPredicate:
+           """Parse and test package version predicates.
+       
+           >>> v = VersionPredicate('pyepat.abc (>1.0, <3333.3a1, !=1555.1b3)')
+       
+           The `name` attribute provides the full dotted name that is given::
+       
+           >>> v.name
+           'pyepat.abc'
+       
+           The str() of a `VersionPredicate` provides a normalized
+           human-readable version of the expression::
+       
+           >>> print v
+           pyepat.abc (> 1.0, < 3333.3a1, != 1555.1b3)
+       
+           The `satisfied_by()` method can be used to determine with a given
+           version number is included in the set described by the version
+           restrictions::
+       
+           >>> v.satisfied_by('1.1')
+           True
+           >>> v.satisfied_by('1.4')
+           True
+           >>> v.satisfied_by('1.0')
+           False
+           >>> v.satisfied_by('4444.4')
+           False
+           >>> v.satisfied_by('1555.1b3')
+           False
+       
+           `VersionPredicate` is flexible in accepting extra whitespace::
+       
+           >>> v = VersionPredicate(' pat( ==  0.1  )  ')
+           >>> v.name
+           'pat'
+           >>> v.satisfied_by('0.1')
+           True
+           >>> v.satisfied_by('0.2')
+           False
+       
+           If any version numbers passed in do not conform to the
+           restrictions of `StrictVersion`, a `ValueError` is raised::
+       
+           >>> v = VersionPredicate('p1.p2.p3.p4(>=1.0, <=1.3a1, !=1.2zb3)')
+           Traceback (most recent call last):
+             ...
+           ValueError: invalid version number '1.2zb3'
+       
+           It the module or package name given does not conform to what's
+           allowed as a legal module or package name, `ValueError` is
+           raised::
+       
+           >>> v = VersionPredicate('foo-bar')
+           Traceback (most recent call last):
+             ...
+           ValueError: expected parenthesized list: '-bar'
+       
+           >>> v = VersionPredicate('foo bar (12.21)')
+           Traceback (most recent call last):
+             ...
+           ValueError: expected parenthesized list: 'bar (12.21)'
+       
+    1:     """
+       
+    1:     def __init__(self, versionPredicateStr):
+               """Parse a version predicate string.
+               """
+               # Fields:
+               #    name:  package name
+               #    pred:  list of (comparison string, StrictVersion)
+       
+   12:         versionPredicateStr = versionPredicateStr.strip()
+   12:         if not versionPredicateStr:
+>>>>>>             raise ValueError("empty package restriction")
+   12:         match = re_validPackage.match(versionPredicateStr)
+   12:         if not match:
+>>>>>>             raise ValueError("bad package name in %r" % versionPredicateStr)
+   12:         self.name, paren = match.groups()
+   12:         paren = paren.strip()
+   12:         if paren:
+    9:             match = re_paren.match(paren)
+    9:             if not match:
+    2:                 raise ValueError("expected parenthesized list: %r" % paren)
+    7:             str = match.groups()[0]
+   15:             self.pred = [splitUp(aPred) for aPred in str.split(",")]
+    4:             if not self.pred:
+>>>>>>                 raise ValueError("empty parenthesized list in %r"
+>>>>>>                                  % versionPredicateStr)
+               else:
+    3:             self.pred = []
+       
+    1:     def __str__(self):
+    1:         if self.pred:
+    4:             seq = [cond + " " + str(ver) for cond, ver in self.pred]
+    1:             return self.name + " (" + ", ".join(seq) + ")"
+               else:
+>>>>>>             return self.name
+       
+    1:     def satisfied_by(self, version):
+               """True if version is compatible with all the predicates in self.
+               The parameter version must be acceptable to the StrictVersion
+               constructor.  It may be either a string or StrictVersion.
+               """
+   17:         for cond, ver in self.pred:
+   14:             if not compmap[cond](version, ver):
+    4:                 return False
+    3:         return True
+       
+       
+    1: _provision_rx = None
+       
+    1: def split_provision(value):
+           """Return the name and optional version number of a provision.
+       
+           The version number, if given, will be returned as a `StrictVersion`
+           instance, otherwise it will be `None`.
+       
+           >>> split_provision('mypkg')
+           ('mypkg', None)
+           >>> split_provision(' mypkg( 1.2 ) ')
+           ('mypkg', StrictVersion ('1.2'))
+           """
+           global _provision_rx
+    5:     if _provision_rx is None:
+    1:         _provision_rx = re.compile(
+    1:             "([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)(?:\s*\(\s*([^)\s]+)\s*\))?$")
+    5:     value = value.strip()
+    5:     m = _provision_rx.match(value)
+    5:     if not m:
+>>>>>>         raise ValueError("illegal provides specification: %r" % value)
+    5:     ver = m.group(2) or None
+    5:     if ver:
+    2:         ver = distutils.version.StrictVersion(ver)
+    4:     return m.group(1), ver

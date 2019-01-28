@@ -1,0 +1,187 @@
+       # Copyright 2006 Google, Inc. All Rights Reserved.
+       # Licensed to PSF under a Contributor Agreement.
+       
+    1: """Base class for fixers (optional, but recommended)."""
+       
+       # Python imports
+    1: import itertools
+       
+       # Local imports
+    1: from .patcomp import PatternCompiler
+    1: from . import pygram
+    1: from .fixer_util import does_tree_import
+       
+    2: class BaseFix(object):
+       
+           """Optional base class for fixers.
+       
+           The subclass name must be FixFooBar where FooBar is the result of
+           removing underscores and capitalizing the words of the fix name.
+           For example, the class name for a fixer named 'has_key' should be
+           FixHasKey.
+    1:     """
+       
+    1:     PATTERN = None  # Most subclasses should override with a string literal
+    1:     pattern = None  # Compiled pattern, set by compile_pattern()
+    1:     pattern_tree = None # Tree representation of the pattern
+    1:     options = None  # Options object passed to initializer
+    1:     filename = None # The filename (set by set_filename)
+    1:     logger = None   # A logger (set by set_filename)
+    1:     numbers = itertools.count(1) # For new_name()
+    1:     used_names = set() # A set of all used NAMEs
+    1:     order = "post" # Does the fixer prefer pre- or post-order traversal
+    1:     explicit = False # Is this ignored by refactor.py -f all?
+    1:     run_order = 5   # Fixers will be sorted by run order before execution
+                           # Lower numbers will be run first.
+    1:     _accept_type = None # [Advanced and not public] This tells RefactoringTool
+                               # which node type to accept when there's not a pattern.
+       
+    1:     keep_line_order = False # For the bottom matcher: match with the
+                                   # original line order
+    1:     BM_compatible = False # Compatibility with the bottom matching
+                                 # module; every fixer should set this
+                                 # manually
+       
+           # Shortcut for access to Python grammar symbols
+    1:     syms = pygram.python_symbols
+       
+    1:     def __init__(self, options, log):
+               """Initializer.  Subclass may override.
+       
+               Args:
+                   options: a dict containing the options passed to RefactoringTool
+                   that could be used to customize the fixer through the command line.
+                   log: a list to append warnings and other messages to.
+               """
+  962:         self.options = options
+  962:         self.log = log
+  962:         self.compile_pattern()
+       
+    1:     def compile_pattern(self):
+               """Compiles self.PATTERN into self.pattern.
+       
+               Subclass may override if it doesn't want to use
+               self.{pattern,PATTERN} in .match().
+               """
+  962:         if self.PATTERN is not None:
+  875:             PC = PatternCompiler()
+  875:             self.pattern, self.pattern_tree = PC.compile_pattern(self.PATTERN,
+  875:                                                                  with_tree=True)
+       
+    1:     def set_filename(self, filename):
+               """Set the filename, and a logger derived from it.
+       
+               The main refactoring tool should call this.
+               """
+ 2853:         self.filename = filename
+       
+    1:     def match(self, node):
+               """Returns match for a given parse tree node.
+       
+               Should return a true or false object (not necessarily a bool).
+               It may return a non-empty dict of matching sub-nodes as
+               returned by a matching pattern.
+       
+               Subclass may override.
+               """
+10761:         results = {"node": node}
+10761:         return self.pattern.match(node, results) and results
+       
+    1:     def transform(self, node, results):
+               """Returns the transformation for a given parse tree node.
+       
+               Args:
+                 node: the root of the parse tree that matched the fixer.
+                 results: a dict mapping symbolic names to part of the match.
+       
+               Returns:
+                 None, or a node that is a modified copy of the
+                 argument node.  The node argument may also be modified in-place to
+                 effect the same change.
+       
+               Subclass *must* override.
+               """
+>>>>>>         raise NotImplementedError()
+       
+    1:     def new_name(self, template=u"xxx_todo_changeme"):
+               """Return a string suitable for use as an identifier
+       
+               The new name is guaranteed not to conflict with other identifiers.
+               """
+   33:         name = template
+   42:         while name in self.used_names:
+    9:             name = template + unicode(self.numbers.next())
+   33:         self.used_names.add(name)
+   33:         return name
+       
+    1:     def log_message(self, message):
+  142:         if self.first_log:
+   46:             self.first_log = False
+   46:             self.log.append("### In file %s ###" % self.filename)
+  142:         self.log.append(message)
+       
+    1:     def cannot_convert(self, node, reason=None):
+               """Warn the user that a given chunk of code is not valid Python 3,
+               but that it cannot be converted automatically.
+       
+               First argument is the top-level node for the code in question.
+               Optional second argument is why it can't be converted.
+               """
+   51:         lineno = node.get_lineno()
+   51:         for_output = node.clone()
+   51:         for_output.prefix = u""
+   51:         msg = "Line %d: could not convert: %s"
+   51:         self.log_message(msg % (lineno, for_output))
+   51:         if reason:
+   51:             self.log_message(reason)
+       
+    1:     def warning(self, node, reason):
+               """Used for warning the user about possible uncertainty in the
+               translation.
+       
+               First argument is the top-level node for the code in question.
+               Optional second argument is why it can't be converted.
+               """
+   40:         lineno = node.get_lineno()
+   40:         self.log_message("Line %d: %s" % (lineno, reason))
+       
+    1:     def start_tree(self, tree, filename):
+               """Some fixers need to maintain tree-wide state.
+               This method is called once, at the start of tree fix-up.
+       
+               tree - the root node of the tree to be processed.
+               filename - the name of the file the tree came from.
+               """
+ 2853:         self.used_names = tree.used_names
+ 2853:         self.set_filename(filename)
+ 2853:         self.numbers = itertools.count(1)
+ 2853:         self.first_log = True
+       
+    1:     def finish_tree(self, tree, filename):
+               """Some fixers need to maintain tree-wide state.
+               This method is called once, at the conclusion of tree fix-up.
+       
+               tree - the root node of the tree to be processed.
+               filename - the name of the file the tree came from.
+               """
+ 2811:         pass
+       
+       
+    2: class ConditionalFix(BaseFix):
+    1:     """ Base class for fixers which not execute if an import is found. """
+       
+           # This is the name of the import which, if found, will cause the test to be skipped
+    1:     skip_on = None
+       
+    1:     def start_tree(self, *args):
+  139:         super(ConditionalFix, self).start_tree(*args)
+  139:         self._should_skip = None
+       
+    1:     def should_skip(self, node):
+  147:         if self._should_skip is not None:
+   53:             return self._should_skip
+   94:         pkg = self.skip_on.split(".")
+   94:         name = pkg[-1]
+   94:         pkg = ".".join(pkg[:-1])
+   94:         self._should_skip = does_tree_import(pkg, name, node)
+   94:         return self._should_skip

@@ -1,0 +1,371 @@
+       #-*- coding: iso-8859-1 -*-
+       # pysqlite2/test/regression.py: pysqlite regression tests
+       #
+       # Copyright (C) 2006-2007 Gerhard Häring <gh@ghaering.de>
+       #
+       # This file is part of pysqlite.
+       #
+       # This software is provided 'as-is', without any express or implied
+       # warranty.  In no event will the authors be held liable for any damages
+       # arising from the use of this software.
+       #
+       # Permission is granted to anyone to use this software for any purpose,
+       # including commercial applications, and to alter it and redistribute it
+       # freely, subject to the following restrictions:
+       #
+       # 1. The origin of this software must not be misrepresented; you must not
+       #    claim that you wrote the original software. If you use this software
+       #    in a product, an acknowledgment in the product documentation would be
+       #    appreciated but is not required.
+       # 2. Altered source versions must be plainly marked as such, and must not be
+       #    misrepresented as being the original software.
+       # 3. This notice may not be removed or altered from any source distribution.
+       
+    1: import datetime
+    1: import unittest
+    1: import sqlite3 as sqlite
+       
+    2: class RegressionTests(unittest.TestCase):
+    1:     def setUp(self):
+   24:         self.con = sqlite.connect(":memory:")
+       
+    1:     def tearDown(self):
+   24:         self.con.close()
+       
+    1:     def CheckPragmaUserVersion(self):
+               # This used to crash pysqlite because this pragma command returns NULL for the column name
+    1:         cur = self.con.cursor()
+    1:         cur.execute("pragma user_version")
+       
+    1:     def CheckPragmaSchemaVersion(self):
+               # This still crashed pysqlite <= 2.2.1
+    1:         con = sqlite.connect(":memory:", detect_types=sqlite.PARSE_COLNAMES)
+    1:         try:
+    1:             cur = self.con.cursor()
+    1:             cur.execute("pragma schema_version")
+               finally:
+    1:             cur.close()
+    1:             con.close()
+       
+    1:     def CheckStatementReset(self):
+               # pysqlite 2.1.0 to 2.2.0 have the problem that not all statements are
+               # reset before a rollback, but only those that are still in the
+               # statement cache. The others are not accessible from the connection object.
+    1:         con = sqlite.connect(":memory:", cached_statements=5)
+    6:         cursors = [con.cursor() for x in xrange(5)]
+    1:         cursors[0].execute("create table test(x)")
+   11:         for i in range(10):
+  110:             cursors[0].executemany("insert into test(x) values (?)", [(x,) for x in xrange(10)])
+       
+    6:         for i in range(5):
+    5:             cursors[i].execute(" " * i + "select x from test")
+       
+    1:         con.rollback()
+       
+    1:     def CheckColumnNameWithSpaces(self):
+    1:         cur = self.con.cursor()
+    1:         cur.execute('select 1 as "foo bar [datetime]"')
+    1:         self.assertEqual(cur.description[0][0], "foo bar")
+       
+    1:         cur.execute('select 1 as "foo baz"')
+    1:         self.assertEqual(cur.description[0][0], "foo baz")
+       
+    1:     def CheckStatementFinalizationOnCloseDb(self):
+               # pysqlite versions <= 2.3.3 only finalized statements in the statement
+               # cache when closing the database. statements that were still
+               # referenced in cursors weren't closed and could provoke "
+               # "OperationalError: Unable to close due to unfinalised statements".
+    1:         con = sqlite.connect(":memory:")
+    1:         cursors = []
+               # default statement cache size is 100
+  106:         for i in range(105):
+  105:             cur = con.cursor()
+  105:             cursors.append(cur)
+  105:             cur.execute("select 1 x union select " + str(i))
+    1:         con.close()
+       
+    1:     def CheckOnConflictRollback(self):
+    1:         if sqlite.sqlite_version_info < (3, 2, 2):
+>>>>>>             return
+    1:         con = sqlite.connect(":memory:")
+    1:         con.execute("create table foo(x, unique(x) on conflict rollback)")
+    1:         con.execute("insert into foo(x) values (1)")
+    1:         try:
+    1:             con.execute("insert into foo(x) values (1)")
+    1:         except sqlite.DatabaseError:
+    1:             pass
+    1:         con.execute("insert into foo(x) values (2)")
+    1:         try:
+    1:             con.commit()
+>>>>>>         except sqlite.OperationalError:
+>>>>>>             self.fail("pysqlite knew nothing about the implicit ROLLBACK")
+       
+    1:     def CheckWorkaroundForBuggySqliteTransferBindings(self):
+               """
+               pysqlite would crash with older SQLite versions unless
+               a workaround is implemented.
+               """
+    1:         self.con.execute("create table foo(bar)")
+    1:         self.con.execute("drop table foo")
+    1:         self.con.execute("create table foo(bar)")
+       
+    1:     def CheckEmptyStatement(self):
+               """
+               pysqlite used to segfault with SQLite versions 3.5.x. These return NULL
+               for "no-operation" statements
+               """
+    1:         self.con.execute("")
+       
+    1:     def CheckUnicodeConnect(self):
+               """
+               With pysqlite 2.4.0 you needed to use a string or an APSW connection
+               object for opening database connections.
+       
+               Formerly, both bytestrings and unicode strings used to work.
+       
+               Let's make sure unicode strings work in the future.
+               """
+    1:         con = sqlite.connect(u":memory:")
+    1:         con.close()
+       
+    1:     def CheckTypeMapUsage(self):
+               """
+               pysqlite until 2.4.1 did not rebuild the row_cast_map when recompiling
+               a statement. This test exhibits the problem.
+               """
+    1:         SELECT = "select * from foo"
+    1:         con = sqlite.connect(":memory:",detect_types=sqlite.PARSE_DECLTYPES)
+    1:         con.execute("create table foo(bar timestamp)")
+    1:         con.execute("insert into foo(bar) values (?)", (datetime.datetime.now(),))
+    1:         con.execute(SELECT)
+    1:         con.execute("drop table foo")
+    1:         con.execute("create table foo(bar integer)")
+    1:         con.execute("insert into foo(bar) values (5)")
+    1:         con.execute(SELECT)
+       
+    1:     def CheckRegisterAdapter(self):
+               """
+               See issue 3312.
+               """
+    1:         self.assertRaises(TypeError, sqlite.register_adapter, {}, None)
+       
+    1:     def CheckSetIsolationLevel(self):
+               """
+               See issue 3312.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         self.assertRaises(UnicodeEncodeError, setattr, con,
+    1:                           "isolation_level", u"\xe9")
+       
+    1:     def CheckCursorConstructorCallCheck(self):
+               """
+               Verifies that cursor methods check whether base class __init__ was
+               called.
+               """
+    2:         class Cursor(sqlite.Cursor):
+    1:             def __init__(self, con):
+    1:                 pass
+       
+    1:         con = sqlite.connect(":memory:")
+    1:         cur = Cursor(con)
+    1:         try:
+    1:             cur.execute("select 4+5").fetchall()
+>>>>>>             self.fail("should have raised ProgrammingError")
+    1:         except sqlite.ProgrammingError:
+    1:             pass
+>>>>>>         except:
+>>>>>>             self.fail("should have raised ProgrammingError")
+       
+    1:     def CheckConnectionConstructorCallCheck(self):
+               """
+               Verifies that connection methods check whether base class __init__ was
+               called.
+               """
+    2:         class Connection(sqlite.Connection):
+    1:             def __init__(self, name):
+    1:                 pass
+       
+    1:         con = Connection(":memory:")
+    1:         try:
+    1:             cur = con.cursor()
+>>>>>>             self.fail("should have raised ProgrammingError")
+    1:         except sqlite.ProgrammingError:
+    1:             pass
+>>>>>>         except:
+>>>>>>             self.fail("should have raised ProgrammingError")
+       
+    1:     def CheckCursorRegistration(self):
+               """
+               Verifies that subclassed cursor classes are correctly registered with
+               the connection object, too.  (fetch-across-rollback problem)
+               """
+    2:         class Connection(sqlite.Connection):
+    1:             def cursor(self):
+    1:                 return Cursor(self)
+       
+    2:         class Cursor(sqlite.Cursor):
+    1:             def __init__(self, con):
+    1:                 sqlite.Cursor.__init__(self, con)
+       
+    1:         con = Connection(":memory:")
+    1:         cur = con.cursor()
+    1:         cur.execute("create table foo(x)")
+    1:         cur.executemany("insert into foo(x) values (?)", [(3,), (4,), (5,)])
+    1:         cur.execute("select x from foo")
+    1:         con.rollback()
+    1:         try:
+    1:             cur.fetchall()
+>>>>>>             self.fail("should have raised InterfaceError")
+    1:         except sqlite.InterfaceError:
+    1:             pass
+>>>>>>         except:
+>>>>>>             self.fail("should have raised InterfaceError")
+       
+    1:     def CheckAutoCommit(self):
+               """
+               Verifies that creating a connection in autocommit mode works.
+               2.5.3 introduced a regression so that these could no longer
+               be created.
+               """
+    1:         con = sqlite.connect(":memory:", isolation_level=None)
+       
+    1:     def CheckPragmaAutocommit(self):
+               """
+               Verifies that running a PRAGMA statement that does an autocommit does
+               work. This did not work in 2.5.3/2.5.4.
+               """
+    1:         cur = self.con.cursor()
+    1:         cur.execute("create table foo(bar)")
+    1:         cur.execute("insert into foo(bar) values (5)")
+       
+    1:         cur.execute("pragma page_size")
+    1:         row = cur.fetchone()
+       
+    1:     def CheckSetDict(self):
+               """
+               See http://bugs.python.org/issue7478
+       
+               It was possible to successfully register callbacks that could not be
+               hashed. Return codes of PyDict_SetItem were not checked properly.
+               """
+    2:         class NotHashable:
+    1:             def __call__(self, *args, **kw):
+>>>>>>                 pass
+    1:             def __hash__(self):
+    1:                 raise TypeError()
+    1:         var = NotHashable()
+    1:         self.assertRaises(TypeError, self.con.create_function, var)
+    1:         self.assertRaises(TypeError, self.con.create_aggregate, var)
+    1:         self.assertRaises(TypeError, self.con.set_authorizer, var)
+    1:         self.assertRaises(TypeError, self.con.set_progress_handler, var)
+       
+    1:     def CheckConnectionCall(self):
+               """
+               Call a connection with a non-string SQL request: check error handling
+               of the statement constructor.
+               """
+    1:         self.assertRaises(sqlite.Warning, self.con, 1)
+       
+    1:     def CheckRecursiveCursorUse(self):
+               """
+               http://bugs.python.org/issue10811
+       
+               Recursively using a cursor, such as when reusing it from a generator led to segfaults.
+               Now we catch recursive cursor usage and raise a ProgrammingError.
+               """
+    1:         con = sqlite.connect(":memory:")
+       
+    1:         cur = con.cursor()
+    1:         cur.execute("create table a (bar)")
+    1:         cur.execute("create table b (baz)")
+       
+    1:         def foo():
+    1:             cur.execute("insert into a (bar) values (?)", (1,))
+>>>>>>             yield 1
+       
+    1:         with self.assertRaises(sqlite.ProgrammingError):
+    1:             cur.executemany("insert into b (baz) values (?)",
+    2:                             ((i,) for i in foo()))
+       
+    1:     def CheckConvertTimestampMicrosecondPadding(self):
+               """
+               http://bugs.python.org/issue14720
+       
+               The microsecond parsing of convert_timestamp() should pad with zeros,
+               since the microsecond string "456" actually represents "456000".
+               """
+       
+    1:         con = sqlite.connect(":memory:", detect_types=sqlite.PARSE_DECLTYPES)
+    1:         cur = con.cursor()
+    1:         cur.execute("CREATE TABLE t (x TIMESTAMP)")
+       
+               # Microseconds should be 456000
+    1:         cur.execute("INSERT INTO t (x) VALUES ('2012-04-04 15:06:00.456')")
+       
+               # Microseconds should be truncated to 123456
+    1:         cur.execute("INSERT INTO t (x) VALUES ('2012-04-04 15:06:00.123456789')")
+       
+    1:         cur.execute("SELECT * FROM t")
+    3:         values = [x[0] for x in cur.fetchall()]
+       
+    1:         self.assertEqual(values, [
+    1:             datetime.datetime(2012, 4, 4, 15, 6, 0, 456000),
+    1:             datetime.datetime(2012, 4, 4, 15, 6, 0, 123456),
+               ])
+       
+    1:     def CheckInvalidIsolationLevelType(self):
+               # isolation level is a string, not an integer
+    1:         self.assertRaises(TypeError,
+    1:                           sqlite.connect, ":memory:", isolation_level=123)
+       
+       
+    1:     def CheckNullCharacter(self):
+               # Issue #21147
+    1:         con = sqlite.connect(":memory:")
+    1:         self.assertRaises(ValueError, con, "\0select 1")
+    1:         self.assertRaises(ValueError, con, "select 1\0")
+    1:         cur = con.cursor()
+    1:         self.assertRaises(ValueError, cur.execute, " \0select 2")
+    1:         self.assertRaises(ValueError, cur.execute, "select 2\0")
+       
+    1:     def CheckCommitCursorReset(self):
+               """
+               Connection.commit() did reset cursors, which made sqlite3
+               to return rows multiple times when fetched from cursors
+               after commit. See issues 10513 and 23129 for details.
+               """
+    1:         con = sqlite.connect(":memory:")
+    1:         con.executescript("""
+               create table t(c);
+               create table t2(c);
+               insert into t values(0);
+               insert into t values(1);
+               insert into t values(2);
+    1:         """)
+       
+    1:         self.assertEqual(con.isolation_level, "")
+       
+    1:         counter = 0
+    4:         for i, row in enumerate(con.execute("select c from t")):
+    3:             con.execute("insert into t2(c) values (?)", (i,))
+    3:             con.commit()
+    3:             if counter == 0:
+    1:                 self.assertEqual(row[0], 0)
+    2:             elif counter == 1:
+    1:                 self.assertEqual(row[0], 1)
+    1:             elif counter == 2:
+    1:                 self.assertEqual(row[0], 2)
+    3:             counter += 1
+    1:         self.assertEqual(counter, 3, "should have returned exactly three rows")
+       
+       
+    1: def suite():
+    1:     regression_suite = unittest.makeSuite(RegressionTests, "Check")
+    1:     return unittest.TestSuite((regression_suite,))
+       
+    1: def test():
+>>>>>>     runner = unittest.TextTestRunner()
+>>>>>>     runner.run(suite())
+       
+    1: if __name__ == "__main__":
+>>>>>>     test()

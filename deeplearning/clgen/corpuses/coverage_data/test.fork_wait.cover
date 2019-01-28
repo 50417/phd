@@ -1,0 +1,79 @@
+       """This test case provides support for checking forking and wait behavior.
+       
+       To test different wait behavior, override the wait_impl method.
+       
+       We want fork1() semantics -- only the forking thread survives in the
+       child after a fork().
+       
+       On some systems (e.g. Solaris without posix threads) we find that all
+       active threads survive in the child after a fork(); this is an error.
+       
+       While BeOS doesn't officially support fork and native threading in
+       the same application, the present example should work just fine.  DC
+    3: """
+       
+    3: import os, sys, time, unittest
+    3: import test.test_support as test_support
+    3: thread = test_support.import_module('thread')
+       
+    3: LONGSLEEP = 2
+    3: SHORTSLEEP = 0.5
+    3: NUM_THREADS = 4
+       
+    6: class ForkWait(unittest.TestCase):
+       
+    3:     def setUp(self):
+    4:         self.alive = {}
+    4:         self.stop = 0
+       
+    3:     def f(self, id):
+>>>>>>         while not self.stop:
+>>>>>>             self.alive[id] = os.getpid()
+>>>>>>             try:
+>>>>>>                 time.sleep(SHORTSLEEP)
+>>>>>>             except IOError:
+>>>>>>                 pass
+       
+    3:     def wait_impl(self, cpid):
+>>>>>>         for i in range(10):
+                   # waitpid() shouldn't hang, but some of the buildbots seem to hang
+                   # in the forking tests.  This is an attempt to fix the problem.
+>>>>>>             spid, status = os.waitpid(cpid, os.WNOHANG)
+>>>>>>             if spid == cpid:
+>>>>>>                 break
+>>>>>>             time.sleep(2 * SHORTSLEEP)
+       
+>>>>>>         self.assertEqual(spid, cpid)
+>>>>>>         self.assertEqual(status, 0, "cause = %d, exit = %d" % (status&0xff, status>>8))
+       
+    3:     def test_wait(self):
+   15:         for i in range(NUM_THREADS):
+   12:             thread.start_new(self.f, (i,))
+       
+    3:         time.sleep(LONGSLEEP)
+       
+    3:         a = self.alive.keys()
+    3:         a.sort()
+    3:         self.assertEqual(a, range(NUM_THREADS))
+       
+    3:         prefork_lives = self.alive.copy()
+       
+    3:         if sys.platform in ['unixware7']:
+>>>>>>             cpid = os.fork1()
+               else:
+    3:             cpid = os.fork()
+       
+    3:         if cpid == 0:
+                   # Child
+>>>>>>             time.sleep(LONGSLEEP)
+>>>>>>             n = 0
+>>>>>>             for key in self.alive:
+>>>>>>                 if self.alive[key] != prefork_lives[key]:
+>>>>>>                     n += 1
+>>>>>>             os._exit(n)
+               else:
+                   # Parent
+    3:             self.wait_impl(cpid)
+                   # Tell threads to die
+    3:             self.stop = 1
+    3:             time.sleep(2*SHORTSLEEP) # Wait for threads to die

@@ -1,0 +1,335 @@
+       '''
+       Tests for fileinput module.
+       Nick Mathewson
+    1: '''
+       
+    1: import unittest
+    1: from test.test_support import verbose, TESTFN, run_unittest
+    1: from test.test_support import unlink as safe_unlink, check_warnings
+    1: import sys, re
+    1: from StringIO import StringIO
+    1: from fileinput import FileInput, hook_encoded
+       
+       # The fileinput module has 2 interfaces: the FileInput class which does
+       # all the work, and a few functions (input, etc.) that use a global _state
+       # variable.  We only test the FileInput class, since the other functions
+       # only provide a thin facade over FileInput.
+       
+       # Write lines (a list of lines) to temp file number i, and return the
+       # temp file's name.
+    1: def writeTmp(i, lines, mode='w'):  # opening in text mode is the default
+   19:     name = TESTFN + str(i)
+   19:     f = open(name, mode)
+   19:     f.writelines(lines)
+   19:     f.close()
+   19:     return name
+       
+    1: def remove_tempfiles(*names):
+   27:     for name in names:
+   19:         safe_unlink(name)
+       
+    2: class LineReader:
+       
+    1:     def __init__(self):
+    2:         self._linesread = []
+       
+    1:     @property
+           def linesread(self):
+   12:         try:
+   12:             return self._linesread[:]
+               finally:
+   12:             self._linesread = []
+       
+    1:     def openhook(self, filename, mode):
+    4:         self.it = iter(filename.splitlines(True))
+    4:         return self
+       
+    1:     def readline(self, size=None):
+   10:         line = next(self.it, '')
+   10:         self._linesread.append(line)
+   10:         return line
+       
+    1:     def readlines(self, hint=-1):
+>>>>>>         lines = []
+>>>>>>         size = 0
+>>>>>>         while True:
+>>>>>>             line = self.readline()
+>>>>>>             if not line:
+>>>>>>                 return lines
+>>>>>>             lines.append(line)
+>>>>>>             size += len(line)
+>>>>>>             if size >= hint:
+>>>>>>                 return lines
+       
+    1:     def close(self):
+    4:         pass
+       
+    2: class BufferSizesTests(unittest.TestCase):
+    1:     def test_buffer_sizes(self):
+               # First, run the tests with default and teeny buffer size.
+    3:         for round, bs in (0, 0), (1, 30):
+    2:             try:
+   32:                 t1 = writeTmp(1, ["Line %s of file 1\n" % (i+1) for i in range(15)])
+   22:                 t2 = writeTmp(2, ["Line %s of file 2\n" % (i+1) for i in range(10)])
+   12:                 t3 = writeTmp(3, ["Line %s of file 3\n" % (i+1) for i in range(5)])
+    4:                 t4 = writeTmp(4, ["Line %s of file 4\n" % (i+1) for i in range(1)])
+    2:                 self.buffer_size_test(t1, t2, t3, t4, bs, round)
+                   finally:
+    2:                 remove_tempfiles(t1, t2, t3, t4)
+       
+    1:     def buffer_size_test(self, t1, t2, t3, t4, bs=0, round=0):
+    2:         pat = re.compile(r'LINE (\d+) OF FILE (\d+)')
+       
+    2:         start = 1 + round*6
+    2:         if verbose:
+>>>>>>             print '%s. Simple iteration (bs=%s)' % (start+0, bs)
+    2:         fi = FileInput(files=(t1, t2, t3, t4), bufsize=bs)
+    2:         lines = list(fi)
+    2:         fi.close()
+    2:         self.assertEqual(len(lines), 31)
+    2:         self.assertEqual(lines[4], 'Line 5 of file 1\n')
+    2:         self.assertEqual(lines[30], 'Line 1 of file 4\n')
+    2:         self.assertEqual(fi.lineno(), 31)
+    2:         self.assertEqual(fi.filename(), t4)
+       
+    2:         if verbose:
+>>>>>>             print '%s. Status variables (bs=%s)' % (start+1, bs)
+    2:         fi = FileInput(files=(t1, t2, t3, t4), bufsize=bs)
+    2:         s = "x"
+   44:         while s and s != 'Line 6 of file 2\n':
+   42:             s = fi.readline()
+    2:         self.assertEqual(fi.filename(), t2)
+    2:         self.assertEqual(fi.lineno(), 21)
+    2:         self.assertEqual(fi.filelineno(), 6)
+    2:         self.assertFalse(fi.isfirstline())
+    2:         self.assertFalse(fi.isstdin())
+       
+    2:         if verbose:
+>>>>>>             print '%s. Nextfile (bs=%s)' % (start+2, bs)
+    2:         fi.nextfile()
+    2:         self.assertEqual(fi.readline(), 'Line 1 of file 3\n')
+    2:         self.assertEqual(fi.lineno(), 22)
+    2:         fi.close()
+       
+    2:         if verbose:
+>>>>>>             print '%s. Stdin (bs=%s)' % (start+3, bs)
+    2:         fi = FileInput(files=(t1, t2, t3, t4, '-'), bufsize=bs)
+    2:         savestdin = sys.stdin
+    2:         try:
+    2:             sys.stdin = StringIO("Line 1 of stdin\nLine 2 of stdin\n")
+    2:             lines = list(fi)
+    2:             self.assertEqual(len(lines), 33)
+    2:             self.assertEqual(lines[32], 'Line 2 of stdin\n')
+    2:             self.assertEqual(fi.filename(), '<stdin>')
+    2:             fi.nextfile()
+               finally:
+    2:             sys.stdin = savestdin
+       
+    2:         if verbose:
+>>>>>>             print '%s. Boundary conditions (bs=%s)' % (start+4, bs)
+    2:         fi = FileInput(files=(t1, t2, t3, t4), bufsize=bs)
+    2:         self.assertEqual(fi.lineno(), 0)
+    2:         self.assertEqual(fi.filename(), None)
+    2:         fi.nextfile()
+    2:         self.assertEqual(fi.lineno(), 0)
+    2:         self.assertEqual(fi.filename(), None)
+       
+    2:         if verbose:
+>>>>>>             print '%s. Inplace (bs=%s)' % (start+5, bs)
+    2:         savestdout = sys.stdout
+    2:         try:
+    2:             fi = FileInput(files=(t1, t2, t3, t4), inplace=1, bufsize=bs)
+   64:             for line in fi:
+   62:                 line = line[:-1].upper()
+   62:                 print line
+    2:             fi.close()
+               finally:
+    2:             sys.stdout = savestdout
+       
+    2:         fi = FileInput(files=(t1, t2, t3, t4), bufsize=bs)
+   64:         for line in fi:
+   62:             self.assertEqual(line[-1], '\n')
+   62:             m = pat.match(line[:-1])
+   62:             self.assertNotEqual(m, None)
+   62:             self.assertEqual(int(m.group(1)), fi.filelineno())
+    2:         fi.close()
+       
+    2: class FileInputTests(unittest.TestCase):
+    1:     def test_zero_byte_files(self):
+    1:         try:
+    1:             t1 = writeTmp(1, [""])
+    1:             t2 = writeTmp(2, [""])
+    1:             t3 = writeTmp(3, ["The only line there is.\n"])
+    1:             t4 = writeTmp(4, [""])
+    1:             fi = FileInput(files=(t1, t2, t3, t4))
+       
+    1:             line = fi.readline()
+    1:             self.assertEqual(line, 'The only line there is.\n')
+    1:             self.assertEqual(fi.lineno(), 1)
+    1:             self.assertEqual(fi.filelineno(), 1)
+    1:             self.assertEqual(fi.filename(), t3)
+       
+    1:             line = fi.readline()
+    1:             self.assertFalse(line)
+    1:             self.assertEqual(fi.lineno(), 1)
+    1:             self.assertEqual(fi.filelineno(), 0)
+    1:             self.assertEqual(fi.filename(), t4)
+    1:             fi.close()
+               finally:
+    1:             remove_tempfiles(t1, t2, t3, t4)
+       
+    1:     def test_files_that_dont_end_with_newline(self):
+    1:         try:
+    1:             t1 = writeTmp(1, ["A\nB\nC"])
+    1:             t2 = writeTmp(2, ["D\nE\nF"])
+    1:             fi = FileInput(files=(t1, t2))
+    1:             lines = list(fi)
+    1:             self.assertEqual(lines, ["A\n", "B\n", "C", "D\n", "E\n", "F"])
+    1:             self.assertEqual(fi.filelineno(), 3)
+    1:             self.assertEqual(fi.lineno(), 6)
+               finally:
+    1:             remove_tempfiles(t1, t2)
+       
+    1:     def test_unicode_filenames(self):
+    1:         try:
+    1:             t1 = writeTmp(1, ["A\nB"])
+    1:             encoding = sys.getfilesystemencoding()
+    1:             if encoding is None:
+>>>>>>                 encoding = 'ascii'
+    1:             fi = FileInput(files=unicode(t1, encoding))
+    1:             lines = list(fi)
+    1:             self.assertEqual(lines, ["A\n", "B"])
+               finally:
+    1:             remove_tempfiles(t1)
+       
+    1:     def test_fileno(self):
+    1:         try:
+    1:             t1 = writeTmp(1, ["A\nB"])
+    1:             t2 = writeTmp(2, ["C\nD"])
+    1:             fi = FileInput(files=(t1, t2))
+    1:             self.assertEqual(fi.fileno(), -1)
+    1:             line = fi.next()
+    1:             self.assertNotEqual(fi.fileno(), -1)
+    1:             fi.nextfile()
+    1:             self.assertEqual(fi.fileno(), -1)
+    1:             line = list(fi)
+    1:             self.assertEqual(fi.fileno(), -1)
+               finally:
+    1:             remove_tempfiles(t1, t2)
+       
+    1:     def test_opening_mode(self):
+    1:         try:
+                   # invalid mode, should raise ValueError
+    1:             fi = FileInput(mode="w")
+>>>>>>             self.fail("FileInput should reject invalid mode argument")
+    1:         except ValueError:
+    1:             pass
+    1:         try:
+                   # try opening in universal newline mode
+    1:             t1 = writeTmp(1, ["A\nB\r\nC\rD"], mode="wb")
+    1:             fi = FileInput(files=t1, mode="U")
+    1:             lines = list(fi)
+    1:             self.assertEqual(lines, ["A\n", "B\n", "C\n", "D"])
+               finally:
+    1:             remove_tempfiles(t1)
+       
+    1:     def test_file_opening_hook(self):
+    1:         try:
+                   # cannot use openhook and inplace mode
+    1:             fi = FileInput(inplace=1, openhook=lambda f,m: None)
+>>>>>>             self.fail("FileInput should raise if both inplace "
+                                    "and openhook arguments are given")
+    1:         except ValueError:
+    1:             pass
+    1:         try:
+    1:             fi = FileInput(openhook=1)
+>>>>>>             self.fail("FileInput should check openhook for being callable")
+    1:         except ValueError:
+    1:             pass
+    1:         try:
+                   # UTF-7 is a convenient, seldom used encoding
+    1:             t1 = writeTmp(1, ['+AEE-\n+AEI-'], mode="wb")
+    1:             fi = FileInput(files=t1, openhook=hook_encoded("utf-7"))
+    1:             lines = list(fi)
+    1:             self.assertEqual(lines, [u'A\n', u'B'])
+               finally:
+    1:             remove_tempfiles(t1)
+       
+    1:     def test_readline(self):
+    1:         with open(TESTFN, 'wb') as f:
+    1:             f.write('A\nB\r\nC\r')
+                   # Fill TextIOWrapper buffer.
+    1:             f.write('123456789\n' * 1000)
+                   # Issue #20501: readline() shouldn't read whole file.
+    1:             f.write('\x80')
+    1:         self.addCleanup(safe_unlink, TESTFN)
+       
+    1:         fi = FileInput(files=TESTFN, openhook=hook_encoded('ascii'))
+               # The most likely failure is a UnicodeDecodeError due to the entire
+               # file being read when it shouldn't have been.
+    1:         self.assertEqual(fi.readline(), u'A\n')
+    1:         self.assertEqual(fi.readline(), u'B\r\n')
+    1:         self.assertEqual(fi.readline(), u'C\r')
+    1:         with self.assertRaises(UnicodeDecodeError):
+                   # Read to the end of file.
+    1:             list(fi)
+    1:         fi.close()
+       
+    1:     def test_readline_buffering(self):
+    1:         src = LineReader()
+    1:         fi = FileInput(files=['line1\nline2', 'line3\n'], openhook=src.openhook)
+    1:         self.assertEqual(src.linesread, [])
+    1:         self.assertEqual(fi.readline(), 'line1\n')
+    1:         self.assertEqual(src.linesread, ['line1\n'])
+    1:         self.assertEqual(fi.readline(), 'line2')
+    1:         self.assertEqual(src.linesread, ['line2'])
+    1:         self.assertEqual(fi.readline(), 'line3\n')
+    1:         self.assertEqual(src.linesread, ['', 'line3\n'])
+    1:         self.assertEqual(fi.readline(), '')
+    1:         self.assertEqual(src.linesread, [''])
+    1:         self.assertEqual(fi.readline(), '')
+    1:         self.assertEqual(src.linesread, [])
+    1:         fi.close()
+       
+    1:     def test_iteration_buffering(self):
+    1:         src = LineReader()
+    1:         fi = FileInput(files=['line1\nline2', 'line3\n'], openhook=src.openhook)
+    1:         self.assertEqual(src.linesread, [])
+    1:         self.assertEqual(next(fi), 'line1\n')
+    1:         self.assertEqual(src.linesread, ['line1\n'])
+    1:         self.assertEqual(next(fi), 'line2')
+    1:         self.assertEqual(src.linesread, ['line2'])
+    1:         self.assertEqual(next(fi), 'line3\n')
+    1:         self.assertEqual(src.linesread, ['', 'line3\n'])
+    1:         self.assertRaises(StopIteration, next, fi)
+    1:         self.assertEqual(src.linesread, [''])
+    1:         self.assertRaises(StopIteration, next, fi)
+    1:         self.assertEqual(src.linesread, [])
+    1:         fi.close()
+       
+    2: class Test_hook_encoded(unittest.TestCase):
+    1:     """Unit tests for fileinput.hook_encoded()"""
+       
+    1:     def test_modes(self):
+    1:         with open(TESTFN, 'wb') as f:
+                   # UTF-7 is a convenient, seldom used encoding
+    1:             f.write('A\nB\r\nC\rD+IKw-')
+    1:         self.addCleanup(safe_unlink, TESTFN)
+       
+    1:         def check(mode, expected_lines):
+    4:             fi = FileInput(files=TESTFN, mode=mode,
+    4:                            openhook=hook_encoded('utf-7'))
+    4:             lines = list(fi)
+    4:             fi.close()
+    4:             self.assertEqual(lines, expected_lines)
+       
+    1:         check('r', [u'A\n', u'B\r\n', u'C\r', u'D\u20ac'])
+    1:         check('rU', [u'A\n', u'B\r\n', u'C\r', u'D\u20ac'])
+    1:         check('U', [u'A\n', u'B\r\n', u'C\r', u'D\u20ac'])
+    1:         check('rb', [u'A\n', u'B\r\n', u'C\r', u'D\u20ac'])
+       
+    1: def test_main():
+    1:     run_unittest(BufferSizesTests, FileInputTests, Test_hook_encoded)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

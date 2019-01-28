@@ -1,0 +1,278 @@
+       """Conversion pipeline templates.
+       
+       The problem:
+       ------------
+       
+       Suppose you have some data that you want to convert to another format,
+       such as from GIF image format to PPM image format.  Maybe the
+       conversion involves several steps (e.g. piping it through compress or
+       uuencode).  Some of the conversion steps may require that their input
+       is a disk file, others may be able to read standard input; similar for
+       their output.  The input to the entire conversion may also be read
+       from a disk file or from an open file, and similar for its output.
+       
+       The module lets you construct a pipeline template by sticking one or
+       more conversion steps together.  It will take care of creating and
+       removing temporary files if they are necessary to hold intermediate
+       data.  You can then use the template to do conversions from many
+       different sources to many different destinations.  The temporary
+       file names used are different each time the template is used.
+       
+       The templates are objects so you can create templates for many
+       different conversion steps and store them in a dictionary, for
+       instance.
+       
+       
+       Directions:
+       -----------
+       
+       To create a template:
+           t = Template()
+       
+       To add a conversion step to a template:
+          t.append(command, kind)
+       where kind is a string of two characters: the first is '-' if the
+       command reads its standard input or 'f' if it requires a file; the
+       second likewise for the output. The command must be valid /bin/sh
+       syntax.  If input or output files are required, they are passed as
+       $IN and $OUT; otherwise, it must be  possible to use the command in
+       a pipeline.
+       
+       To add a conversion step at the beginning:
+          t.prepend(command, kind)
+       
+       To convert a file to another file using a template:
+         sts = t.copy(infile, outfile)
+       If infile or outfile are the empty string, standard input is read or
+       standard output is written, respectively.  The return value is the
+       exit status of the conversion pipeline.
+       
+       To open a file for reading or writing through a conversion pipeline:
+          fp = t.open(file, mode)
+       where mode is 'r' to read the file, or 'w' to write it -- just like
+       for the built-in function open() or for os.popen().
+       
+       To create a new template object initialized to a given one:
+          t2 = t.clone()
+    1: """                                     # '
+       
+       
+    1: import re
+    1: import os
+    1: import tempfile
+    1: import string
+       
+    1: __all__ = ["Template"]
+       
+       # Conversion step kinds
+       
+    1: FILEIN_FILEOUT = 'ff'                   # Must read & write real files
+    1: STDIN_FILEOUT  = '-f'                   # Must write a real file
+    1: FILEIN_STDOUT  = 'f-'                   # Must read a real file
+    1: STDIN_STDOUT   = '--'                   # Normal pipeline element
+    1: SOURCE         = '.-'                   # Must be first, writes stdout
+    1: SINK           = '-.'                   # Must be last, reads stdin
+       
+    1: stepkinds = [FILEIN_FILEOUT, STDIN_FILEOUT, FILEIN_STDOUT, STDIN_STDOUT, \
+    1:              SOURCE, SINK]
+       
+       
+    2: class Template:
+    1:     """Class representing a pipeline template."""
+       
+    1:     def __init__(self):
+               """Template() returns a fresh pipeline template."""
+   33:         self.debugging = 0
+   33:         self.reset()
+       
+    1:     def __repr__(self):
+               """t.__repr__() implements repr(t)."""
+    2:         return '<Template instance, steps=%r>' % (self.steps,)
+       
+    1:     def reset(self):
+               """t.reset() restores a pipeline template to its initial state."""
+   33:         self.steps = []
+       
+    1:     def clone(self):
+               """t.clone() returns a new pipeline template with identical
+               initial state as the current one."""
+    1:         t = Template()
+    1:         t.steps = self.steps[:]
+    1:         t.debugging = self.debugging
+    1:         return t
+       
+    1:     def debug(self, flag):
+               """t.debug(flag) turns debugging on or off."""
+    2:         self.debugging = flag
+       
+    1:     def append(self, cmd, kind):
+               """t.append(cmd, kind) adds a new step at the end."""
+   23:         if type(cmd) is not type(''):
+    1:             raise TypeError, \
+    1:                   'Template.append: cmd must be a string'
+   22:         if kind not in stepkinds:
+    1:             raise ValueError, \
+    1:                   'Template.append: bad kind %r' % (kind,)
+   21:         if kind == SOURCE:
+    1:             raise ValueError, \
+    1:                   'Template.append: SOURCE can only be prepended'
+   20:         if self.steps and self.steps[-1][1] == SINK:
+    1:             raise ValueError, \
+    1:                   'Template.append: already ends with SINK'
+   19:         if kind[0] == 'f' and not re.search(r'\$IN\b', cmd):
+    2:             raise ValueError, \
+    2:                   'Template.append: missing $IN in cmd'
+   17:         if kind[1] == 'f' and not re.search(r'\$OUT\b', cmd):
+    2:             raise ValueError, \
+    2:                   'Template.append: missing $OUT in cmd'
+   15:         self.steps.append((cmd, kind))
+       
+    1:     def prepend(self, cmd, kind):
+               """t.prepend(cmd, kind) adds a new step at the front."""
+   10:         if type(cmd) is not type(''):
+    1:             raise TypeError, \
+    1:                   'Template.prepend: cmd must be a string'
+    9:         if kind not in stepkinds:
+    1:             raise ValueError, \
+    1:                   'Template.prepend: bad kind %r' % (kind,)
+    8:         if kind == SINK:
+    1:             raise ValueError, \
+    1:                   'Template.prepend: SINK can only be appended'
+    7:         if self.steps and self.steps[0][1] == SOURCE:
+    1:             raise ValueError, \
+    1:                   'Template.prepend: already begins with SOURCE'
+    6:         if kind[0] == 'f' and not re.search(r'\$IN\b', cmd):
+    2:             raise ValueError, \
+    2:                   'Template.prepend: missing $IN in cmd'
+    4:         if kind[1] == 'f' and not re.search(r'\$OUT\b', cmd):
+    2:             raise ValueError, \
+    2:                   'Template.prepend: missing $OUT in cmd'
+    2:         self.steps.insert(0, (cmd, kind))
+       
+    1:     def open(self, file, rw):
+               """t.open(file, rw) returns a pipe or file object open for
+               reading or writing; the file is the other end of the pipeline."""
+    7:         if rw == 'r':
+    3:             return self.open_r(file)
+    4:         if rw == 'w':
+    3:             return self.open_w(file)
+    1:         raise ValueError, \
+    1:               'Template.open: rw must be \'r\' or \'w\', not %r' % (rw,)
+       
+    1:     def open_r(self, file):
+               """t.open_r(file) and t.open_w(file) implement
+               t.open(file, 'r') and t.open(file, 'w') respectively."""
+    3:         if not self.steps:
+    1:             return open(file, 'r')
+    2:         if self.steps[-1][1] == SINK:
+    1:             raise ValueError, \
+    1:                   'Template.open_r: pipeline ends width SINK'
+    1:         cmd = self.makepipeline(file, '')
+    1:         return os.popen(cmd, 'r')
+       
+    1:     def open_w(self, file):
+    3:         if not self.steps:
+    1:             return open(file, 'w')
+    2:         if self.steps[0][1] == SOURCE:
+    1:             raise ValueError, \
+    1:                   'Template.open_w: pipeline begins with SOURCE'
+    1:         cmd = self.makepipeline('', file)
+    1:         return os.popen(cmd, 'w')
+       
+    1:     def copy(self, infile, outfile):
+    2:         return os.system(self.makepipeline(infile, outfile))
+       
+    1:     def makepipeline(self, infile, outfile):
+    4:         cmd = makepipeline(infile, self.steps, outfile)
+    4:         if self.debugging:
+>>>>>>             print cmd
+>>>>>>             cmd = 'set -x; ' + cmd
+    4:         return cmd
+       
+       
+    1: def makepipeline(infile, steps, outfile):
+           # Build a list with for each command:
+           # [input filename or '', command string, kind, output filename or '']
+       
+    4:     list = []
+    7:     for cmd, kind in steps:
+    3:         list.append(['', cmd, kind, ''])
+           #
+           # Make sure there is at least one step
+           #
+    4:     if not list:
+    1:         list.append(['', 'cat', '--', ''])
+           #
+           # Take care of the input and output ends
+           #
+    4:     [cmd, kind] = list[0][1:3]
+    4:     if kind[0] == 'f' and not infile:
+>>>>>>         list.insert(0, ['', 'cat', '--', ''])
+    4:     list[0][0] = infile
+           #
+    4:     [cmd, kind] = list[-1][1:3]
+    4:     if kind[1] == 'f' and not outfile:
+>>>>>>         list.append(['', 'cat', '--', ''])
+    4:     list[-1][-1] = outfile
+           #
+           # Invent temporary files to connect stages that need files
+           #
+    4:     garbage = []
+    4:     for i in range(1, len(list)):
+>>>>>>         lkind = list[i-1][2]
+>>>>>>         rkind = list[i][2]
+>>>>>>         if lkind[1] == 'f' or rkind[0] == 'f':
+>>>>>>             (fd, temp) = tempfile.mkstemp()
+>>>>>>             os.close(fd)
+>>>>>>             garbage.append(temp)
+>>>>>>             list[i-1][-1] = list[i][0] = temp
+           #
+    8:     for item in list:
+    4:         [inf, cmd, kind, outf] = item
+    4:         if kind[1] == 'f':
+    1:             cmd = 'OUT=' + quote(outf) + '; ' + cmd
+    4:         if kind[0] == 'f':
+    2:             cmd = 'IN=' + quote(inf) + '; ' + cmd
+    4:         if kind[0] == '-' and inf:
+    1:             cmd = cmd + ' <' + quote(inf)
+    4:         if kind[1] == '-' and outf:
+    2:             cmd = cmd + ' >' + quote(outf)
+    4:         item[1] = cmd
+           #
+    4:     cmdlist = list[0][1]
+    4:     for item in list[1:]:
+>>>>>>         [cmd, kind] = item[1:3]
+>>>>>>         if item[0] == '':
+>>>>>>             if 'f' in kind:
+>>>>>>                 cmd = '{ ' + cmd + '; }'
+>>>>>>             cmdlist = cmdlist + ' |\n' + cmd
+               else:
+>>>>>>             cmdlist = cmdlist + '\n' + cmd
+           #
+    4:     if garbage:
+>>>>>>         rmcmd = 'rm -f'
+>>>>>>         for file in garbage:
+>>>>>>             rmcmd = rmcmd + ' ' + quote(file)
+>>>>>>         trapcmd = 'trap ' + quote(rmcmd + '; exit') + ' 1 2 3 13 14 15'
+>>>>>>         cmdlist = trapcmd + '\n' + cmdlist + '\n' + rmcmd
+           #
+    4:     return cmdlist
+       
+       
+       # Reliably quote a string as a single argument for /bin/sh
+       
+       # Safe unquoted
+    1: _safechars = frozenset(string.ascii_letters + string.digits + '@%_-+=:,./')
+       
+    1: def quote(file):
+           """Return a shell-escaped version of the file string."""
+  227:     for c in file:
+  219:         if c not in _safechars:
+   11:             break
+           else:
+    8:         if not file:
+    1:             return "''"
+    7:         return file
+           # use single quotes, and put single quotes into double quotes
+           # the string $'b is then quoted as '$'"'"'b'
+   11:     return "'" + file.replace("'", "'\"'\"'") + "'"

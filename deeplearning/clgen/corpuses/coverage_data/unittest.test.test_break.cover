@@ -1,0 +1,284 @@
+    1: import gc
+    1: import os
+    1: import sys
+    1: import signal
+    1: import weakref
+       
+    1: from cStringIO import StringIO
+       
+       
+    1: import unittest
+       
+       
+    2: @unittest.skipUnless(hasattr(os, 'kill'), "Test requires os.kill")
+    1: @unittest.skipIf(sys.platform =="win32", "Test cannot run on Windows")
+    1: @unittest.skipIf(sys.platform == 'freebsd6', "Test kills regrtest on freebsd6 "
+           "if threads have been used")
+    1: class TestBreak(unittest.TestCase):
+    1:     int_handler = None
+       
+    1:     def setUp(self):
+   48:         self._default_handler = signal.getsignal(signal.SIGINT)
+   48:         if self.int_handler is not None:
+   36:             signal.signal(signal.SIGINT, self.int_handler)
+       
+    1:     def tearDown(self):
+   48:         signal.signal(signal.SIGINT, self._default_handler)
+   48:         unittest.signals._results = weakref.WeakKeyDictionary()
+   48:         unittest.signals._interrupt_handler = None
+       
+       
+    1:     def testInstallHandler(self):
+    4:         default_handler = signal.getsignal(signal.SIGINT)
+    4:         unittest.installHandler()
+    4:         self.assertNotEqual(signal.getsignal(signal.SIGINT), default_handler)
+       
+    4:         try:
+    4:             pid = os.getpid()
+    4:             os.kill(pid, signal.SIGINT)
+>>>>>>         except KeyboardInterrupt:
+>>>>>>             self.fail("KeyboardInterrupt not handled")
+       
+    4:         self.assertTrue(unittest.signals._interrupt_handler.called)
+       
+    1:     def testRegisterResult(self):
+    4:         result = unittest.TestResult()
+    4:         unittest.registerResult(result)
+       
+    4:         for ref in unittest.signals._results:
+    4:             if ref is result:
+    4:                 break
+>>>>>>             elif ref is not result:
+>>>>>>                 self.fail("odd object in result set")
+               else:
+>>>>>>             self.fail("result not found")
+       
+       
+    1:     def testInterruptCaught(self):
+    4:         default_handler = signal.getsignal(signal.SIGINT)
+       
+    4:         result = unittest.TestResult()
+    4:         unittest.installHandler()
+    4:         unittest.registerResult(result)
+       
+    4:         self.assertNotEqual(signal.getsignal(signal.SIGINT), default_handler)
+       
+    4:         def test(result):
+    4:             pid = os.getpid()
+    4:             os.kill(pid, signal.SIGINT)
+    4:             result.breakCaught = True
+    4:             self.assertTrue(result.shouldStop)
+       
+    4:         try:
+    4:             test(result)
+>>>>>>         except KeyboardInterrupt:
+>>>>>>             self.fail("KeyboardInterrupt not handled")
+    4:         self.assertTrue(result.breakCaught)
+       
+       
+    1:     def testSecondInterrupt(self):
+               # Can't use skipIf decorator because the signal handler may have
+               # been changed after defining this method.
+    4:         if signal.getsignal(signal.SIGINT) == signal.SIG_IGN:
+    1:             self.skipTest("test requires SIGINT to not be ignored")
+    3:         result = unittest.TestResult()
+    3:         unittest.installHandler()
+    3:         unittest.registerResult(result)
+       
+    3:         def test(result):
+    3:             pid = os.getpid()
+    3:             os.kill(pid, signal.SIGINT)
+    3:             result.breakCaught = True
+    3:             self.assertTrue(result.shouldStop)
+    3:             os.kill(pid, signal.SIGINT)
+>>>>>>             self.fail("Second KeyboardInterrupt not raised")
+       
+    3:         try:
+    3:             test(result)
+    3:         except KeyboardInterrupt:
+    3:             pass
+               else:
+>>>>>>             self.fail("Second KeyboardInterrupt not raised")
+    3:         self.assertTrue(result.breakCaught)
+       
+       
+    1:     def testTwoResults(self):
+    4:         unittest.installHandler()
+       
+    4:         result = unittest.TestResult()
+    4:         unittest.registerResult(result)
+    4:         new_handler = signal.getsignal(signal.SIGINT)
+       
+    4:         result2 = unittest.TestResult()
+    4:         unittest.registerResult(result2)
+    4:         self.assertEqual(signal.getsignal(signal.SIGINT), new_handler)
+       
+    4:         result3 = unittest.TestResult()
+       
+    4:         def test(result):
+    4:             pid = os.getpid()
+    4:             os.kill(pid, signal.SIGINT)
+       
+    4:         try:
+    4:             test(result)
+>>>>>>         except KeyboardInterrupt:
+>>>>>>             self.fail("KeyboardInterrupt not handled")
+       
+    4:         self.assertTrue(result.shouldStop)
+    4:         self.assertTrue(result2.shouldStop)
+    4:         self.assertFalse(result3.shouldStop)
+       
+       
+    1:     def testHandlerReplacedButCalled(self):
+               # Can't use skipIf decorator because the signal handler may have
+               # been changed after defining this method.
+    4:         if signal.getsignal(signal.SIGINT) == signal.SIG_IGN:
+    1:             self.skipTest("test requires SIGINT to not be ignored")
+               # If our handler has been replaced (is no longer installed) but is
+               # called by the *new* handler, then it isn't safe to delay the
+               # SIGINT and we should immediately delegate to the default handler
+    3:         unittest.installHandler()
+       
+    3:         handler = signal.getsignal(signal.SIGINT)
+    3:         def new_handler(frame, signum):
+    3:             handler(frame, signum)
+    3:         signal.signal(signal.SIGINT, new_handler)
+       
+    3:         try:
+    3:             pid = os.getpid()
+    3:             os.kill(pid, signal.SIGINT)
+    3:         except KeyboardInterrupt:
+    3:             pass
+               else:
+>>>>>>             self.fail("replaced but delegated handler doesn't raise interrupt")
+       
+    1:     def testRunner(self):
+               # Creating a TextTestRunner with the appropriate argument should
+               # register the TextTestResult it creates
+    4:         runner = unittest.TextTestRunner(stream=StringIO())
+       
+    4:         result = runner.run(unittest.TestSuite())
+    4:         self.assertIn(result, unittest.signals._results)
+       
+    1:     def testWeakReferences(self):
+               # Calling registerResult on a result should not keep it alive
+    4:         result = unittest.TestResult()
+    4:         unittest.registerResult(result)
+       
+    4:         ref = weakref.ref(result)
+    4:         del result
+       
+               # For non-reference counting implementations
+    4:         gc.collect();gc.collect()
+    4:         self.assertIsNone(ref())
+       
+       
+    1:     def testRemoveResult(self):
+    4:         result = unittest.TestResult()
+    4:         unittest.registerResult(result)
+       
+    4:         unittest.installHandler()
+    4:         self.assertTrue(unittest.removeResult(result))
+       
+               # Should this raise an error instead?
+    4:         self.assertFalse(unittest.removeResult(unittest.TestResult()))
+       
+    4:         try:
+    4:             pid = os.getpid()
+    4:             os.kill(pid, signal.SIGINT)
+>>>>>>         except KeyboardInterrupt:
+>>>>>>             pass
+       
+    4:         self.assertFalse(result.shouldStop)
+       
+    1:     def testMainInstallsHandler(self):
+    4:         failfast = object()
+    4:         test = object()
+    4:         verbosity = object()
+    4:         result = object()
+    4:         default_handler = signal.getsignal(signal.SIGINT)
+       
+    8:         class FakeRunner(object):
+    4:             initArgs = []
+    4:             runArgs = []
+    4:             def __init__(self, *args, **kwargs):
+    8:                 self.initArgs.append((args, kwargs))
+    4:             def run(self, test):
+    8:                 self.runArgs.append(test)
+    8:                 return result
+       
+    8:         class Program(unittest.TestProgram):
+    4:             def __init__(self, catchbreak):
+    8:                 self.exit = False
+    8:                 self.verbosity = verbosity
+    8:                 self.failfast = failfast
+    8:                 self.catchbreak = catchbreak
+    8:                 self.testRunner = FakeRunner
+    8:                 self.test = test
+    8:                 self.result = None
+       
+    4:         p = Program(False)
+    4:         p.runTests()
+       
+    4:         self.assertEqual(FakeRunner.initArgs, [((), {'buffer': None,
+    4:                                                      'verbosity': verbosity,
+    4:                                                      'failfast': failfast})])
+    4:         self.assertEqual(FakeRunner.runArgs, [test])
+    4:         self.assertEqual(p.result, result)
+       
+    4:         self.assertEqual(signal.getsignal(signal.SIGINT), default_handler)
+       
+    4:         FakeRunner.initArgs = []
+    4:         FakeRunner.runArgs = []
+    4:         p = Program(True)
+    4:         p.runTests()
+       
+    4:         self.assertEqual(FakeRunner.initArgs, [((), {'buffer': None,
+    4:                                                      'verbosity': verbosity,
+    4:                                                      'failfast': failfast})])
+    4:         self.assertEqual(FakeRunner.runArgs, [test])
+    4:         self.assertEqual(p.result, result)
+       
+    4:         self.assertNotEqual(signal.getsignal(signal.SIGINT), default_handler)
+       
+    1:     def testRemoveHandler(self):
+    4:         default_handler = signal.getsignal(signal.SIGINT)
+    4:         unittest.installHandler()
+    4:         unittest.removeHandler()
+    4:         self.assertEqual(signal.getsignal(signal.SIGINT), default_handler)
+       
+               # check that calling removeHandler multiple times has no ill-effect
+    4:         unittest.removeHandler()
+    4:         self.assertEqual(signal.getsignal(signal.SIGINT), default_handler)
+       
+    1:     def testRemoveHandlerAsDecorator(self):
+    4:         default_handler = signal.getsignal(signal.SIGINT)
+    4:         unittest.installHandler()
+       
+    4:         @unittest.removeHandler
+               def test():
+    4:             self.assertEqual(signal.getsignal(signal.SIGINT), default_handler)
+       
+    4:         test()
+    4:         self.assertNotEqual(signal.getsignal(signal.SIGINT), default_handler)
+       
+    2: @unittest.skipUnless(hasattr(os, 'kill'), "Test requires os.kill")
+    1: @unittest.skipIf(sys.platform =="win32", "Test cannot run on Windows")
+    1: @unittest.skipIf(sys.platform == 'freebsd6', "Test kills regrtest on freebsd6 "
+           "if threads have been used")
+    1: class TestBreakDefaultIntHandler(TestBreak):
+    1:     int_handler = signal.default_int_handler
+       
+    2: @unittest.skipUnless(hasattr(os, 'kill'), "Test requires os.kill")
+    1: @unittest.skipIf(sys.platform =="win32", "Test cannot run on Windows")
+    1: @unittest.skipIf(sys.platform == 'freebsd6', "Test kills regrtest on freebsd6 "
+           "if threads have been used")
+    1: class TestBreakSignalIgnored(TestBreak):
+    1:     int_handler = signal.SIG_IGN
+       
+    2: @unittest.skipUnless(hasattr(os, 'kill'), "Test requires os.kill")
+    1: @unittest.skipIf(sys.platform =="win32", "Test cannot run on Windows")
+    1: @unittest.skipIf(sys.platform == 'freebsd6', "Test kills regrtest on freebsd6 "
+           "if threads have been used")
+    1: class TestBreakSignalDefault(TestBreak):
+    1:     int_handler = signal.SIG_DFL

@@ -1,0 +1,219 @@
+       """distutils.command.install_lib
+       
+       Implements the Distutils 'install_lib' command
+    1: (install all Python modules)."""
+       
+    1: __revision__ = "$Id$"
+       
+    1: import os
+    1: import sys
+       
+    1: from distutils.core import Command
+    1: from distutils.errors import DistutilsOptionError
+       
+       
+       # Extension for Python source files.
+    1: if hasattr(os, 'extsep'):
+    1:     PYTHON_SOURCE_EXTENSION = os.extsep + "py"
+       else:
+>>>>>>     PYTHON_SOURCE_EXTENSION = ".py"
+       
+    2: class install_lib(Command):
+       
+    1:     description = "install all Python modules (extensions and pure Python)"
+       
+           # The byte-compilation options are a tad confusing.  Here are the
+           # possible scenarios:
+           #   1) no compilation at all (--no-compile --no-optimize)
+           #   2) compile .pyc only (--compile --no-optimize; default)
+           #   3) compile .pyc and "level 1" .pyo (--compile --optimize)
+           #   4) compile "level 1" .pyo only (--no-compile --optimize)
+           #   5) compile .pyc and "level 2" .pyo (--compile --optimize-more)
+           #   6) compile "level 2" .pyo only (--no-compile --optimize-more)
+           #
+           # The UI for this is two option, 'compile' and 'optimize'.
+           # 'compile' is strictly boolean, and only decides whether to
+           # generate .pyc files.  'optimize' is three-way (0, 1, or 2), and
+           # decides both whether to generate .pyo files and what level of
+           # optimization to use.
+       
+           user_options = [
+    1:         ('install-dir=', 'd', "directory to install to"),
+    1:         ('build-dir=','b', "build directory (where to install from)"),
+    1:         ('force', 'f', "force installation (overwrite existing files)"),
+    1:         ('compile', 'c', "compile .py to .pyc [default]"),
+    1:         ('no-compile', None, "don't compile .py files"),
+               ('optimize=', 'O',
+    1:          "also compile with optimization: -O1 for \"python -O\", "
+                "-O2 for \"python -OO\", and -O0 to disable [default: -O0]"),
+    1:         ('skip-build', None, "skip the build steps"),
+               ]
+       
+    1:     boolean_options = ['force', 'compile', 'skip-build']
+    1:     negative_opt = {'no-compile' : 'compile'}
+       
+    1:     def initialize_options(self):
+               # let the 'install' command dictate our installation directory
+    8:         self.install_dir = None
+    8:         self.build_dir = None
+    8:         self.force = 0
+    8:         self.compile = None
+    8:         self.optimize = None
+    8:         self.skip_build = None
+       
+    1:     def finalize_options(self):
+               # Get all the information we need to install pure Python modules
+               # from the umbrella 'install' command -- build (source) directory,
+               # install (target) directory, and whether to compile .py files.
+    7:         self.set_undefined_options('install',
+    7:                                    ('build_lib', 'build_dir'),
+    7:                                    ('install_lib', 'install_dir'),
+    7:                                    ('force', 'force'),
+    7:                                    ('compile', 'compile'),
+    7:                                    ('optimize', 'optimize'),
+    7:                                    ('skip_build', 'skip_build'),
+                                         )
+       
+    7:         if self.compile is None:
+    4:             self.compile = 1
+    7:         if self.optimize is None:
+    4:             self.optimize = 0
+       
+    7:         if not isinstance(self.optimize, int):
+    3:             try:
+    3:                 self.optimize = int(self.optimize)
+    2:                 if self.optimize not in (0, 1, 2):
+    1:                     raise AssertionError
+    2:             except (ValueError, AssertionError):
+    2:                 raise DistutilsOptionError, "optimize must be 0, 1, or 2"
+       
+    1:     def run(self):
+               # Make sure we have built everything we need first
+    3:         self.build()
+       
+               # Install everything: simply dump the entire contents of the build
+               # directory to the installation directory (that's the beauty of
+               # having a build directory!)
+    3:         outfiles = self.install()
+       
+               # (Optionally) compile .py to .pyc
+    3:         if outfiles is not None and self.distribution.has_pure_modules():
+    3:             self.byte_compile(outfiles)
+       
+           # -- Top-level worker functions ------------------------------------
+           # (called from 'run()')
+       
+    1:     def build(self):
+    3:         if not self.skip_build:
+    3:             if self.distribution.has_pure_modules():
+    3:                 self.run_command('build_py')
+    3:             if self.distribution.has_ext_modules():
+>>>>>>                 self.run_command('build_ext')
+       
+    1:     def install(self):
+    3:         if os.path.isdir(self.build_dir):
+    3:             outfiles = self.copy_tree(self.build_dir, self.install_dir)
+               else:
+>>>>>>             self.warn("'%s' does not exist -- no Python modules to install" %
+>>>>>>                       self.build_dir)
+>>>>>>             return
+    3:         return outfiles
+       
+    1:     def byte_compile(self, files):
+    5:         if sys.dont_write_bytecode:
+    1:             self.warn('byte-compiling is disabled, skipping.')
+    1:             return
+       
+    4:         from distutils.util import byte_compile
+       
+               # Get the "--root" directory supplied to the "install" command,
+               # and use it as a prefix to strip off the purported filename
+               # encoded in bytecode files.  This is far from complete, but it
+               # should at least generate usable bytecode in RPM distributions.
+    4:         install_root = self.get_finalized_command('install').root
+       
+    4:         if self.compile:
+    4:             byte_compile(files, optimize=0,
+    4:                          force=self.force, prefix=install_root,
+    4:                          dry_run=self.dry_run)
+    4:         if self.optimize > 0:
+    1:             byte_compile(files, optimize=self.optimize,
+    1:                          force=self.force, prefix=install_root,
+    1:                          verbose=self.verbose, dry_run=self.dry_run)
+       
+       
+           # -- Utility methods -----------------------------------------------
+       
+    1:     def _mutate_outputs(self, has_any, build_cmd, cmd_option, output_dir):
+    6:         if not has_any:
+    2:             return []
+       
+    4:         build_cmd = self.get_finalized_command(build_cmd)
+    4:         build_files = build_cmd.get_outputs()
+    4:         build_dir = getattr(build_cmd, cmd_option)
+       
+    4:         prefix_len = len(build_dir) + len(os.sep)
+    4:         outputs = []
+    8:         for file in build_files:
+    4:             outputs.append(os.path.join(output_dir, file[prefix_len:]))
+       
+    4:         return outputs
+       
+    1:     def _bytecode_filenames(self, py_filenames):
+    3:         bytecode_files = []
+    6:         for py_file in py_filenames:
+                   # Since build_py handles package data installation, the
+                   # list of outputs can contain more than just .py files.
+                   # Make sure we only report bytecode for the .py files.
+    3:             ext = os.path.splitext(os.path.normcase(py_file))[1]
+    3:             if ext != PYTHON_SOURCE_EXTENSION:
+>>>>>>                 continue
+    3:             if self.compile:
+    3:                 bytecode_files.append(py_file + "c")
+    3:             if self.optimize > 0:
+    1:                 bytecode_files.append(py_file + "o")
+       
+    3:         return bytecode_files
+       
+       
+           # -- External interface --------------------------------------------
+           # (called by outsiders)
+       
+    1:     def get_outputs(self):
+               """Return the list of files that would be installed if this command
+               were actually run.  Not affected by the "dry-run" flag or whether
+               modules have actually been built yet.
+               """
+               pure_outputs = \
+    3:             self._mutate_outputs(self.distribution.has_pure_modules(),
+    3:                                  'build_py', 'build_lib',
+    3:                                  self.install_dir)
+    3:         if self.compile:
+    3:             bytecode_outputs = self._bytecode_filenames(pure_outputs)
+               else:
+>>>>>>             bytecode_outputs = []
+       
+               ext_outputs = \
+    3:             self._mutate_outputs(self.distribution.has_ext_modules(),
+    3:                                  'build_ext', 'build_lib',
+    3:                                  self.install_dir)
+       
+    3:         return pure_outputs + bytecode_outputs + ext_outputs
+       
+    1:     def get_inputs(self):
+               """Get the list of files that are input to this command, ie. the
+               files that get installed as they are named in the build tree.
+               The files in this list correspond one-to-one to the output
+               filenames returned by 'get_outputs()'.
+               """
+    1:         inputs = []
+       
+    1:         if self.distribution.has_pure_modules():
+    1:             build_py = self.get_finalized_command('build_py')
+    1:             inputs.extend(build_py.get_outputs())
+       
+    1:         if self.distribution.has_ext_modules():
+    1:             build_ext = self.get_finalized_command('build_ext')
+    1:             inputs.extend(build_ext.get_outputs())
+       
+    1:         return inputs

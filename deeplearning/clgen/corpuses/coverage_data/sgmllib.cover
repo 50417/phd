@@ -1,0 +1,553 @@
+    1: """A parser for SGML, using the derived class as a static DTD."""
+       
+       # XXX This only supports those SGML features used by HTML.
+       
+       # XXX There should be a way to distinguish between PCDATA (parsed
+       # character data -- the normal case), RCDATA (replaceable character
+       # data -- only char and entity references and end tags are special)
+       # and CDATA (character data -- only end tags are special).  RCDATA is
+       # not supported at all.
+       
+       
+    1: from warnings import warnpy3k
+    1: warnpy3k("the sgmllib module has been removed in Python 3.0",
+    1:          stacklevel=2)
+    1: del warnpy3k
+       
+    1: import markupbase
+    1: import re
+       
+    1: __all__ = ["SGMLParser", "SGMLParseError"]
+       
+       # Regular expressions used for parsing
+       
+    1: interesting = re.compile('[&<]')
+    1: incomplete = re.compile('&([a-zA-Z][a-zA-Z0-9]*|#[0-9]*)?|'
+                                  '<([a-zA-Z][^<>]*|'
+                                     '/([a-zA-Z][^<>]*)?|'
+                                     '![^<>]*)?')
+       
+    1: entityref = re.compile('&([a-zA-Z][-.a-zA-Z0-9]*)[^a-zA-Z0-9]')
+    1: charref = re.compile('&#([0-9]+)[^0-9]')
+       
+    1: starttagopen = re.compile('<[>a-zA-Z]')
+    1: shorttagopen = re.compile('<[a-zA-Z][-.a-zA-Z0-9]*/')
+    1: shorttag = re.compile('<([a-zA-Z][-.a-zA-Z0-9]*)/([^/]*)/')
+    1: piclose = re.compile('>')
+    1: endbracket = re.compile('[<>]')
+    1: tagfind = re.compile('[a-zA-Z][-_.a-zA-Z0-9]*')
+    1: attrfind = re.compile(
+    1:     r'\s*([a-zA-Z_][-:.a-zA-Z_0-9]*)(\s*=\s*'
+           r'(\'[^\']*\'|"[^"]*"|[][\-a-zA-Z0-9./,:;+*%?!&$\(\)_#=~\'"@]*))?')
+       
+       
+    2: class SGMLParseError(RuntimeError):
+    1:     """Exception raised for all parse errors."""
+    1:     pass
+       
+       
+       # SGML parser base class -- find tags and call handler functions.
+       # Usage: p = SGMLParser(); p.feed(data); ...; p.close().
+       # The dtd is defined by deriving a class which defines methods
+       # with special names to handle tags: start_foo and end_foo to handle
+       # <foo> and </foo>, respectively, or do_foo to handle <foo> by itself.
+       # (Tags are converted to lower case for this purpose.)  The data
+       # between tags is passed to the parser by calling self.handle_data()
+       # with some data as argument (the data may be split up in arbitrary
+       # chunks).  Entity references are passed by calling
+       # self.handle_entityref() with the entity reference as argument.
+       
+    2: class SGMLParser(markupbase.ParserBase):
+           # Definition of entities -- derived classes may override
+    1:     entity_or_charref = re.compile('&(?:'
+             '([a-zA-Z][-.a-zA-Z0-9]*)|#([0-9]+)'
+             ')(;?)')
+       
+    1:     def __init__(self, verbose=0):
+               """Initialize and reset this instance."""
+   34:         self.verbose = verbose
+   34:         self.reset()
+       
+    1:     def reset(self):
+               """Reset this instance. Loses all unprocessed data."""
+   34:         self.__starttag_text = None
+   34:         self.rawdata = ''
+   34:         self.stack = []
+   34:         self.lasttag = '???'
+   34:         self.nomoretags = 0
+   34:         self.literal = 0
+   34:         markupbase.ParserBase.reset(self)
+       
+    1:     def setnomoretags(self):
+               """Enter literal mode (CDATA) till EOF.
+       
+               Intended for derived classes only.
+               """
+>>>>>>         self.nomoretags = self.literal = 1
+       
+    1:     def setliteral(self, *args):
+               """Enter literal mode (CDATA).
+       
+               Intended for derived classes only.
+               """
+    2:         self.literal = 1
+       
+    1:     def feed(self, data):
+               """Feed some data to the parser.
+       
+               Call this as often as you want, with as little or as much text
+               as you want (may include '\n').  (This just saves the text,
+               all the processing is done by goahead().)
+               """
+       
+ 1193:         self.rawdata = self.rawdata + data
+ 1193:         self.goahead(0)
+       
+    1:     def close(self):
+               """Handle the remaining data."""
+   32:         self.goahead(1)
+       
+    1:     def error(self, message):
+    1:         raise SGMLParseError(message)
+       
+           # Internal -- handle data as far as reasonable.  May leave state
+           # and data to be processed by a subsequent call.  If 'end' is
+           # true, force handling all data as if followed by EOF marker.
+    1:     def goahead(self, end):
+ 1225:         rawdata = self.rawdata
+ 1225:         i = 0
+ 1225:         n = len(rawdata)
+ 1662:         while i < n:
+ 1587:             if self.nomoretags:
+>>>>>>                 self.handle_data(rawdata[i:n])
+>>>>>>                 i = n
+>>>>>>                 break
+ 1587:             match = interesting.search(rawdata, i)
+ 1587:             if match: j = match.start()
+  156:             else: j = n
+ 1587:             if i < j:
+  434:                 self.handle_data(rawdata[i:j])
+ 1587:             i = j
+ 1587:             if i == n: break
+ 1431:             if rawdata[i] == '<':
+ 1406:                 if starttagopen.match(rawdata, i):
+  957:                     if self.literal:
+    1:                         self.handle_data(rawdata[i])
+    1:                         i = i+1
+    1:                         continue
+  956:                     k = self.parse_starttag(i)
+  956:                     if k < 0: break
+  227:                     i = k
+  227:                     continue
+  449:                 if rawdata.startswith("</", i):
+  222:                     k = self.parse_endtag(i)
+  222:                     if k < 0: break
+  180:                     i = k
+  180:                     self.literal = 0
+  180:                     continue
+  227:                 if self.literal:
+    5:                     if n > (i + 1):
+    1:                         self.handle_data("<")
+    1:                         i = i+1
+                           else:
+                               # incomplete
+    4:                         break
+>>>>>>                     continue
+  222:                 if rawdata.startswith("<!--", i):
+                               # Strictly speaking, a comment is --.*--
+                               # within a declaration tag <!...>.
+                               # This should be removed,
+                               # and comments handled only in parse_declaration.
+   20:                     k = self.parse_comment(i)
+   20:                     if k < 0: break
+    8:                     i = k
+    8:                     continue
+  202:                 if rawdata.startswith("<?", i):
+   24:                     k = self.parse_pi(i)
+   24:                     if k < 0: break
+    1:                     i = i+k
+    1:                     continue
+  178:                 if rawdata.startswith("<!", i):
+                           # This is some sort of declaration; in "HTML as
+                           # deployed," this should only be the document type
+                           # declaration ("<!DOCTYPE html...>").
+  132:                     k = self.parse_declaration(i)
+  131:                     if k < 0: break
+    6:                     i = k
+    6:                     continue
+   25:             elif rawdata[i] == '&':
+   25:                 if self.literal:
+    1:                     self.handle_data(rawdata[i])
+    1:                     i = i+1
+    1:                     continue
+   24:                 match = charref.match(rawdata, i)
+   24:                 if match:
+    1:                     name = match.group(1)
+    1:                     self.handle_charref(name)
+    1:                     i = match.end(0)
+    1:                     if rawdata[i-1] != ';': i = i-1
+>>>>>>                     continue
+   23:                 match = entityref.match(rawdata, i)
+   23:                 if match:
+    6:                     name = match.group(1)
+    6:                     self.handle_entityref(name)
+    6:                     i = match.end(0)
+    6:                     if rawdata[i-1] != ';': i = i-1
+>>>>>>                     continue
+                   else:
+>>>>>>                 self.error('neither < nor & ??')
+                   # We get here only if incomplete matches but
+                   # nothing else
+   63:             match = incomplete.match(rawdata, i)
+   63:             if not match:
+>>>>>>                 self.handle_data(rawdata[i])
+>>>>>>                 i = i+1
+>>>>>>                 continue
+   63:             j = match.end(0)
+   63:             if j == n:
+   58:                 break # Really incomplete
+    5:             self.handle_data(rawdata[i:j])
+    5:             i = j
+               # end while
+ 1224:         if end and i < n:
+    1:             self.handle_data(rawdata[i:n])
+    1:             i = n
+ 1224:         self.rawdata = rawdata[i:]
+               # XXX if end: check for empty stack
+       
+           # Extensions for the DOCTYPE scanner:
+    1:     _decl_otherchars = '='
+       
+           # Internal -- parse processing instr, return length or -1 if not terminated
+    1:     def parse_pi(self, i):
+   24:         rawdata = self.rawdata
+   24:         if rawdata[i:i+2] != '<?':
+>>>>>>             self.error('unexpected call to parse_pi()')
+   24:         match = piclose.search(rawdata, i+2)
+   24:         if not match:
+   23:             return -1
+    1:         j = match.start(0)
+    1:         self.handle_pi(rawdata[i+2: j])
+    1:         j = match.end(0)
+    1:         return j-i
+       
+    1:     def get_starttag_text(self):
+>>>>>>         return self.__starttag_text
+       
+           # Internal -- handle starttag, return length or -1 if not terminated
+    1:     def parse_starttag(self, i):
+  956:         self.__starttag_text = None
+  956:         start_pos = i
+  956:         rawdata = self.rawdata
+  956:         if shorttagopen.match(rawdata, i):
+                   # SGML shorthand: <tag/data/ == <tag>data</tag>
+                   # XXX Can data contain &... (entity or char refs)?
+                   # XXX Can data contain < or > (tag characters)?
+                   # XXX Can there be whitespace before the first /?
+>>>>>>             match = shorttag.match(rawdata, i)
+>>>>>>             if not match:
+>>>>>>                 return -1
+>>>>>>             tag, data = match.group(1, 2)
+>>>>>>             self.__starttag_text = '<%s/' % tag
+>>>>>>             tag = tag.lower()
+>>>>>>             k = match.end(0)
+>>>>>>             self.finish_shorttag(tag, data)
+>>>>>>             self.__starttag_text = rawdata[start_pos:match.end(1) + 1]
+>>>>>>             return k
+               # XXX The following should skip matching quotes (' or ")
+               # As a shortcut way to exit, this isn't so bad, but shouldn't
+               # be used to locate the actual end of the start tag since the
+               # < or > characters may be embedded in an attribute value.
+  956:         match = endbracket.search(rawdata, i+1)
+  956:         if not match:
+  729:             return -1
+  227:         j = match.start(0)
+               # Now parse the data between i+1 and j into a tag and attrs
+  227:         attrs = []
+  227:         if rawdata[i:i+2] == '<>':
+                   # SGML shorthand: <> == <last open tag seen>
+>>>>>>             k = j
+>>>>>>             tag = self.lasttag
+               else:
+  227:             match = tagfind.match(rawdata, i+1)
+  227:             if not match:
+>>>>>>                 self.error('unexpected call to parse_starttag')
+  227:             k = match.end(0)
+  227:             tag = rawdata[i+1:k].lower()
+  227:             self.lasttag = tag
+  501:         while k < j:
+  316:             match = attrfind.match(rawdata, k)
+  316:             if not match: break
+  274:             attrname, rest, attrvalue = match.group(1, 2, 3)
+  274:             if not rest:
+    7:                 attrvalue = attrname
+                   else:
+  267:                 if (attrvalue[:1] == "'" == attrvalue[-1:] or
+  240:                     attrvalue[:1] == '"' == attrvalue[-1:]):
+                           # strip quotes
+  250:                     attrvalue = attrvalue[1:-1]
+  267:                 attrvalue = self.entity_or_charref.sub(
+  267:                     self._convert_ref, attrvalue)
+  274:             attrs.append((attrname.lower(), attrvalue))
+  274:             k = match.end(0)
+  227:         if rawdata[j] == '>':
+  226:             j = j+1
+  227:         self.__starttag_text = rawdata[start_pos:j]
+  227:         self.finish_starttag(tag, attrs)
+  227:         return j
+       
+           # Internal -- convert entity or character reference
+    1:     def _convert_ref(self, match):
+   44:         if match.group(2):
+    8:             return self.convert_charref(match.group(2)) or \
+    4:                 '&#%s%s' % match.groups()[1:]
+   36:         elif match.group(3):
+    9:             return self.convert_entityref(match.group(1)) or \
+    2:                 '&%s;' % match.group(1)
+               else:
+   27:             return '&%s' % match.group(1)
+       
+           # Internal -- parse endtag
+    1:     def parse_endtag(self, i):
+  222:         rawdata = self.rawdata
+  222:         match = endbracket.search(rawdata, i+1)
+  222:         if not match:
+   42:             return -1
+  180:         j = match.start(0)
+  180:         tag = rawdata[i+2:j].strip().lower()
+  180:         if rawdata[j] == '>':
+  179:             j = j+1
+  180:         self.finish_endtag(tag)
+  180:         return j
+       
+           # Internal -- finish parsing of <tag/data/ (same as <tag>data</tag>)
+    1:     def finish_shorttag(self, tag, data):
+>>>>>>         self.finish_starttag(tag, [])
+>>>>>>         self.handle_data(data)
+>>>>>>         self.finish_endtag(tag)
+       
+           # Internal -- finish processing of start tag
+           # Return -1 for unknown tag, 0 for open-only tag, 1 for balanced tag
+    1:     def finish_starttag(self, tag, attrs):
+  227:         try:
+  227:             method = getattr(self, 'start_' + tag)
+  220:         except AttributeError:
+  220:             try:
+  220:                 method = getattr(self, 'do_' + tag)
+  220:             except AttributeError:
+  220:                 self.unknown_starttag(tag, attrs)
+  220:                 return -1
+                   else:
+>>>>>>                 self.handle_starttag(tag, method, attrs)
+>>>>>>                 return 0
+               else:
+    7:             self.stack.append(tag)
+    7:             self.handle_starttag(tag, method, attrs)
+    7:             return 1
+       
+           # Internal -- finish processing of end tag
+    1:     def finish_endtag(self, tag):
+  180:         if not tag:
+>>>>>>             found = len(self.stack) - 1
+>>>>>>             if found < 0:
+>>>>>>                 self.unknown_endtag(tag)
+>>>>>>                 return
+               else:
+  180:             if tag not in self.stack:
+  173:                 try:
+  173:                     method = getattr(self, 'end_' + tag)
+  173:                 except AttributeError:
+  173:                     self.unknown_endtag(tag)
+                       else:
+>>>>>>                     self.report_unbalanced(tag)
+  173:                 return
+    7:             found = len(self.stack)
+   15:             for i in range(found):
+    8:                 if self.stack[i] == tag: found = i
+   14:         while len(self.stack) > found:
+    7:             tag = self.stack[-1]
+    7:             try:
+    7:                 method = getattr(self, 'end_' + tag)
+    2:             except AttributeError:
+    2:                 method = None
+    7:             if method:
+    5:                 self.handle_endtag(tag, method)
+                   else:
+    2:                 self.unknown_endtag(tag)
+    7:             del self.stack[-1]
+       
+           # Overridable -- handle start tag
+    1:     def handle_starttag(self, tag, method, attrs):
+    7:         method(attrs)
+       
+           # Overridable -- handle end tag
+    1:     def handle_endtag(self, tag, method):
+    5:         method()
+       
+           # Example -- report an unbalanced </...> tag.
+    1:     def report_unbalanced(self, tag):
+>>>>>>         if self.verbose:
+>>>>>>             print '*** Unbalanced </' + tag + '>'
+>>>>>>             print '*** Stack:', self.stack
+       
+    1:     def convert_charref(self, name):
+               """Convert character reference, may be overridden."""
+    8:         try:
+    8:             n = int(name)
+>>>>>>         except ValueError:
+>>>>>>             return
+    8:         if not 0 <= n <= 127:
+    3:             return
+    5:         return self.convert_codepoint(n)
+       
+    1:     def convert_codepoint(self, codepoint):
+    5:         return chr(codepoint)
+       
+    1:     def handle_charref(self, name):
+               """Handle character reference, no need to override."""
+    1:         replacement = self.convert_charref(name)
+    1:         if replacement is None:
+    1:             self.unknown_charref(name)
+               else:
+>>>>>>             self.handle_data(replacement)
+       
+           # Definition of entities -- derived classes may override
+           entitydefs = \
+    1:             {'lt': '<', 'gt': '>', 'amp': '&', 'quot': '"', 'apos': '\''}
+       
+    1:     def convert_entityref(self, name):
+               """Convert entity references.
+       
+               As an alternative to overriding this method; one can tailor the
+               results by setting up the self.entitydefs mapping appropriately.
+               """
+   15:         table = self.entitydefs
+   15:         if name in table:
+    8:             return table[name]
+               else:
+    7:             return
+       
+    1:     def handle_entityref(self, name):
+               """Handle entity references, no need to override."""
+    6:         replacement = self.convert_entityref(name)
+    6:         if replacement is None:
+    5:             self.unknown_entityref(name)
+               else:
+    1:             self.handle_data(replacement)
+       
+           # Example -- handle data, should be overridden
+    1:     def handle_data(self, data):
+  271:         pass
+       
+           # Example -- handle comment, could be overridden
+    1:     def handle_comment(self, data):
+    7:         pass
+       
+           # Example -- handle declaration, could be overridden
+    1:     def handle_decl(self, decl):
+>>>>>>         pass
+       
+           # Example -- handle processing instruction, could be overridden
+    1:     def handle_pi(self, data):
+>>>>>>         pass
+       
+           # To be overridden -- handlers for unknown objects
+  195:     def unknown_starttag(self, tag, attrs): pass
+  167:     def unknown_endtag(self, tag): pass
+    2:     def unknown_charref(self, ref): pass
+    6:     def unknown_entityref(self, ref): pass
+       
+       
+    2: class TestSGMLParser(SGMLParser):
+       
+    1:     def __init__(self, verbose=0):
+>>>>>>         self.testdata = ""
+>>>>>>         SGMLParser.__init__(self, verbose)
+       
+    1:     def handle_data(self, data):
+>>>>>>         self.testdata = self.testdata + data
+>>>>>>         if len(repr(self.testdata)) >= 70:
+>>>>>>             self.flush()
+       
+    1:     def flush(self):
+>>>>>>         data = self.testdata
+>>>>>>         if data:
+>>>>>>             self.testdata = ""
+>>>>>>             print 'data:', repr(data)
+       
+    1:     def handle_comment(self, data):
+>>>>>>         self.flush()
+>>>>>>         r = repr(data)
+>>>>>>         if len(r) > 68:
+>>>>>>             r = r[:32] + '...' + r[-32:]
+>>>>>>         print 'comment:', r
+       
+    1:     def unknown_starttag(self, tag, attrs):
+>>>>>>         self.flush()
+>>>>>>         if not attrs:
+>>>>>>             print 'start tag: <' + tag + '>'
+               else:
+>>>>>>             print 'start tag: <' + tag,
+>>>>>>             for name, value in attrs:
+>>>>>>                 print name + '=' + '"' + value + '"',
+>>>>>>             print '>'
+       
+    1:     def unknown_endtag(self, tag):
+>>>>>>         self.flush()
+>>>>>>         print 'end tag: </' + tag + '>'
+       
+    1:     def unknown_entityref(self, ref):
+>>>>>>         self.flush()
+>>>>>>         print '*** unknown entity ref: &' + ref + ';'
+       
+    1:     def unknown_charref(self, ref):
+>>>>>>         self.flush()
+>>>>>>         print '*** unknown char ref: &#' + ref + ';'
+       
+    1:     def unknown_decl(self, data):
+>>>>>>         self.flush()
+>>>>>>         print '*** unknown decl: [' + data + ']'
+       
+    1:     def close(self):
+>>>>>>         SGMLParser.close(self)
+>>>>>>         self.flush()
+       
+       
+    1: def test(args = None):
+>>>>>>     import sys
+       
+>>>>>>     if args is None:
+>>>>>>         args = sys.argv[1:]
+       
+>>>>>>     if args and args[0] == '-s':
+>>>>>>         args = args[1:]
+>>>>>>         klass = SGMLParser
+           else:
+>>>>>>         klass = TestSGMLParser
+       
+>>>>>>     if args:
+>>>>>>         file = args[0]
+           else:
+>>>>>>         file = 'test.html'
+       
+>>>>>>     if file == '-':
+>>>>>>         f = sys.stdin
+           else:
+>>>>>>         try:
+>>>>>>             f = open(file, 'r')
+>>>>>>         except IOError, msg:
+>>>>>>             print file, ":", msg
+>>>>>>             sys.exit(1)
+       
+>>>>>>     data = f.read()
+>>>>>>     if f is not sys.stdin:
+>>>>>>         f.close()
+       
+>>>>>>     x = klass()
+>>>>>>     for c in data:
+>>>>>>         x.feed(c)
+>>>>>>     x.close()
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     test()

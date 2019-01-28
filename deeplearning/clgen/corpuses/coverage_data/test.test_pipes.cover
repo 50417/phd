@@ -1,0 +1,204 @@
+    1: import pipes
+    1: import os
+    1: import string
+    1: import unittest
+    1: from test.test_support import TESTFN, run_unittest, unlink, reap_children
+       
+    1: if os.name != 'posix':
+>>>>>>     raise unittest.SkipTest('pipes module only works on posix')
+       
+    1: TESTFN2 = TESTFN + "2"
+       
+       # tr a-z A-Z is not portable, so make the ranges explicit
+    1: s_command = 'tr %s %s' % (string.ascii_lowercase, string.ascii_uppercase)
+       
+    2: class SimplePipeTests(unittest.TestCase):
+    1:     def tearDown(self):
+   45:         for f in (TESTFN, TESTFN2):
+   30:             unlink(f)
+       
+    1:     def testSimplePipe1(self):
+    1:         t = pipes.Template()
+    1:         t.append(s_command, pipes.STDIN_STDOUT)
+    1:         f = t.open(TESTFN, 'w')
+    1:         f.write('hello world #1')
+    1:         f.close()
+    1:         with open(TESTFN) as f:
+    1:             self.assertEqual(f.read(), 'HELLO WORLD #1')
+       
+    1:     def testSimplePipe2(self):
+    1:         with open(TESTFN, 'w') as f:
+    1:             f.write('hello world #2')
+    1:         t = pipes.Template()
+    1:         t.append(s_command + ' < $IN > $OUT', pipes.FILEIN_FILEOUT)
+    1:         t.copy(TESTFN, TESTFN2)
+    1:         with open(TESTFN2) as f:
+    1:             self.assertEqual(f.read(), 'HELLO WORLD #2')
+       
+    1:     def testSimplePipe3(self):
+    1:         with open(TESTFN, 'w') as f:
+    1:             f.write('hello world #2')
+    1:         t = pipes.Template()
+    1:         t.append(s_command + ' < $IN', pipes.FILEIN_STDOUT)
+    1:         with t.open(TESTFN, 'r') as f:
+    1:             self.assertEqual(f.read(), 'HELLO WORLD #2')
+       
+    1:     def testEmptyPipeline1(self):
+               # copy through empty pipe
+    1:         d = 'empty pipeline test COPY'
+    1:         with open(TESTFN, 'w') as f:
+    1:             f.write(d)
+    1:         with open(TESTFN2, 'w') as f:
+    1:             f.write('')
+    1:         t=pipes.Template()
+    1:         t.copy(TESTFN, TESTFN2)
+    1:         with open(TESTFN2) as f:
+    1:             self.assertEqual(f.read(), d)
+       
+    1:     def testEmptyPipeline2(self):
+               # read through empty pipe
+    1:         d = 'empty pipeline test READ'
+    1:         with open(TESTFN, 'w') as f:
+    1:             f.write(d)
+    1:         t=pipes.Template()
+    1:         with t.open(TESTFN, 'r') as f:
+    1:             self.assertEqual(f.read(), d)
+       
+    1:     def testEmptyPipeline3(self):
+               # write through empty pipe
+    1:         d = 'empty pipeline test WRITE'
+    1:         t = pipes.Template()
+    1:         with t.open(TESTFN, 'w') as f:
+    1:             f.write(d)
+    1:         with open(TESTFN) as f:
+    1:             self.assertEqual(f.read(), d)
+       
+    1:     def testQuoting(self):
+    1:         safeunquoted = string.ascii_letters + string.digits + '@%_-+=:,./'
+    1:         unsafe = '"`$\\!'
+       
+    1:         self.assertEqual(pipes.quote(''), "''")
+    1:         self.assertEqual(pipes.quote(safeunquoted), safeunquoted)
+    1:         self.assertEqual(pipes.quote('test file name'), "'test file name'")
+    6:         for u in unsafe:
+    5:             self.assertEqual(pipes.quote('test%sname' % u),
+    5:                               "'test%sname'" % u)
+    6:         for u in unsafe:
+    5:             self.assertEqual(pipes.quote("test%s'name'" % u),
+    5:                              "'test%s'\"'\"'name'\"'\"''" % u)
+       
+    1:     def testRepr(self):
+    1:         t = pipes.Template()
+    1:         self.assertEqual(repr(t), "<Template instance, steps=[]>")
+    1:         t.append('tr a-z A-Z', pipes.STDIN_STDOUT)
+    1:         self.assertEqual(repr(t),
+    1:                     "<Template instance, steps=[('tr a-z A-Z', '--')]>")
+       
+    1:     def testSetDebug(self):
+    1:         t = pipes.Template()
+    1:         t.debug(False)
+    1:         self.assertEqual(t.debugging, False)
+    1:         t.debug(True)
+    1:         self.assertEqual(t.debugging, True)
+       
+    1:     def testReadOpenSink(self):
+               # check calling open('r') on a pipe ending with
+               # a sink raises ValueError
+    1:         t = pipes.Template()
+    1:         t.append('boguscmd', pipes.SINK)
+    1:         self.assertRaises(ValueError, t.open, 'bogusfile', 'r')
+       
+    1:     def testWriteOpenSource(self):
+               # check calling open('w') on a pipe ending with
+               # a source raises ValueError
+    1:         t = pipes.Template()
+    1:         t.prepend('boguscmd', pipes.SOURCE)
+    1:         self.assertRaises(ValueError, t.open, 'bogusfile', 'w')
+       
+    1:     def testBadAppendOptions(self):
+    1:         t = pipes.Template()
+       
+               # try a non-string command
+    1:         self.assertRaises(TypeError, t.append, 7, pipes.STDIN_STDOUT)
+       
+               # try a type that isn't recognized
+    1:         self.assertRaises(ValueError, t.append, 'boguscmd', 'xx')
+       
+               # shouldn't be able to append a source
+    1:         self.assertRaises(ValueError, t.append, 'boguscmd', pipes.SOURCE)
+       
+               # check appending two sinks
+    1:         t = pipes.Template()
+    1:         t.append('boguscmd', pipes.SINK)
+    1:         self.assertRaises(ValueError, t.append, 'boguscmd', pipes.SINK)
+       
+               # command needing file input but with no $IN
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.append, 'boguscmd $OUT',
+    1:                            pipes.FILEIN_FILEOUT)
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.append, 'boguscmd',
+    1:                            pipes.FILEIN_STDOUT)
+       
+               # command needing file output but with no $OUT
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.append, 'boguscmd $IN',
+    1:                            pipes.FILEIN_FILEOUT)
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.append, 'boguscmd',
+    1:                            pipes.STDIN_FILEOUT)
+       
+       
+    1:     def testBadPrependOptions(self):
+    1:         t = pipes.Template()
+       
+               # try a non-string command
+    1:         self.assertRaises(TypeError, t.prepend, 7, pipes.STDIN_STDOUT)
+       
+               # try a type that isn't recognized
+    1:         self.assertRaises(ValueError, t.prepend, 'tr a-z A-Z', 'xx')
+       
+               # shouldn't be able to prepend a sink
+    1:         self.assertRaises(ValueError, t.prepend, 'boguscmd', pipes.SINK)
+       
+               # check prepending two sources
+    1:         t = pipes.Template()
+    1:         t.prepend('boguscmd', pipes.SOURCE)
+    1:         self.assertRaises(ValueError, t.prepend, 'boguscmd', pipes.SOURCE)
+       
+               # command needing file input but with no $IN
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.prepend, 'boguscmd $OUT',
+    1:                            pipes.FILEIN_FILEOUT)
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.prepend, 'boguscmd',
+    1:                            pipes.FILEIN_STDOUT)
+       
+               # command needing file output but with no $OUT
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.prepend, 'boguscmd $IN',
+    1:                            pipes.FILEIN_FILEOUT)
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.prepend, 'boguscmd',
+    1:                            pipes.STDIN_FILEOUT)
+       
+    1:     def testBadOpenMode(self):
+    1:         t = pipes.Template()
+    1:         self.assertRaises(ValueError, t.open, 'bogusfile', 'x')
+       
+    1:     def testClone(self):
+    1:         t = pipes.Template()
+    1:         t.append('tr a-z A-Z', pipes.STDIN_STDOUT)
+       
+    1:         u = t.clone()
+    1:         self.assertNotEqual(id(t), id(u))
+    1:         self.assertEqual(t.steps, u.steps)
+    1:         self.assertNotEqual(id(t.steps), id(u.steps))
+    1:         self.assertEqual(t.debugging, u.debugging)
+       
+    1: def test_main():
+    1:     run_unittest(SimplePipeTests)
+    1:     reap_children()
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

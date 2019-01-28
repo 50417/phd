@@ -1,0 +1,476 @@
+    1: """A parser for HTML and XHTML."""
+       
+       # This file is based on sgmllib.py, but the API is slightly different.
+       
+       # XXX There should be a way to distinguish between PCDATA (parsed
+       # character data -- the normal case), RCDATA (replaceable character
+       # data -- only char and entity references and end tags are special)
+       # and CDATA (character data -- only end tags are special).
+       
+       
+    1: import markupbase
+    1: import re
+       
+       # Regular expressions used for parsing
+       
+    1: interesting_normal = re.compile('[&<]')
+    1: incomplete = re.compile('&[a-zA-Z#]')
+       
+    1: entityref = re.compile('&([a-zA-Z][-.a-zA-Z0-9]*)[^a-zA-Z0-9]')
+    1: charref = re.compile('&#(?:[0-9]+|[xX][0-9a-fA-F]+)[^0-9a-fA-F]')
+       
+    1: starttagopen = re.compile('<[a-zA-Z]')
+    1: piclose = re.compile('>')
+    1: commentclose = re.compile(r'--\s*>')
+       
+       # see http://www.w3.org/TR/html5/tokenization.html#tag-open-state
+       # and http://www.w3.org/TR/html5/tokenization.html#tag-name-state
+       # note: if you change tagfind/attrfind remember to update locatestarttagend too
+    1: tagfind = re.compile('([a-zA-Z][^\t\n\r\f />\x00]*)(?:\s|/(?!>))*')
+       # this regex is currently unused, but left for backward compatibility
+    1: tagfind_tolerant = re.compile('[a-zA-Z][^\t\n\r\f />\x00]*')
+       
+    1: attrfind = re.compile(
+    1:     r'((?<=[\'"\s/])[^\s/>][^\s/=>]*)(\s*=+\s*'
+           r'(\'[^\']*\'|"[^"]*"|(?![\'"])[^>\s]*))?(?:\s|/(?!>))*')
+       
+    1: locatestarttagend = re.compile(r"""
+         <[a-zA-Z][^\t\n\r\f />\x00]*       # tag name
+         (?:[\s/]*                          # optional whitespace before attribute name
+           (?:(?<=['"\s/])[^\s/>][^\s/=>]*  # attribute name
+             (?:\s*=+\s*                    # value indicator
+               (?:'[^']*'                   # LITA-enclosed value
+                 |"[^"]*"                   # LIT-enclosed value
+                 |(?!['"])[^>\s]*           # bare value
+                )
+              )?(?:\s|/(?!>))*
+            )*
+          )?
+         \s*                                # trailing whitespace
+    1: """, re.VERBOSE)
+    1: endendtag = re.compile('>')
+       # the HTML 5 spec, section 8.1.2.2, doesn't allow spaces between
+       # </ and the tag name, so maybe this should be fixed
+    1: endtagfind = re.compile('</\s*([a-zA-Z][-.a-zA-Z0-9:_]*)\s*>')
+       
+       
+    2: class HTMLParseError(Exception):
+    1:     """Exception raised for all parse errors."""
+       
+    1:     def __init__(self, msg, position=(None, None)):
+>>>>>>         assert msg
+>>>>>>         self.msg = msg
+>>>>>>         self.lineno = position[0]
+>>>>>>         self.offset = position[1]
+       
+    1:     def __str__(self):
+>>>>>>         result = self.msg
+>>>>>>         if self.lineno is not None:
+>>>>>>             result = result + ", at line %d" % self.lineno
+>>>>>>         if self.offset is not None:
+>>>>>>             result = result + ", column %d" % (self.offset + 1)
+>>>>>>         return result
+       
+       
+    2: class HTMLParser(markupbase.ParserBase):
+           """Find tags and other markup and call handler functions.
+       
+           Usage:
+               p = HTMLParser()
+               p.feed(data)
+               ...
+               p.close()
+       
+           Start tags are handled by calling self.handle_starttag() or
+           self.handle_startendtag(); end tags by self.handle_endtag().  The
+           data between tags is passed from the parser to the derived class
+           by calling self.handle_data() with the data as argument (the data
+           may be split up in arbitrary chunks).  Entity references are
+           passed by calling self.handle_entityref() with the entity
+           reference as the argument.  Numeric character references are
+           passed to self.handle_charref() with the string containing the
+           reference as the argument.
+    1:     """
+       
+    1:     CDATA_CONTENT_ELEMENTS = ("script", "style")
+       
+       
+    1:     def __init__(self):
+               """Initialize and reset this instance."""
+  185:         self.reset()
+       
+    1:     def reset(self):
+               """Reset this instance.  Loses all unprocessed data."""
+  185:         self.rawdata = ''
+  185:         self.lasttag = '???'
+  185:         self.interesting = interesting_normal
+  185:         self.cdata_elem = None
+  185:         markupbase.ParserBase.reset(self)
+       
+    1:     def feed(self, data):
+               r"""Feed data to the parser.
+       
+               Call this as often as you want, with as little or as much text
+               as you want (may include '\n').
+               """
+ 8171:         self.rawdata = self.rawdata + data
+ 8171:         self.goahead(0)
+       
+    1:     def close(self):
+               """Handle any buffered data."""
+  184:         self.goahead(1)
+       
+    1:     def error(self, message):
+>>>>>>         raise HTMLParseError(message, self.getpos())
+       
+    1:     __starttag_text = None
+       
+    1:     def get_starttag_text(self):
+               """Return full source of start tag: '<...>'."""
+    1:         return self.__starttag_text
+       
+    1:     def set_cdata_mode(self, elem):
+   72:         self.cdata_elem = elem.lower()
+   72:         self.interesting = re.compile(r'</\s*%s\s*>' % self.cdata_elem, re.I)
+       
+    1:     def clear_cdata_mode(self):
+   87:         self.interesting = interesting_normal
+   87:         self.cdata_elem = None
+       
+           # Internal -- handle data as far as reasonable.  May leave state
+           # and data to be processed by a subsequent call.  If 'end' is
+           # true, force handling all data as if followed by EOF marker.
+    1:     def goahead(self, end):
+ 8355:         rawdata = self.rawdata
+ 8355:         i = 0
+ 8355:         n = len(rawdata)
+ 8692:         while i < n:
+ 8193:             match = self.interesting.search(rawdata, i) # < or &
+ 8193:             if match:
+ 3990:                 j = match.start()
+                   else:
+ 4203:                 if self.cdata_elem:
+ 4007:                     break
+  196:                 j = n
+ 4186:             if i < j: self.handle_data(rawdata[i:j])
+ 4186:             i = self.updatepos(i, j)
+ 4186:             if i == n: break
+ 3990:             startswith = rawdata.startswith
+ 3990:             if startswith('<', i):
+ 3945:                 if starttagopen.match(rawdata, i): # < + letter
+ 1880:                     k = self.parse_starttag(i)
+ 2065:                 elif startswith("</", i):
+  219:                     k = self.parse_endtag(i)
+ 1846:                 elif startswith("<!--", i):
+  343:                     k = self.parse_comment(i)
+ 1503:                 elif startswith("<?", i):
+   50:                     k = self.parse_pi(i)
+ 1453:                 elif startswith("<!", i):
+ 1215:                     k = self.parse_html_declaration(i)
+  238:                 elif (i + 1) < n:
+    3:                     self.handle_data("<")
+    3:                     k = i + 1
+                       else:
+  235:                     break
+ 3710:                 if k < 0:
+ 3387:                     if not end:
+ 3379:                         break
+    8:                     k = rawdata.find('>', i + 1)
+    8:                     if k < 0:
+    6:                         k = rawdata.find('<', i + 1)
+    6:                         if k < 0:
+    6:                             k = i + 1
+                           else:
+    2:                         k += 1
+    8:                     self.handle_data(rawdata[i:k])
+  331:                 i = self.updatepos(i, k)
+   45:             elif startswith("&#", i):
+   17:                 match = charref.match(rawdata, i)
+   17:                 if match:
+    2:                     name = match.group()[2:-1]
+    2:                     self.handle_charref(name)
+    2:                     k = match.end()
+    2:                     if not startswith(';', k-1):
+>>>>>>                         k = k - 1
+    2:                     i = self.updatepos(i, k)
+    2:                     continue
+                       else:
+   15:                     if ";" in rawdata[i:]:  # bail by consuming '&#'
+    2:                         self.handle_data(rawdata[i:i+2])
+    2:                         i = self.updatepos(i, i+2)
+   15:                     break
+   28:             elif startswith('&', i):
+   28:                 match = entityref.match(rawdata, i)
+   28:                 if match:
+    2:                     name = match.group(1)
+    2:                     self.handle_entityref(name)
+    2:                     k = match.end()
+    2:                     if not startswith(';', k-1):
+    1:                         k = k - 1
+    2:                     i = self.updatepos(i, k)
+    2:                     continue
+   26:                 match = incomplete.match(rawdata, i)
+   26:                 if match:
+                           # match.group() will contain at least 2 chars
+   15:                     if end and match.group() == rawdata[i:]:
+>>>>>>                         self.error("EOF in middle of entity or char ref")
+                           # incomplete
+   15:                     break
+   11:                 elif (i + 1) < n:
+                           # not the end of the buffer, and can't be confused
+                           # with some other construct
+    2:                     self.handle_data("&")
+    2:                     i = self.updatepos(i, i + 1)
+                       else:
+    9:                     break
+                   else:
+>>>>>>                 assert 0, "interesting.search() lied"
+               # end while
+ 8355:         if end and i < n and not self.cdata_elem:
+    1:             self.handle_data(rawdata[i:n])
+    1:             i = self.updatepos(i, n)
+ 8355:         self.rawdata = rawdata[i:]
+       
+           # Internal -- parse html declarations, return length or -1 if not terminated
+           # See w3.org/TR/html5/tokenization.html#markup-declaration-open-state
+           # See also parse_declaration in _markupbase
+    1:     def parse_html_declaration(self, i):
+ 1215:         rawdata = self.rawdata
+ 1215:         if rawdata[i:i+2] != '<!':
+>>>>>>             self.error('unexpected call to parse_html_declaration()')
+ 1215:         if rawdata[i:i+4] == '<!--':
+                   # this case is actually already handled in goahead()
+>>>>>>             return self.parse_comment(i)
+ 1215:         elif rawdata[i:i+3] == '<![':
+  104:             return self.parse_marked_section(i)
+ 1111:         elif rawdata[i:i+9].lower() == '<!doctype':
+                   # find the closing >
+  822:             gtpos = rawdata.find('>', i+9)
+  822:             if gtpos == -1:
+  810:                 return -1
+   12:             self.handle_decl(rawdata[i+2:gtpos])
+   12:             return gtpos+1
+               else:
+  289:             return self.parse_bogus_comment(i)
+       
+           # Internal -- parse bogus comment, return length or -1 if not terminated
+           # see http://www.w3.org/TR/html5/tokenization.html#bogus-comment-state
+    1:     def parse_bogus_comment(self, i, report=1):
+  291:         rawdata = self.rawdata
+  291:         if rawdata[i:i+2] not in ('<!', '</'):
+>>>>>>             self.error('unexpected call to parse_comment()')
+  291:         pos = rawdata.find('>', i+2)
+  291:         if pos == -1:
+  282:             return -1
+    9:         if report:
+    9:             self.handle_comment(rawdata[i+2:pos])
+    9:         return pos + 1
+       
+           # Internal -- parse processing instr, return end or -1 if not terminated
+    1:     def parse_pi(self, i):
+   50:         rawdata = self.rawdata
+   50:         assert rawdata[i:i+2] == '<?', 'unexpected call to parse_pi()'
+   50:         match = piclose.search(rawdata, i+2) # >
+   50:         if not match:
+   48:             return -1
+    2:         j = match.start()
+    2:         self.handle_pi(rawdata[i+2: j])
+    2:         j = match.end()
+    2:         return j
+       
+           # Internal -- handle starttag, return end or -1 if not terminated
+    1:     def parse_starttag(self, i):
+ 1880:         self.__starttag_text = None
+ 1880:         endpos = self.check_for_whole_start_tag(i)
+ 1880:         if endpos < 0:
+ 1711:             return endpos
+  169:         rawdata = self.rawdata
+  169:         self.__starttag_text = rawdata[i:endpos]
+       
+               # Now parse the data between i+1 and j into a tag and attrs
+  169:         attrs = []
+  169:         match = tagfind.match(rawdata, i+1)
+  169:         assert match, 'unexpected call to parse_starttag()'
+  169:         k = match.end()
+  169:         self.lasttag = tag = match.group(1).lower()
+       
+  270:         while k < endpos:
+  270:             m = attrfind.match(rawdata, k)
+  270:             if not m:
+  169:                 break
+  101:             attrname, rest, attrvalue = m.group(1, 2, 3)
+  101:             if not rest:
+   19:                 attrvalue = None
+   82:             elif attrvalue[:1] == '\'' == attrvalue[-1:] or \
+   49:                  attrvalue[:1] == '"' == attrvalue[-1:]:
+   56:                 attrvalue = attrvalue[1:-1]
+  101:             if attrvalue:
+   77:                 attrvalue = self.unescape(attrvalue)
+  101:             attrs.append((attrname.lower(), attrvalue))
+  101:             k = m.end()
+       
+  169:         end = rawdata[k:endpos].strip()
+  169:         if end not in (">", "/>"):
+>>>>>>             lineno, offset = self.getpos()
+>>>>>>             if "\n" in self.__starttag_text:
+>>>>>>                 lineno = lineno + self.__starttag_text.count("\n")
+>>>>>>                 offset = len(self.__starttag_text) \
+>>>>>>                          - self.__starttag_text.rfind("\n")
+                   else:
+>>>>>>                 offset = offset + len(self.__starttag_text)
+>>>>>>             self.handle_data(rawdata[i:endpos])
+>>>>>>             return endpos
+  169:         if end.endswith('/>'):
+                   # XHTML-style empty tag: <span attr="value" />
+   16:             self.handle_startendtag(tag, attrs)
+               else:
+  153:             self.handle_starttag(tag, attrs)
+  153:             if tag in self.CDATA_CONTENT_ELEMENTS:
+   72:                 self.set_cdata_mode(tag)
+  169:         return endpos
+       
+           # Internal -- check to see if we have a complete starttag; return end
+           # or -1 if incomplete.
+    1:     def check_for_whole_start_tag(self, i):
+ 1880:         rawdata = self.rawdata
+ 1880:         m = locatestarttagend.match(rawdata, i)
+ 1880:         if m:
+ 1880:             j = m.end()
+ 1880:             next = rawdata[j:j+1]
+ 1880:             if next == ">":
+  160:                 return j + 1
+ 1720:             if next == "/":
+    9:                 if rawdata.startswith("/>", j):
+    9:                     return j + 2
+>>>>>>                 if rawdata.startswith("/", j):
+                           # buffer boundary
+>>>>>>                     return -1
+                       # else bogus input
+>>>>>>                 self.updatepos(i, j + 1)
+>>>>>>                 self.error("malformed empty start tag")
+ 1711:             if next == "":
+                       # end of input
+ 1391:                 return -1
+  320:             if next in ("abcdefghijklmnopqrstuvwxyz=/"
+                               "ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+                       # end of input in or before attribute value, or we have the
+                       # '/' from a '/>' ending
+  320:                 return -1
+>>>>>>             if j > i:
+>>>>>>                 return j
+                   else:
+>>>>>>                 return i + 1
+>>>>>>         raise AssertionError("we should not get here!")
+       
+           # Internal -- parse endtag, return end or -1 if incomplete
+    1:     def parse_endtag(self, i):
+  219:         rawdata = self.rawdata
+  219:         assert rawdata[i:i+2] == "</", "unexpected call to parse_endtag"
+  219:         match = endendtag.search(rawdata, i+1) # >
+  219:         if not match:
+  122:             return -1
+   97:         gtpos = match.end()
+   97:         match = endtagfind.match(rawdata, i) # </ + tag + >
+   97:         if not match:
+   10:             if self.cdata_elem is not None:
+>>>>>>                 self.handle_data(rawdata[i:gtpos])
+>>>>>>                 return gtpos
+                   # find the name: w3.org/TR/html5/tokenization.html#tag-name-state
+   10:             namematch = tagfind.match(rawdata, i+2)
+   10:             if not namematch:
+                       # w3.org/TR/html5/tokenization.html#end-tag-open-state
+    4:                 if rawdata[i:i+3] == '</>':
+    2:                     return i+3
+                       else:
+    2:                     return self.parse_bogus_comment(i)
+    6:             tagname = namematch.group(1).lower()
+                   # consume and ignore other stuff between the name and the >
+                   # Note: this is not 100% correct, since we might have things like
+                   # </tag attr=">">, but looking for > after tha name should cover
+                   # most of the cases and is much simpler
+    6:             gtpos = rawdata.find('>', namematch.end())
+    6:             self.handle_endtag(tagname)
+    6:             return gtpos+1
+       
+   87:         elem = match.group(1).lower() # script or style
+   87:         if self.cdata_elem is not None:
+   72:             if elem != self.cdata_elem:
+>>>>>>                 self.handle_data(rawdata[i:gtpos])
+>>>>>>                 return gtpos
+       
+   87:         self.handle_endtag(elem)
+   87:         self.clear_cdata_mode()
+   87:         return gtpos
+       
+           # Overridable -- finish processing of start+end tag: <tag.../>
+    1:     def handle_startendtag(self, tag, attrs):
+>>>>>>         self.handle_starttag(tag, attrs)
+>>>>>>         self.handle_endtag(tag)
+       
+           # Overridable -- handle start tag
+    1:     def handle_starttag(self, tag, attrs):
+>>>>>>         pass
+       
+           # Overridable -- handle end tag
+    1:     def handle_endtag(self, tag):
+>>>>>>         pass
+       
+           # Overridable -- handle character reference
+    1:     def handle_charref(self, name):
+>>>>>>         pass
+       
+           # Overridable -- handle entity reference
+    1:     def handle_entityref(self, name):
+>>>>>>         pass
+       
+           # Overridable -- handle data
+    1:     def handle_data(self, data):
+>>>>>>         pass
+       
+           # Overridable -- handle comment
+    1:     def handle_comment(self, data):
+>>>>>>         pass
+       
+           # Overridable -- handle declaration
+    1:     def handle_decl(self, decl):
+>>>>>>         pass
+       
+           # Overridable -- handle processing instruction
+    1:     def handle_pi(self, data):
+>>>>>>         pass
+       
+    1:     def unknown_decl(self, data):
+>>>>>>         pass
+       
+           # Internal -- helper to remove special character quoting
+    1:     entitydefs = None
+    1:     def unescape(self, s):
+   79:         if '&' not in s:
+   61:             return s
+   18:         def replaceEntities(s):
+   22:             s = s.groups()[0]
+   22:             try:
+   22:                 if s[0] == "#":
+   10:                     s = s[1:]
+   10:                     if s[0] in ['x','X']:
+    4:                         c = int(s[1:], 16)
+                           else:
+    6:                         c = int(s)
+    9:                     return unichr(c)
+    1:             except ValueError:
+    1:                 return '&#'+s+';'
+                   else:
+                       # Cannot use name2codepoint directly, because HTMLParser supports apos,
+                       # which is not part of HTML 4
+   12:                 if HTMLParser.entitydefs is None:
+    1:                     import htmlentitydefs
+    1:                     entitydefs = {'apos':u"'"}
+  253:                     for k, v in htmlentitydefs.name2codepoint.iteritems():
+  252:                         entitydefs[k] = unichr(v)
+    1:                     HTMLParser.entitydefs = entitydefs
+   12:                 try:
+   12:                     return self.entitydefs[s]
+>>>>>>                 except KeyError:
+>>>>>>                     return '&'+s+';'
+       
+   18:         return re.sub(r"&(#?[xX]?(?:[0-9a-fA-F]+|\w{1,8}));", replaceEntities, s)

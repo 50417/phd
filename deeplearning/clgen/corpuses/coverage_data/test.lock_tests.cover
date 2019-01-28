@@ -1,0 +1,582 @@
+       """
+       Various tests for synchronization primitives.
+    1: """
+       
+    1: import sys
+    1: import time
+    1: from thread import start_new_thread, get_ident
+    1: import threading
+    1: import unittest
+       
+    1: from test import test_support as support
+       
+       
+    1: def _wait():
+           # A crude wait/yield function not relying on synchronization primitives.
+  110:     time.sleep(0.01)
+       
+    2: class Bunch(object):
+           """
+           A bunch of threads.
+    1:     """
+    1:     def __init__(self, f, n, wait_before_exit=False):
+               """
+               Construct a bunch of `n` threads running the same function `f`.
+               If `wait_before_exit` is True, the threads won't terminate until
+               do_finish() is called.
+               """
+   39:         self.f = f
+   39:         self.n = n
+   39:         self.started = []
+   39:         self.finished = []
+   39:         self._can_exit = not wait_before_exit
+   39:         def task():
+>>>>>>             tid = get_ident()
+>>>>>>             self.started.append(tid)
+>>>>>>             try:
+>>>>>>                 f()
+                   finally:
+>>>>>>                 self.finished.append(tid)
+>>>>>>                 while not self._can_exit:
+>>>>>>                     _wait()
+   39:         try:
+  204:             for i in range(n):
+  165:                 start_new_thread(task, ())
+>>>>>>         except:
+>>>>>>             self._can_exit = True
+>>>>>>             raise
+       
+    1:     def wait_for_started(self):
+   24:         while len(self.started) < self.n:
+   12:             _wait()
+       
+    1:     def wait_for_finished(self):
+  105:         while len(self.finished) < self.n:
+   68:             _wait()
+       
+    1:     def do_finish(self):
+    2:         self._can_exit = True
+       
+       
+    2: class BaseTestCase(unittest.TestCase):
+    1:     def setUp(self):
+   72:         self._threads = support.threading_setup()
+       
+    1:     def tearDown(self):
+   72:         support.threading_cleanup(*self._threads)
+   72:         support.reap_children()
+       
+       
+    2: class BaseLockTests(BaseTestCase):
+           """
+           Tests for both recursive and non-recursive locks.
+    1:     """
+       
+    1:     def test_constructor(self):
+    4:         lock = self.locktype()
+    4:         del lock
+       
+    1:     def test_acquire_destroy(self):
+    4:         lock = self.locktype()
+    4:         lock.acquire()
+    4:         del lock
+       
+    1:     def test_acquire_release(self):
+    4:         lock = self.locktype()
+    4:         lock.acquire()
+    4:         lock.release()
+    4:         del lock
+       
+    1:     def test_try_acquire(self):
+    4:         lock = self.locktype()
+    4:         self.assertTrue(lock.acquire(False))
+    4:         lock.release()
+       
+    1:     def test_try_acquire_contended(self):
+    4:         lock = self.locktype()
+    4:         lock.acquire()
+    4:         result = []
+    4:         def f():
+>>>>>>             result.append(lock.acquire(False))
+    4:         Bunch(f, 1).wait_for_finished()
+    4:         self.assertFalse(result[0])
+    4:         lock.release()
+       
+    1:     def test_acquire_contended(self):
+    4:         lock = self.locktype()
+    4:         lock.acquire()
+    4:         N = 5
+    4:         def f():
+>>>>>>             lock.acquire()
+>>>>>>             lock.release()
+       
+    4:         b = Bunch(f, N)
+    4:         b.wait_for_started()
+    4:         _wait()
+    4:         self.assertEqual(len(b.finished), 0)
+    4:         lock.release()
+    4:         b.wait_for_finished()
+    4:         self.assertEqual(len(b.finished), N)
+       
+    1:     def test_with(self):
+    4:         lock = self.locktype()
+    4:         def f():
+>>>>>>             lock.acquire()
+>>>>>>             lock.release()
+    4:         def _with(err=None):
+    8:             with lock:
+    8:                 if err is not None:
+    4:                     raise err
+    4:         _with()
+               # Check the lock is unacquired
+    4:         Bunch(f, 1).wait_for_finished()
+    4:         self.assertRaises(TypeError, _with, TypeError)
+               # Check the lock is unacquired
+    4:         Bunch(f, 1).wait_for_finished()
+       
+    1:     def test_thread_leak(self):
+               # The lock shouldn't leak a Thread instance when used from a foreign
+               # (non-threading) thread.
+    4:         lock = self.locktype()
+    4:         def f():
+>>>>>>             lock.acquire()
+>>>>>>             lock.release()
+    4:         n = len(threading.enumerate())
+               # We run many threads in the hope that existing threads ids won't
+               # be recycled.
+    4:         Bunch(f, 15).wait_for_finished()
+    4:         self.assertEqual(n, len(threading.enumerate()))
+       
+       
+    2: class LockTests(BaseLockTests):
+           """
+           Tests for non-recursive, weak locks
+           (which can be acquired and released from different threads).
+    1:     """
+    1:     def test_reacquire(self):
+               # Lock needs to be released before re-acquiring.
+    2:         lock = self.locktype()
+    2:         phase = []
+    2:         def f():
+>>>>>>             lock.acquire()
+>>>>>>             phase.append(None)
+>>>>>>             lock.acquire()
+>>>>>>             phase.append(None)
+    2:         start_new_thread(f, ())
+    4:         while len(phase) == 0:
+    2:             _wait()
+    2:         _wait()
+    2:         self.assertEqual(len(phase), 1)
+    2:         lock.release()
+    4:         while len(phase) == 1:
+    2:             _wait()
+    2:         self.assertEqual(len(phase), 2)
+       
+    1:     def test_different_thread(self):
+               # Lock can be released from a different thread.
+    2:         lock = self.locktype()
+    2:         lock.acquire()
+    2:         def f():
+>>>>>>             lock.release()
+    2:         b = Bunch(f, 1)
+    2:         b.wait_for_finished()
+    2:         lock.acquire()
+    2:         lock.release()
+       
+       
+    2: class RLockTests(BaseLockTests):
+           """
+           Tests for recursive locks.
+    1:     """
+    1:     def test_reacquire(self):
+    2:         lock = self.locktype()
+    2:         lock.acquire()
+    2:         lock.acquire()
+    2:         lock.release()
+    2:         lock.acquire()
+    2:         lock.release()
+    2:         lock.release()
+       
+    1:     def test_release_unacquired(self):
+               # Cannot release an unacquired lock
+    2:         lock = self.locktype()
+    2:         self.assertRaises(RuntimeError, lock.release)
+    2:         lock.acquire()
+    2:         lock.acquire()
+    2:         lock.release()
+    2:         lock.acquire()
+    2:         lock.release()
+    2:         lock.release()
+    2:         self.assertRaises(RuntimeError, lock.release)
+       
+    1:     def test_different_thread(self):
+               # Cannot release from a different thread
+    2:         lock = self.locktype()
+    2:         def f():
+>>>>>>             lock.acquire()
+    2:         b = Bunch(f, 1, True)
+    2:         try:
+    2:             self.assertRaises(RuntimeError, lock.release)
+               finally:
+    2:             b.do_finish()
+       
+    1:     def test__is_owned(self):
+    2:         lock = self.locktype()
+    2:         self.assertFalse(lock._is_owned())
+    2:         lock.acquire()
+    2:         self.assertTrue(lock._is_owned())
+    2:         lock.acquire()
+    2:         self.assertTrue(lock._is_owned())
+    2:         result = []
+    2:         def f():
+>>>>>>             result.append(lock._is_owned())
+    2:         Bunch(f, 1).wait_for_finished()
+    2:         self.assertFalse(result[0])
+    2:         lock.release()
+    2:         self.assertTrue(lock._is_owned())
+    2:         lock.release()
+    2:         self.assertFalse(lock._is_owned())
+       
+       
+    2: class EventTests(BaseTestCase):
+           """
+           Tests for Event objects.
+    1:     """
+       
+    1:     def test_is_set(self):
+    1:         evt = self.eventtype()
+    1:         self.assertFalse(evt.is_set())
+    1:         evt.set()
+    1:         self.assertTrue(evt.is_set())
+    1:         evt.set()
+    1:         self.assertTrue(evt.is_set())
+    1:         evt.clear()
+    1:         self.assertFalse(evt.is_set())
+    1:         evt.clear()
+    1:         self.assertFalse(evt.is_set())
+       
+    1:     def _check_notify(self, evt):
+               # All threads get notified
+    2:         N = 5
+    2:         results1 = []
+    2:         results2 = []
+    2:         def f():
+>>>>>>             results1.append(evt.wait())
+>>>>>>             results2.append(evt.wait())
+    2:         b = Bunch(f, N)
+    2:         b.wait_for_started()
+    2:         _wait()
+    2:         self.assertEqual(len(results1), 0)
+    2:         evt.set()
+    2:         b.wait_for_finished()
+    2:         self.assertEqual(results1, [True] * N)
+    2:         self.assertEqual(results2, [True] * N)
+       
+    1:     def test_notify(self):
+    1:         evt = self.eventtype()
+    1:         self._check_notify(evt)
+               # Another time, after an explicit clear()
+    1:         evt.set()
+    1:         evt.clear()
+    1:         self._check_notify(evt)
+       
+    1:     def test_timeout(self):
+    1:         evt = self.eventtype()
+    1:         results1 = []
+    1:         results2 = []
+    1:         N = 5
+    1:         def f():
+>>>>>>             results1.append(evt.wait(0.0))
+>>>>>>             t1 = time.time()
+>>>>>>             r = evt.wait(0.2)
+>>>>>>             t2 = time.time()
+>>>>>>             results2.append((r, t2 - t1))
+    1:         Bunch(f, N).wait_for_finished()
+    1:         self.assertEqual(results1, [False] * N)
+    6:         for r, dt in results2:
+    5:             self.assertFalse(r)
+    5:             self.assertTrue(dt >= 0.2, dt)
+               # The event is set
+    1:         results1 = []
+    1:         results2 = []
+    1:         evt.set()
+    1:         Bunch(f, N).wait_for_finished()
+    1:         self.assertEqual(results1, [True] * N)
+    6:         for r, dt in results2:
+    5:             self.assertTrue(r)
+       
+    1:     def test_reset_internal_locks(self):
+    1:         evt = self.eventtype()
+    1:         old_lock = evt._Event__cond._Condition__lock
+    1:         evt._reset_internal_locks()
+    1:         new_lock = evt._Event__cond._Condition__lock
+    1:         self.assertIsNot(new_lock, old_lock)
+    1:         self.assertIs(type(new_lock), type(old_lock))
+       
+       
+    2: class ConditionTests(BaseTestCase):
+           """
+           Tests for condition variables.
+    1:     """
+       
+    1:     def test_acquire(self):
+    1:         cond = self.condtype()
+               # Be default we have an RLock: the condition can be acquired multiple
+               # times.
+    1:         cond.acquire()
+    1:         cond.acquire()
+    1:         cond.release()
+    1:         cond.release()
+    1:         lock = threading.Lock()
+    1:         cond = self.condtype(lock)
+    1:         cond.acquire()
+    1:         self.assertFalse(lock.acquire(False))
+    1:         cond.release()
+    1:         self.assertTrue(lock.acquire(False))
+    1:         self.assertFalse(cond.acquire(False))
+    1:         lock.release()
+    1:         with cond:
+    1:             self.assertFalse(lock.acquire(False))
+       
+    1:     def test_unacquired_wait(self):
+    1:         cond = self.condtype()
+    1:         self.assertRaises(RuntimeError, cond.wait)
+       
+    1:     def test_unacquired_notify(self):
+    1:         cond = self.condtype()
+    1:         self.assertRaises(RuntimeError, cond.notify)
+       
+    1:     def _check_notify(self, cond):
+               # Note that this test is sensitive to timing.  If the worker threads
+               # don't execute in a timely fashion, the main thread may think they
+               # are further along then they are.  The main thread therefore issues
+               # _wait() statements to try to make sure that it doesn't race ahead
+               # of the workers.
+               # Secondly, this test assumes that condition variables are not subject
+               # to spurious wakeups.  The absence of spurious wakeups is an implementation
+               # detail of Condition Cariables in current CPython, but in general, not
+               # a guaranteed property of condition variables as a programming
+               # construct.  In particular, it is possible that this can no longer
+               # be conveniently guaranteed should their implementation ever change.
+    2:         N = 5
+    2:         ready = []
+    2:         results1 = []
+    2:         results2 = []
+    2:         phase_num = 0
+    2:         def f():
+>>>>>>             cond.acquire()
+>>>>>>             ready.append(phase_num)
+>>>>>>             cond.wait()
+>>>>>>             cond.release()
+>>>>>>             results1.append(phase_num)
+>>>>>>             cond.acquire()
+>>>>>>             ready.append(phase_num)
+>>>>>>             cond.wait()
+>>>>>>             cond.release()
+>>>>>>             results2.append(phase_num)
+    2:         b = Bunch(f, N)
+    2:         b.wait_for_started()
+               # first wait, to ensure all workers settle into cond.wait() before
+               # we continue. See issues #8799 and #30727.
+    2:         while len(ready) < 5:
+>>>>>>             _wait()
+    2:         ready = []
+    2:         self.assertEqual(results1, [])
+               # Notify 3 threads at first
+    2:         cond.acquire()
+    2:         cond.notify(3)
+    2:         _wait()
+    2:         phase_num = 1
+    2:         cond.release()
+    4:         while len(results1) < 3:
+    2:             _wait()
+    2:         self.assertEqual(results1, [1] * 3)
+    2:         self.assertEqual(results2, [])
+               # make sure all awaken workers settle into cond.wait()
+    2:         while len(ready) < 3:
+>>>>>>             _wait()
+               # Notify 5 threads: they might be in their first or second wait
+    2:         cond.acquire()
+    2:         cond.notify(5)
+    2:         _wait()
+    2:         phase_num = 2
+    2:         cond.release()
+    4:         while len(results1) + len(results2) < 8:
+    2:             _wait()
+    2:         self.assertEqual(results1, [1] * 3 + [2] * 2)
+    2:         self.assertEqual(results2, [2] * 3)
+               # make sure all workers settle into cond.wait()
+    2:         while len(ready) < 5:
+>>>>>>             _wait()
+               # Notify all threads: they are all in their second wait
+    2:         cond.acquire()
+    2:         cond.notify_all()
+    2:         _wait()
+    2:         phase_num = 3
+    2:         cond.release()
+    4:         while len(results2) < 5:
+    2:             _wait()
+    2:         self.assertEqual(results1, [1] * 3 + [2] * 2)
+    2:         self.assertEqual(results2, [2] * 3 + [3] * 2)
+    2:         b.wait_for_finished()
+       
+    1:     def test_notify(self):
+    1:         cond = self.condtype()
+    1:         self._check_notify(cond)
+               # A second time, to check internal state is still ok.
+    1:         self._check_notify(cond)
+       
+    1:     def test_timeout(self):
+    1:         cond = self.condtype()
+    1:         results = []
+    1:         N = 5
+    1:         def f():
+>>>>>>             cond.acquire()
+>>>>>>             t1 = time.time()
+>>>>>>             cond.wait(0.2)
+>>>>>>             t2 = time.time()
+>>>>>>             cond.release()
+>>>>>>             results.append(t2 - t1)
+    1:         Bunch(f, N).wait_for_finished()
+    1:         self.assertEqual(len(results), 5)
+    6:         for dt in results:
+    5:             self.assertTrue(dt >= 0.2, dt)
+       
+       
+    2: class BaseSemaphoreTests(BaseTestCase):
+           """
+           Common tests for {bounded, unbounded} semaphore objects.
+    1:     """
+       
+    1:     def test_constructor(self):
+    2:         self.assertRaises(ValueError, self.semtype, value = -1)
+    2:         self.assertRaises(ValueError, self.semtype, value = -sys.maxint)
+       
+    1:     def test_acquire(self):
+    2:         sem = self.semtype(1)
+    2:         sem.acquire()
+    2:         sem.release()
+    2:         sem = self.semtype(2)
+    2:         sem.acquire()
+    2:         sem.acquire()
+    2:         sem.release()
+    2:         sem.release()
+       
+    1:     def test_acquire_destroy(self):
+    2:         sem = self.semtype()
+    2:         sem.acquire()
+    2:         del sem
+       
+    1:     def test_acquire_contended(self):
+    2:         sem = self.semtype(7)
+    2:         sem.acquire()
+    2:         N = 10
+    2:         results1 = []
+    2:         results2 = []
+    2:         phase_num = 0
+    2:         def f():
+>>>>>>             sem.acquire()
+>>>>>>             results1.append(phase_num)
+>>>>>>             sem.acquire()
+>>>>>>             results2.append(phase_num)
+    2:         b = Bunch(f, 10)
+    2:         b.wait_for_started()
+    2:         while len(results1) + len(results2) < 6:
+>>>>>>             _wait()
+    2:         self.assertEqual(results1 + results2, [0] * 6)
+    2:         phase_num = 1
+   16:         for i in range(7):
+   14:             sem.release()
+    4:         while len(results1) + len(results2) < 13:
+    2:             _wait()
+    2:         self.assertEqual(sorted(results1 + results2), [0] * 6 + [1] * 7)
+    2:         phase_num = 2
+   14:         for i in range(6):
+   12:             sem.release()
+    4:         while len(results1) + len(results2) < 19:
+    2:             _wait()
+    2:         self.assertEqual(sorted(results1 + results2), [0] * 6 + [1] * 7 + [2] * 6)
+               # The semaphore is still locked
+    2:         self.assertFalse(sem.acquire(False))
+               # Final release, to let the last thread finish
+    2:         sem.release()
+    2:         b.wait_for_finished()
+       
+    1:     def test_try_acquire(self):
+    2:         sem = self.semtype(2)
+    2:         self.assertTrue(sem.acquire(False))
+    2:         self.assertTrue(sem.acquire(False))
+    2:         self.assertFalse(sem.acquire(False))
+    2:         sem.release()
+    2:         self.assertTrue(sem.acquire(False))
+       
+    1:     def test_try_acquire_contended(self):
+    2:         sem = self.semtype(4)
+    2:         sem.acquire()
+    2:         results = []
+    2:         def f():
+>>>>>>             results.append(sem.acquire(False))
+>>>>>>             results.append(sem.acquire(False))
+    2:         Bunch(f, 5).wait_for_finished()
+               # There can be a thread switch between acquiring the semaphore and
+               # appending the result, therefore results will not necessarily be
+               # ordered.
+    2:         self.assertEqual(sorted(results), [False] * 7 + [True] *  3 )
+       
+    1:     def test_default_value(self):
+               # The default initial value is 1.
+    2:         sem = self.semtype()
+    2:         sem.acquire()
+    2:         def f():
+>>>>>>             sem.acquire()
+>>>>>>             sem.release()
+    2:         b = Bunch(f, 1)
+    2:         b.wait_for_started()
+    2:         _wait()
+    2:         self.assertFalse(b.finished)
+    2:         sem.release()
+    2:         b.wait_for_finished()
+       
+    1:     def test_with(self):
+    2:         sem = self.semtype(2)
+    2:         def _with(err=None):
+    4:             with sem:
+    4:                 self.assertTrue(sem.acquire(False))
+    4:                 sem.release()
+    4:                 with sem:
+    4:                     self.assertFalse(sem.acquire(False))
+    4:                     if err:
+    2:                         raise err
+    2:         _with()
+    2:         self.assertTrue(sem.acquire(False))
+    2:         sem.release()
+    2:         self.assertRaises(TypeError, _with, TypeError)
+    2:         self.assertTrue(sem.acquire(False))
+    2:         sem.release()
+       
+    2: class SemaphoreTests(BaseSemaphoreTests):
+           """
+           Tests for unbounded semaphores.
+    1:     """
+       
+    1:     def test_release_unacquired(self):
+               # Unbounded releases are allowed and increment the semaphore's value
+    1:         sem = self.semtype(1)
+    1:         sem.release()
+    1:         sem.acquire()
+    1:         sem.acquire()
+    1:         sem.release()
+       
+       
+    2: class BoundedSemaphoreTests(BaseSemaphoreTests):
+           """
+           Tests for bounded semaphores.
+    1:     """
+       
+    1:     def test_release_unacquired(self):
+               # Cannot go past the initial value
+    1:         sem = self.semtype()
+    1:         self.assertRaises(ValueError, sem.release)
+    1:         sem.acquire()
+    1:         sem.release()
+    1:         self.assertRaises(ValueError, sem.release)

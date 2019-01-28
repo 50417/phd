@@ -1,0 +1,763 @@
+    2: """A flow graph representation for Python bytecode"""
+       
+    2: import dis
+    2: import types
+    2: import sys
+       
+    2: from compiler import misc
+    2: from compiler.consts \
+            import CO_OPTIMIZED, CO_NEWLOCALS, CO_VARARGS, CO_VARKEYWORDS
+       
+    4: class FlowGraph:
+    2:     def __init__(self):
+   33:         self.current = self.entry = Block()
+   33:         self.exit = Block("exit")
+   33:         self.blocks = misc.Set()
+   33:         self.blocks.add(self.entry)
+   33:         self.blocks.add(self.exit)
+       
+    2:     def startBlock(self, block):
+   55:         if self._debug:
+>>>>>>             if self.current:
+>>>>>>                 print "end", repr(self.current)
+>>>>>>                 print "    next", self.current.next
+>>>>>>                 print "    prev", self.current.prev
+>>>>>>                 print "   ", self.current.get_children()
+>>>>>>             print repr(block)
+   55:         self.current = block
+       
+    2:     def nextBlock(self, block=None):
+               # XXX think we need to specify when there is implicit transfer
+               # from one block to the next.  might be better to represent this
+               # with explicit JUMP_ABSOLUTE instructions that are optimized
+               # out when they are unnecessary.
+               #
+               # I think this strategy works: each block has a child
+               # designated as "next" which is returned as the last of the
+               # children.  because the nodes in a graph are emitted in
+               # reverse post order, the "next" block will always be emitted
+               # immediately after its parent.
+               # Worry: maintaining this invariant could be tricky
+   37:         if block is None:
+    9:             block = self.newBlock()
+       
+               # Note: If the current block ends with an unconditional control
+               # transfer, then it is techically incorrect to add an implicit
+               # transfer to the block graph. Doing so results in code generation
+               # for unreachable blocks.  That doesn't appear to be very common
+               # with Python code and since the built-in compiler doesn't optimize
+               # it out we don't either.
+   37:         self.current.addNext(block)
+   37:         self.startBlock(block)
+       
+    2:     def newBlock(self):
+   58:         b = Block()
+   58:         self.blocks.add(b)
+   58:         return b
+       
+    2:     def startExitBlock(self):
+    9:         self.startBlock(self.exit)
+       
+    2:     _debug = 0
+       
+    2:     def _enable_debug(self):
+>>>>>>         self._debug = 1
+       
+    2:     def _disable_debug(self):
+>>>>>>         self._debug = 0
+       
+    2:     def emit(self, *inst):
+  514:         if self._debug:
+>>>>>>             print "\t", inst
+  514:         if len(inst) == 2 and isinstance(inst[1], Block):
+   32:             self.current.addOutEdge(inst[1])
+  514:         self.current.emit(inst)
+       
+    2:     def getBlocksInOrder(self):
+               """Return the blocks in reverse postorder
+       
+               i.e. each node appears before all of its successors
+               """
+   33:         order = order_blocks(self.entry, self.exit)
+   33:         return order
+       
+    2:     def getBlocks(self):
+   33:         return self.blocks.elements()
+       
+    2:     def getRoot(self):
+               """Return nodes appropriate for use with dominator"""
+>>>>>>         return self.entry
+       
+    2:     def getContainedGraphs(self):
+>>>>>>         l = []
+>>>>>>         for b in self.getBlocks():
+>>>>>>             l.extend(b.getContainedGraphs())
+>>>>>>         return l
+       
+       
+    2: def order_blocks(start_block, exit_block):
+           """Order blocks so that they are emitted in the right order"""
+           # Rules:
+           # - when a block has a next block, the next block must be emitted just after
+           # - when a block has followers (relative jumps), it must be emitted before
+           #   them
+           # - all reachable blocks must be emitted
+   33:     order = []
+       
+           # Find all the blocks to be emitted.
+   33:     remaining = set()
+   33:     todo = [start_block]
+  125:     while todo:
+   92:         b = todo.pop()
+   92:         if b in remaining:
+   13:             continue
+   79:         remaining.add(b)
+  148:         for c in b.get_children():
+   69:             if c not in remaining:
+   59:                 todo.append(c)
+       
+           # A block is dominated by another block if that block must be emitted
+           # before it.
+   33:     dominators = {}
+  112:     for b in remaining:
+   79:         if __debug__ and b.next:
+   37:             assert b is b.next[0].prev[0], (b, b.next)
+               # Make sure every block appears in dominators, even if no
+               # other block must precede it.
+   79:         dominators.setdefault(b, set())
+               # preceding blocks dominate following blocks
+  134:         for c in b.get_followers():
+   55:             while 1:
+   69:                 dominators.setdefault(c, set()).add(b)
+                       # Any block that has a next pointer leading to c is also
+                       # dominated because the whole chain will be emitted at once.
+                       # Walk backwards and add them all.
+   69:                 if c.prev and c.prev[0] is not b:
+   14:                     c = c.prev[0]
+                       else:
+   55:                     break
+       
+   33:     def find_next():
+               # Find a block that can be emitted next.
+   14:         for b in remaining:
+   31:             for c in dominators[b]:
+   22:                 if c in remaining:
+    5:                     break # can't emit yet, dominated by a remaining block
+                   else:
+    9:                 return b
+>>>>>>         assert 0, 'circular dependency, cannot find next block'
+       
+   33:     b = start_block
+   33:     while 1:
+   79:         order.append(b)
+   79:         remaining.discard(b)
+   79:         if b.next:
+   37:             b = b.next[0]
+   37:             continue
+   42:         elif b is not exit_block and not b.has_unconditional_transfer():
+   33:             order.append(exit_block)
+   42:         if not remaining:
+   33:             break
+    9:         b = find_next()
+   33:     return order
+       
+       
+    4: class Block:
+    2:     _count = 0
+       
+    2:     def __init__(self, label=''):
+  124:         self.insts = []
+  124:         self.outEdges = set()
+  124:         self.label = label
+  124:         self.bid = Block._count
+  124:         self.next = []
+  124:         self.prev = []
+  124:         Block._count = Block._count + 1
+       
+    2:     def __repr__(self):
+>>>>>>         if self.label:
+>>>>>>             return "<block %s id=%d>" % (self.label, self.bid)
+               else:
+>>>>>>             return "<block id=%d>" % (self.bid)
+       
+    2:     def __str__(self):
+>>>>>>         insts = map(str, self.insts)
+>>>>>>         return "<block %s %d:\n%s>" % (self.label, self.bid,
+>>>>>>                                        '\n'.join(insts))
+       
+    2:     def emit(self, inst):
+  514:         op = inst[0]
+  514:         self.insts.append(inst)
+       
+    2:     def getInstructions(self):
+  236:         return self.insts
+       
+    2:     def addOutEdge(self, block):
+   32:         self.outEdges.add(block)
+       
+    2:     def addNext(self, block):
+   37:         self.next.append(block)
+   37:         assert len(self.next) == 1, map(str, self.next)
+   37:         block.prev.append(self)
+   37:         assert len(block.prev) == 1, map(str, block.prev)
+       
+           _uncond_transfer = ('RETURN_VALUE', 'RAISE_VARARGS',
+    2:                         'JUMP_ABSOLUTE', 'JUMP_FORWARD', 'CONTINUE_LOOP',
+                               )
+       
+    2:     def has_unconditional_transfer(self):
+               """Returns True if there is an unconditional transfer to an other block
+               at the end of this block. This means there is no risk for the bytecode
+               executer to go past this block's bytecode."""
+   42:         try:
+   42:             op, arg = self.insts[-1]
+   30:         except (IndexError, ValueError):
+   30:             return
+   12:         return op in self._uncond_transfer
+       
+    2:     def get_children(self):
+  191:         return list(self.outEdges) + self.next
+       
+    2:     def get_followers(self):
+               """Get the whole list of followers, including the next block."""
+   79:         followers = set(self.next)
+               # Blocks that must be emitted *after* this one, because of
+               # bytecode offsets (e.g. relative jumps) pointing to them.
+  576:         for inst in self.insts:
+  497:             if inst[0] in PyFlowGraph.hasjrel:
+   18:                 followers.add(inst[1])
+   79:         return followers
+       
+    2:     def getContainedGraphs(self):
+               """Return all graphs contained within this block.
+       
+               For example, a MAKE_FUNCTION block will contain a reference to
+               the graph for the function body.
+               """
+>>>>>>         contained = []
+>>>>>>         for inst in self.insts:
+>>>>>>             if len(inst) == 1:
+>>>>>>                 continue
+>>>>>>             op = inst[1]
+>>>>>>             if hasattr(op, 'graph'):
+>>>>>>                 contained.append(op.graph)
+>>>>>>         return contained
+       
+       # flags for code objects
+       
+       # the FlowGraph is transformed in place; it exists in one of these states
+    2: RAW = "RAW"
+    2: FLAT = "FLAT"
+    2: CONV = "CONV"
+    2: DONE = "DONE"
+       
+    4: class PyFlowGraph(FlowGraph):
+    2:     super_init = FlowGraph.__init__
+       
+    2:     def __init__(self, name, filename, args=(), optimized=0, klass=None):
+   33:         self.super_init()
+   33:         self.name = name
+   33:         self.filename = filename
+   33:         self.docstring = None
+   33:         self.args = args # XXX
+   33:         self.argcount = getArgCount(args)
+   33:         self.klass = klass
+   33:         if optimized:
+    8:             self.flags = CO_OPTIMIZED | CO_NEWLOCALS
+               else:
+   25:             self.flags = 0
+   33:         self.consts = []
+   33:         self.names = []
+               # Free variables found by the symbol table scan, including
+               # variables used only in nested scopes, are included here.
+   33:         self.freevars = []
+   33:         self.cellvars = []
+               # The closure list is used to track the order of cell
+               # variables and free variables in the resulting code object.
+               # The offsets used by LOAD_CLOSURE/LOAD_DEREF refer to both
+               # kinds of variables.
+   33:         self.closure = []
+   33:         self.varnames = list(args) or []
+   34:         for i in range(len(self.varnames)):
+    1:             var = self.varnames[i]
+    1:             if isinstance(var, TupleArg):
+>>>>>>                 self.varnames[i] = var.getName()
+   33:         self.stage = RAW
+       
+    2:     def setDocstring(self, doc):
+    2:         self.docstring = doc
+       
+    2:     def setFlag(self, flag):
+   10:         self.flags = self.flags | flag
+   10:         if flag == CO_VARARGS:
+>>>>>>             self.argcount = self.argcount - 1
+       
+    2:     def checkFlag(self, flag):
+    4:         if self.flags & flag:
+>>>>>>             return 1
+       
+    2:     def setFreeVars(self, names):
+    9:         self.freevars = list(names)
+       
+    2:     def setCellVars(self, names):
+    9:         self.cellvars = names
+       
+    2:     def getCode(self):
+               """Get a Python code object"""
+   33:         assert self.stage == RAW
+   33:         self.computeStackDepth()
+   33:         self.flattenGraph()
+   33:         assert self.stage == FLAT
+   33:         self.convertArgs()
+   33:         assert self.stage == CONV
+   33:         self.makeByteCode()
+   33:         assert self.stage == DONE
+   33:         return self.newCodeObject()
+       
+    2:     def dump(self, io=None):
+>>>>>>         if io:
+>>>>>>             save = sys.stdout
+>>>>>>             sys.stdout = io
+>>>>>>         pc = 0
+>>>>>>         for t in self.insts:
+>>>>>>             opname = t[0]
+>>>>>>             if opname == "SET_LINENO":
+>>>>>>                 print
+>>>>>>             if len(t) == 1:
+>>>>>>                 print "\t", "%3d" % pc, opname
+>>>>>>                 pc = pc + 1
+                   else:
+>>>>>>                 print "\t", "%3d" % pc, opname, t[1]
+>>>>>>                 pc = pc + 3
+>>>>>>         if io:
+>>>>>>             sys.stdout = save
+       
+    2:     def computeStackDepth(self):
+               """Compute the max stack depth.
+       
+               Approach is to compute the stack effect of each basic block.
+               Then find the path through the code with the largest total
+               effect.
+               """
+   33:         depth = {}
+   33:         exit = None
+  157:         for b in self.getBlocks():
+  124:             depth[b] = findDepth(b.getInstructions())
+       
+   33:         seen = {}
+       
+   33:         def max_depth(b, d):
+  135:             if b in seen:
+   23:                 return d
+  112:             seen[b] = 1
+  112:             d = d + depth[b]
+  112:             children = b.get_children()
+  112:             if children:
+  115:                 return max([max_depth(c, d) for c in children])
+                   else:
+   66:                 if not b.label == "exit":
+   33:                     return max_depth(self.exit, d)
+                       else:
+   33:                     return d
+       
+   33:         self.stacksize = max_depth(self.entry, 0)
+       
+    2:     def flattenGraph(self):
+               """Arrange the blocks in order and resolve jumps"""
+   33:         assert self.stage == RAW
+   33:         self.insts = insts = []
+   33:         pc = 0
+   33:         begin = {}
+   33:         end = {}
+  145:         for b in self.getBlocksInOrder():
+  112:             begin[b] = pc
+  626:             for inst in b.getInstructions():
+  514:                 insts.append(inst)
+  514:                 if len(inst) == 1:
+  114:                     pc = pc + 1
+  400:                 elif inst[0] != "SET_LINENO":
+                           # arg takes 2 bytes
+  319:                     pc = pc + 3
+  112:             end[b] = pc
+   33:         pc = 0
+  547:         for i in range(len(insts)):
+  514:             inst = insts[i]
+  514:             if len(inst) == 1:
+  114:                 pc = pc + 1
+  400:             elif inst[0] != "SET_LINENO":
+  319:                 pc = pc + 3
+  514:             opname = inst[0]
+  514:             if opname in self.hasjrel:
+   18:                 oparg = inst[1]
+   18:                 offset = begin[oparg] - pc
+   18:                 insts[i] = opname, offset
+  496:             elif opname in self.hasjabs:
+   14:                 insts[i] = opname, begin[inst[1]]
+   33:         self.stage = FLAT
+       
+    2:     hasjrel = set()
+   14:     for i in dis.hasjrel:
+   12:         hasjrel.add(dis.opname[i])
+    2:     hasjabs = set()
+   14:     for i in dis.hasjabs:
+   12:         hasjabs.add(dis.opname[i])
+       
+    2:     def convertArgs(self):
+               """Convert arguments from symbolic to concrete form"""
+   33:         assert self.stage == FLAT
+   33:         self.consts.insert(0, self.docstring)
+   33:         self.sort_cellvars()
+  547:         for i in range(len(self.insts)):
+  514:             t = self.insts[i]
+  514:             if len(t) == 2:
+  400:                 opname, oparg = t
+  400:                 conv = self._converters.get(opname, None)
+  400:                 if conv:
+  227:                     self.insts[i] = opname, conv(self, oparg)
+   33:         self.stage = CONV
+       
+    2:     def sort_cellvars(self):
+               """Sort cellvars in the order of varnames and prune from freevars.
+               """
+   33:         cells = {}
+   34:         for name in self.cellvars:
+    1:             cells[name] = 1
+   34:         self.cellvars = [name for name in self.varnames
+    1:                          if name in cells]
+   33:         for name in self.cellvars:
+>>>>>>             del cells[name]
+   33:         self.cellvars = self.cellvars + cells.keys()
+   33:         self.closure = self.cellvars + self.freevars
+       
+    2:     def _lookupName(self, name, list):
+               """Return index of name in list, appending if necessary
+       
+               This routine uses a list instead of a dictionary, because a
+               dictionary can't store two different keys if the keys have the
+               same value but different types, e.g. 2 and 2L.  The compiler
+               must treat these two separately, so it does an explicit type
+               comparison before comparing the values.
+               """
+  327:         t = type(name)
+  808:         for i in range(len(list)):
+  595:             if t == type(list[i]) and list[i] == name:
+  114:                 return i
+  213:         end = len(list)
+  213:         list.append(name)
+  213:         return end
+       
+    2:     _converters = {}
+    2:     def _convert_LOAD_CONST(self, arg):
+  115:         if hasattr(arg, 'getCode'):
+    9:             arg = arg.getCode()
+  115:         return self._lookupName(arg, self.consts)
+       
+    2:     def _convert_LOAD_FAST(self, arg):
+   21:         self._lookupName(arg, self.names)
+   21:         return self._lookupName(arg, self.varnames)
+    2:     _convert_STORE_FAST = _convert_LOAD_FAST
+    2:     _convert_DELETE_FAST = _convert_LOAD_FAST
+       
+    2:     def _convert_LOAD_NAME(self, arg):
+   27:         if self.klass is None:
+   27:             self._lookupName(arg, self.varnames)
+   27:         return self._lookupName(arg, self.names)
+       
+    2:     def _convert_NAME(self, arg):
+   55:         if self.klass is None:
+   53:             self._lookupName(arg, self.varnames)
+   55:         return self._lookupName(arg, self.names)
+    2:     _convert_STORE_NAME = _convert_NAME
+    2:     _convert_DELETE_NAME = _convert_NAME
+    2:     _convert_IMPORT_NAME = _convert_NAME
+    2:     _convert_IMPORT_FROM = _convert_NAME
+    2:     _convert_STORE_ATTR = _convert_NAME
+    2:     _convert_LOAD_ATTR = _convert_NAME
+    2:     _convert_DELETE_ATTR = _convert_NAME
+    2:     _convert_LOAD_GLOBAL = _convert_NAME
+    2:     _convert_STORE_GLOBAL = _convert_NAME
+    2:     _convert_DELETE_GLOBAL = _convert_NAME
+       
+    2:     def _convert_DEREF(self, arg):
+    2:         self._lookupName(arg, self.names)
+    2:         self._lookupName(arg, self.varnames)
+    2:         return self._lookupName(arg, self.closure)
+    2:     _convert_LOAD_DEREF = _convert_DEREF
+    2:     _convert_STORE_DEREF = _convert_DEREF
+       
+    2:     def _convert_LOAD_CLOSURE(self, arg):
+    1:         self._lookupName(arg, self.varnames)
+    1:         return self._lookupName(arg, self.closure)
+       
+    2:     _cmp = list(dis.cmp_op)
+    2:     def _convert_COMPARE_OP(self, arg):
+    6:         return self._cmp.index(arg)
+       
+           # similarly for other opcodes...
+       
+   84:     for name, obj in locals().items():
+   82:         if name[:9] == "_convert_":
+   42:             opname = name[9:]
+   42:             _converters[opname] = obj
+    2:     del name, obj, opname
+       
+    2:     def makeByteCode(self):
+   33:         assert self.stage == CONV
+   33:         self.lnotab = lnotab = LineAddrTable()
+  547:         for t in self.insts:
+  514:             opname = t[0]
+  514:             if len(t) == 1:
+  114:                 lnotab.addCode(self.opnum[opname])
+                   else:
+  400:                 oparg = t[1]
+  400:                 if opname == "SET_LINENO":
+   81:                     lnotab.nextLine(oparg)
+   81:                     continue
+  319:                 hi, lo = twobyte(oparg)
+  319:                 try:
+  319:                     lnotab.addCode(self.opnum[opname], lo, hi)
+>>>>>>                 except ValueError:
+>>>>>>                     print opname, oparg
+>>>>>>                     print self.opnum[opname], lo, hi
+>>>>>>                     raise
+   33:         self.stage = DONE
+       
+    2:     opnum = {}
+  514:     for num in range(len(dis.opname)):
+  512:         opnum[dis.opname[num]] = num
+    2:     del num
+       
+    2:     def newCodeObject(self):
+   33:         assert self.stage == DONE
+   33:         if (self.flags & CO_NEWLOCALS) == 0:
+   24:             nlocals = 0
+               else:
+    9:             nlocals = len(self.varnames)
+   33:         argcount = self.argcount
+   33:         if self.flags & CO_VARKEYWORDS:
+>>>>>>             argcount = argcount - 1
+   33:         return types.CodeType(argcount, nlocals, self.stacksize, self.flags,
+   33:                         self.lnotab.getCode(), self.getConsts(),
+   33:                         tuple(self.names), tuple(self.varnames),
+   33:                         self.filename, self.name, self.lnotab.firstline,
+   33:                         self.lnotab.getTable(), tuple(self.freevars),
+   33:                         tuple(self.cellvars))
+       
+    2:     def getConsts(self):
+               """Return a tuple for the const slot of the code object
+       
+               Must convert references to code (MAKE_FUNCTION) to code
+               objects recursively.
+               """
+   33:         l = []
+  144:         for elt in self.consts:
+  111:             if isinstance(elt, PyFlowGraph):
+>>>>>>                 elt = elt.getCode()
+  111:             l.append(elt)
+   33:         return tuple(l)
+       
+    2: def isJump(opname):
+>>>>>>     if opname[:4] == 'JUMP':
+>>>>>>         return 1
+       
+    4: class TupleArg:
+    2:     """Helper for marking func defs with nested tuples in arglist"""
+    2:     def __init__(self, count, names):
+>>>>>>         self.count = count
+>>>>>>         self.names = names
+    2:     def __repr__(self):
+>>>>>>         return "TupleArg(%s, %s)" % (self.count, self.names)
+    2:     def getName(self):
+>>>>>>         return ".%d" % self.count
+       
+    2: def getArgCount(args):
+   33:     argcount = len(args)
+   33:     if args:
+    2:         for arg in args:
+    1:             if isinstance(arg, TupleArg):
+>>>>>>                 numNames = len(misc.flatten(arg.names))
+>>>>>>                 argcount = argcount - numNames
+   33:     return argcount
+       
+    2: def twobyte(val):
+           """Convert an int argument into high and low bytes"""
+  319:     assert isinstance(val, (int, long))
+  319:     return divmod(val, 256)
+       
+    4: class LineAddrTable:
+           """lnotab
+       
+           This class builds the lnotab, which is documented in compile.c.
+           Here's a brief recap:
+       
+           For each SET_LINENO instruction after the first one, two bytes are
+           added to lnotab.  (In some cases, multiple two-byte entries are
+           added.)  The first byte is the distance in bytes between the
+           instruction for the last SET_LINENO and the current SET_LINENO.
+           The second byte is offset in line numbers.  If either offset is
+           greater than 255, multiple two-byte entries are added -- see
+           compile.c for the delicate details.
+    2:     """
+       
+    2:     def __init__(self):
+   33:         self.code = []
+   33:         self.codeOffset = 0
+   33:         self.firstline = 0
+   33:         self.lastline = 0
+   33:         self.lastoff = 0
+   33:         self.lnotab = []
+       
+    2:     def addCode(self, *args):
+ 1504:         for arg in args:
+ 1071:             self.code.append(chr(arg))
+  433:         self.codeOffset = self.codeOffset + len(args)
+       
+    2:     def nextLine(self, lineno):
+   81:         if self.firstline == 0:
+   47:             self.firstline = lineno
+   47:             self.lastline = lineno
+               else:
+                   # compute deltas
+   34:             addr = self.codeOffset - self.lastoff
+   34:             line = lineno - self.lastline
+                   # Python assumes that lineno always increases with
+                   # increasing bytecode address (lnotab is unsigned char).
+                   # Depending on when SET_LINENO instructions are emitted
+                   # this is not always true.  Consider the code:
+                   #     a = (1,
+                   #          b)
+                   # In the bytecode stream, the assignment to "a" occurs
+                   # after the loading of "b".  This works with the C Python
+                   # compiler because it only generates a SET_LINENO instruction
+                   # for the assignment.
+   34:             if line >= 0:
+   34:                 push = self.lnotab.append
+   34:                 while addr > 255:
+>>>>>>                     push(255); push(0)
+>>>>>>                     addr -= 255
+   34:                 while line > 255:
+>>>>>>                     push(addr); push(255)
+>>>>>>                     line -= 255
+>>>>>>                     addr = 0
+   34:                 if addr > 0 or line > 0:
+   34:                     push(addr); push(line)
+   34:                 self.lastline = lineno
+   34:                 self.lastoff = self.codeOffset
+       
+    2:     def getCode(self):
+   33:         return ''.join(self.code)
+       
+    2:     def getTable(self):
+   33:         return ''.join(map(chr, self.lnotab))
+       
+    4: class StackDepthTracker:
+           # XXX 1. need to keep track of stack depth on jumps
+           # XXX 2. at least partly as a result, this code is broken
+       
+    2:     def findDepth(self, insts, debug=0):
+  124:         depth = 0
+  124:         maxDepth = 0
+  638:         for i in insts:
+  514:             opname = i[0]
+  514:             if debug:
+>>>>>>                 print i,
+  514:             delta = self.effect.get(opname, None)
+  514:             if delta is not None:
+  163:                 depth = depth + delta
+                   else:
+                       # now check patterns
+  885:                 for pat, pat_delta in self.patterns:
+  698:                     if opname[:len(pat)] == pat:
+  164:                         delta = pat_delta
+  164:                         depth = depth + delta
+  164:                         break
+                       # if we still haven't found a match
+  351:                 if delta is None:
+  187:                     meth = getattr(self, opname, None)
+  187:                     if meth is not None:
+   52:                         depth = depth + meth(i[1])
+  514:             if depth > maxDepth:
+  129:                 maxDepth = depth
+  514:             if debug:
+>>>>>>                 print depth, maxDepth
+  124:         return maxDepth
+       
+    2:     effect = {
+    2:         'POP_TOP': -1,
+    2:         'DUP_TOP': 1,
+    2:         'LIST_APPEND': -1,
+    2:         'SET_ADD': -1,
+    2:         'MAP_ADD': -2,
+    2:         'SLICE+1': -1,
+    2:         'SLICE+2': -1,
+    2:         'SLICE+3': -2,
+    2:         'STORE_SLICE+0': -1,
+    2:         'STORE_SLICE+1': -2,
+    2:         'STORE_SLICE+2': -2,
+    2:         'STORE_SLICE+3': -3,
+    2:         'DELETE_SLICE+0': -1,
+    2:         'DELETE_SLICE+1': -2,
+    2:         'DELETE_SLICE+2': -2,
+    2:         'DELETE_SLICE+3': -3,
+    2:         'STORE_SUBSCR': -3,
+    2:         'DELETE_SUBSCR': -2,
+               # PRINT_EXPR?
+    2:         'PRINT_ITEM': -1,
+    2:         'RETURN_VALUE': -1,
+    2:         'YIELD_VALUE': -1,
+    2:         'EXEC_STMT': -3,
+    2:         'BUILD_CLASS': -2,
+    2:         'STORE_NAME': -1,
+    2:         'STORE_ATTR': -2,
+    2:         'DELETE_ATTR': -1,
+    2:         'STORE_GLOBAL': -1,
+    2:         'BUILD_MAP': 1,
+    2:         'COMPARE_OP': -1,
+    2:         'STORE_FAST': -1,
+    2:         'IMPORT_STAR': -1,
+    2:         'IMPORT_NAME': -1,
+    2:         'IMPORT_FROM': 1,
+    2:         'LOAD_ATTR': 0, # unlike other loads
+               # close enough...
+    2:         'SETUP_EXCEPT': 3,
+    2:         'SETUP_FINALLY': 3,
+    2:         'FOR_ITER': 1,
+    2:         'WITH_CLEANUP': -1,
+               }
+           # use pattern match
+           patterns = [
+    2:         ('BINARY_', -1),
+    2:         ('LOAD_', 1),
+               ]
+       
+    2:     def UNPACK_SEQUENCE(self, count):
+    4:         return count-1
+    2:     def BUILD_TUPLE(self, count):
+    9:         return -count+1
+    2:     def BUILD_LIST(self, count):
+>>>>>>         return -count+1
+    2:     def BUILD_SET(self, count):
+    4:         return -count+1
+    2:     def CALL_FUNCTION(self, argc):
+   26:         hi, lo = divmod(argc, 256)
+   26:         return -(lo + hi * 2)
+    2:     def CALL_FUNCTION_VAR(self, argc):
+    1:         return self.CALL_FUNCTION(argc)-1
+    2:     def CALL_FUNCTION_KW(self, argc):
+>>>>>>         return self.CALL_FUNCTION(argc)-1
+    2:     def CALL_FUNCTION_VAR_KW(self, argc):
+>>>>>>         return self.CALL_FUNCTION(argc)-2
+    2:     def MAKE_FUNCTION(self, argc):
+    8:         return -argc
+    2:     def MAKE_CLOSURE(self, argc):
+               # XXX need to account for free variables too!
+    1:         return -argc
+    2:     def BUILD_SLICE(self, argc):
+>>>>>>         if argc == 2:
+>>>>>>             return -1
+>>>>>>         elif argc == 3:
+>>>>>>             return -2
+    2:     def DUP_TOPX(self, argc):
+>>>>>>         return argc
+       
+    2: findDepth = StackDepthTracker().findDepth

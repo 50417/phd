@@ -1,0 +1,184 @@
+       """
+       Test the API of the symtable module.
+    1: """
+    1: import symtable
+    1: import unittest
+       
+    1: from test import test_support
+       
+       
+       TEST_CODE = """
+       import sys
+       
+       glob = 42
+       
+       class Mine:
+           instance_var = 24
+           def a_method(p1, p2):
+               pass
+       
+       def spam(a, b, *var, **kw):
+           global bar
+           bar = 47
+           x = 23
+           glob
+           def internal():
+               return x
+           return internal
+       
+       def foo():
+           exec 'm'
+           from sys import *
+       
+       def namespace_test(): pass
+       def namespace_test(): pass
+    1: """
+       
+       
+    1: def find_block(block, name):
+    8:     for ch in block.get_children():
+    8:         if ch.get_name() == name:
+    5:             return ch
+       
+       
+    2: class SymtableTest(unittest.TestCase):
+       
+    1:     with test_support.check_warnings(
+    1:             ("import \* only allowed at module level", SyntaxWarning)):
+    1:         top = symtable.symtable(TEST_CODE, "?", "exec")
+           # These correspond to scopes in TEST_CODE
+    1:     Mine = find_block(top, "Mine")
+    1:     a_method = find_block(Mine, "a_method")
+    1:     spam = find_block(top, "spam")
+    1:     internal = find_block(spam, "internal")
+    1:     foo = find_block(top, "foo")
+       
+    1:     def test_type(self):
+    1:         self.assertEqual(self.top.get_type(), "module")
+    1:         self.assertEqual(self.Mine.get_type(), "class")
+    1:         self.assertEqual(self.a_method.get_type(), "function")
+    1:         self.assertEqual(self.spam.get_type(), "function")
+    1:         self.assertEqual(self.internal.get_type(), "function")
+       
+    1:     def test_optimized(self):
+    1:         self.assertFalse(self.top.is_optimized())
+    1:         self.assertFalse(self.top.has_exec())
+    1:         self.assertFalse(self.top.has_import_star())
+       
+    1:         self.assertTrue(self.spam.is_optimized())
+       
+    1:         self.assertFalse(self.foo.is_optimized())
+    1:         self.assertTrue(self.foo.has_exec())
+    1:         self.assertTrue(self.foo.has_import_star())
+       
+    1:     def test_nested(self):
+    1:         self.assertFalse(self.top.is_nested())
+    1:         self.assertFalse(self.Mine.is_nested())
+    1:         self.assertFalse(self.spam.is_nested())
+    1:         self.assertTrue(self.internal.is_nested())
+       
+    1:     def test_children(self):
+    1:         self.assertTrue(self.top.has_children())
+    1:         self.assertTrue(self.Mine.has_children())
+    1:         self.assertFalse(self.foo.has_children())
+       
+    1:     def test_lineno(self):
+    1:         self.assertEqual(self.top.get_lineno(), 0)
+    1:         self.assertEqual(self.spam.get_lineno(), 11)
+       
+    1:     def test_function_info(self):
+    1:         func = self.spam
+    1:         self.assertEqual(sorted(func.get_parameters()), ["a", "b", "kw", "var"])
+    1:         expected = ["a", "b", "internal", "kw", "var", "x"]
+    1:         self.assertEqual(sorted(func.get_locals()), expected)
+    1:         self.assertEqual(sorted(func.get_globals()), ["bar", "glob"])
+    1:         self.assertEqual(self.internal.get_frees(), ("x",))
+       
+    1:     def test_globals(self):
+    1:         self.assertTrue(self.spam.lookup("glob").is_global())
+    1:         self.assertFalse(self.spam.lookup("glob").is_declared_global())
+    1:         self.assertTrue(self.spam.lookup("bar").is_global())
+    1:         self.assertTrue(self.spam.lookup("bar").is_declared_global())
+    1:         self.assertFalse(self.internal.lookup("x").is_global())
+    1:         self.assertFalse(self.Mine.lookup("instance_var").is_global())
+       
+    1:     def test_local(self):
+    1:         self.assertTrue(self.spam.lookup("x").is_local())
+    1:         self.assertFalse(self.internal.lookup("x").is_local())
+       
+    1:     def test_referenced(self):
+    1:         self.assertTrue(self.internal.lookup("x").is_referenced())
+    1:         self.assertTrue(self.spam.lookup("internal").is_referenced())
+    1:         self.assertFalse(self.spam.lookup("x").is_referenced())
+       
+    1:     def test_parameters(self):
+    4:         for sym in ("a", "var", "kw"):
+    3:             self.assertTrue(self.spam.lookup(sym).is_parameter())
+    1:         self.assertFalse(self.spam.lookup("x").is_parameter())
+       
+    1:     def test_symbol_lookup(self):
+    1:         self.assertEqual(len(self.top.get_identifiers()),
+    1:                          len(self.top.get_symbols()))
+       
+    1:         self.assertRaises(KeyError, self.top.lookup, "not_here")
+       
+    1:     def test_namespaces(self):
+    1:         self.assertTrue(self.top.lookup("Mine").is_namespace())
+    1:         self.assertTrue(self.Mine.lookup("a_method").is_namespace())
+    1:         self.assertTrue(self.top.lookup("spam").is_namespace())
+    1:         self.assertTrue(self.spam.lookup("internal").is_namespace())
+    1:         self.assertTrue(self.top.lookup("namespace_test").is_namespace())
+    1:         self.assertFalse(self.spam.lookup("x").is_namespace())
+       
+    1:         self.assertTrue(self.top.lookup("spam").get_namespace() is self.spam)
+    1:         ns_test = self.top.lookup("namespace_test")
+    1:         self.assertEqual(len(ns_test.get_namespaces()), 2)
+    1:         self.assertRaises(ValueError, ns_test.get_namespace)
+       
+    1:     def test_assigned(self):
+    1:         self.assertTrue(self.spam.lookup("x").is_assigned())
+    1:         self.assertTrue(self.spam.lookup("bar").is_assigned())
+    1:         self.assertTrue(self.top.lookup("spam").is_assigned())
+    1:         self.assertTrue(self.Mine.lookup("a_method").is_assigned())
+    1:         self.assertFalse(self.internal.lookup("x").is_assigned())
+       
+    1:     def test_imported(self):
+    1:         self.assertTrue(self.top.lookup("sys").is_imported())
+       
+    1:     def test_name(self):
+    1:         self.assertEqual(self.top.get_name(), "top")
+    1:         self.assertEqual(self.spam.get_name(), "spam")
+    1:         self.assertEqual(self.spam.lookup("x").get_name(), "x")
+    1:         self.assertEqual(self.Mine.get_name(), "Mine")
+       
+    1:     def test_class_info(self):
+    1:         self.assertEqual(self.Mine.get_methods(), ('a_method',))
+       
+    1:     def test_filename_correct(self):
+               ### Bug tickler: SyntaxError file name correct whether error raised
+               ### while parsing or building symbol table.
+    1:         def checkfilename(brokencode):
+    2:             try:
+    2:                 symtable.symtable(brokencode, "spam", "exec")
+    2:             except SyntaxError as e:
+    2:                 self.assertEqual(e.filename, "spam")
+                   else:
+>>>>>>                 self.fail("no SyntaxError for %r" % (brokencode,))
+    1:         checkfilename("def f(x): foo)(")  # parse-time
+    1:         checkfilename("def f(x): global x")  # symtable-build-time
+       
+    1:     def test_eval(self):
+    1:         symbols = symtable.symtable("42", "?", "eval")
+       
+    1:     def test_single(self):
+    1:         symbols = symtable.symtable("42", "?", "single")
+       
+    1:     def test_exec(self):
+    1:         symbols = symtable.symtable("def f(x): return x", "?", "exec")
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(SymtableTest)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

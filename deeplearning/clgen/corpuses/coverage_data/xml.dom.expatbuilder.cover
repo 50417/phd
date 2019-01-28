@@ -1,0 +1,983 @@
+       """Facility to use the Expat parser to load a minidom instance
+       from a string or file.
+       
+       This avoids all the overhead of SAX and pulldom to gain performance.
+    1: """
+       
+       # Warning!
+       #
+       # This module is tightly bound to the implementation details of the
+       # minidom DOM and can't be used with other DOM implementations.  This
+       # is due, in part, to a lack of appropriate methods in the DOM (there is
+       # no way to create Entity and Notation nodes via the DOM Level 2
+       # interface), and for performance.  The latter is the cause of some fairly
+       # cryptic code.
+       #
+       # Performance hacks:
+       #
+       #   -  .character_data_handler() has an extra case in which continuing
+       #      data is appended to an existing Text node; this can be a
+       #      speedup since pyexpat can break up character data into multiple
+       #      callbacks even though we set the buffer_text attribute on the
+       #      parser.  This also gives us the advantage that we don't need a
+       #      separate normalization pass.
+       #
+       #   -  Determining that a node exists is done using an identity comparison
+       #      with None rather than a truth test; this avoids searching for and
+       #      calling any methods on the node object if it exists.  (A rather
+       #      nice speedup is achieved this way as well!)
+       
+    1: from xml.dom import xmlbuilder, minidom, Node
+    1: from xml.dom import EMPTY_NAMESPACE, EMPTY_PREFIX, XMLNS_NAMESPACE
+    1: from xml.parsers import expat
+    1: from xml.dom.minidom import _append_child, _set_attribute_node
+    1: from xml.dom.NodeFilter import NodeFilter
+       
+    1: from xml.dom.minicompat import *
+       
+    1: TEXT_NODE = Node.TEXT_NODE
+    1: CDATA_SECTION_NODE = Node.CDATA_SECTION_NODE
+    1: DOCUMENT_NODE = Node.DOCUMENT_NODE
+       
+    1: FILTER_ACCEPT = xmlbuilder.DOMBuilderFilter.FILTER_ACCEPT
+    1: FILTER_REJECT = xmlbuilder.DOMBuilderFilter.FILTER_REJECT
+    1: FILTER_SKIP = xmlbuilder.DOMBuilderFilter.FILTER_SKIP
+    1: FILTER_INTERRUPT = xmlbuilder.DOMBuilderFilter.FILTER_INTERRUPT
+       
+    1: theDOMImplementation = minidom.getDOMImplementation()
+       
+       # Expat typename -> TypeInfo
+    1: _typeinfo_map = {
+    1:     "CDATA":    minidom.TypeInfo(None, "cdata"),
+    1:     "ENUM":     minidom.TypeInfo(None, "enumeration"),
+    1:     "ENTITY":   minidom.TypeInfo(None, "entity"),
+    1:     "ENTITIES": minidom.TypeInfo(None, "entities"),
+    1:     "ID":       minidom.TypeInfo(None, "id"),
+    1:     "IDREF":    minidom.TypeInfo(None, "idref"),
+    1:     "IDREFS":   minidom.TypeInfo(None, "idrefs"),
+    1:     "NMTOKEN":  minidom.TypeInfo(None, "nmtoken"),
+    1:     "NMTOKENS": minidom.TypeInfo(None, "nmtokens"),
+           }
+       
+    2: class ElementInfo(object):
+    1:     __slots__ = '_attr_info', '_model', 'tagName'
+       
+    1:     def __init__(self, tagName, model=None):
+    3:         self.tagName = tagName
+    3:         self._attr_info = []
+    3:         self._model = model
+       
+    1:     def __getstate__(self):
+    4:         return self._attr_info, self._model, self.tagName
+       
+    1:     def __setstate__(self, state):
+    4:         self._attr_info, self._model, self.tagName = state
+       
+    1:     def getAttributeType(self, aname):
+   55:         for info in self._attr_info:
+   54:             if info[1] == aname:
+    9:                 t = info[-2]
+    9:                 if t[0] == "(":
+    1:                     return _typeinfo_map["ENUM"]
+                       else:
+    8:                     return _typeinfo_map[info[-2]]
+    1:         return minidom._no_type
+       
+    1:     def getAttributeTypeNS(self, namespaceURI, localName):
+>>>>>>         return minidom._no_type
+       
+    1:     def isElementContent(self):
+>>>>>>         if self._model:
+>>>>>>             type = self._model[0]
+>>>>>>             return type not in (expat.model.XML_CTYPE_ANY,
+>>>>>>                                 expat.model.XML_CTYPE_MIXED)
+               else:
+>>>>>>             return False
+       
+    1:     def isEmpty(self):
+>>>>>>         if self._model:
+>>>>>>             return self._model[0] == expat.model.XML_CTYPE_EMPTY
+               else:
+>>>>>>             return False
+       
+    1:     def isId(self, aname):
+>>>>>>         for info in self._attr_info:
+>>>>>>             if info[1] == aname:
+>>>>>>                 return info[-2] == "ID"
+>>>>>>         return False
+       
+    1:     def isIdNS(self, euri, ename, auri, aname):
+               # not sure this is meaningful
+>>>>>>         return self.isId((auri, aname))
+       
+    1: def _intern(builder, s):
+   11:     return builder._intern_setdefault(s, s)
+       
+    1: def _parse_ns_name(builder, name):
+   11:     assert ' ' in name
+   11:     parts = name.split(' ')
+   11:     intern = builder._intern_setdefault
+   11:     if len(parts) == 3:
+    7:         uri, localname, prefix = parts
+    7:         prefix = intern(prefix, prefix)
+    7:         qname = "%s:%s" % (prefix, localname)
+    7:         qname = intern(qname, qname)
+    7:         localname = intern(localname, localname)
+           else:
+    4:         uri, localname = parts
+    4:         prefix = EMPTY_PREFIX
+    4:         qname = localname = intern(localname, localname)
+   11:     return intern(uri, uri), localname, prefix, qname
+       
+       
+    2: class ExpatBuilder:
+           """Document builder that uses Expat to build a ParsedXML.DOM document
+    1:     instance."""
+       
+    1:     def __init__(self, options=None):
+   80:         if options is None:
+   80:             options = xmlbuilder.Options()
+   80:         self._options = options
+   80:         if self._options.filter is not None:
+>>>>>>             self._filter = FilterVisibilityController(self._options.filter)
+               else:
+   80:             self._filter = None
+                   # This *really* doesn't do anything in this case, so
+                   # override it with something fast & minimal.
+   80:             self._finish_start_element = id
+   80:         self._parser = None
+   80:         self.reset()
+       
+    1:     def createParser(self):
+               """Create a new parser object."""
+    5:         return expat.ParserCreate()
+       
+    1:     def getParser(self):
+               """Return the parser object, creating a new one if needed."""
+  159:         if not self._parser:
+   80:             self._parser = self.createParser()
+   80:             self._intern_setdefault = self._parser.intern.setdefault
+   80:             self._parser.buffer_text = True
+   80:             self._parser.ordered_attributes = True
+   80:             self._parser.specified_attributes = True
+   80:             self.install(self._parser)
+  159:         return self._parser
+       
+    1:     def reset(self):
+               """Free all data structures used during DOM construction."""
+  159:         self.document = theDOMImplementation.createDocument(
+  159:             EMPTY_NAMESPACE, None, None)
+  159:         self.curNode = self.document
+  159:         self._elem_info = self.document._elem_info
+  159:         self._cdata = False
+       
+    1:     def install(self, parser):
+               """Install the callbacks needed to build the DOM into the parser."""
+               # This creates circular references!
+   75:         parser.StartDoctypeDeclHandler = self.start_doctype_decl_handler
+   75:         parser.StartElementHandler = self.first_element_handler
+   75:         parser.EndElementHandler = self.end_element_handler
+   75:         parser.ProcessingInstructionHandler = self.pi_handler
+   75:         if self._options.entities:
+   75:             parser.EntityDeclHandler = self.entity_decl_handler
+   75:         parser.NotationDeclHandler = self.notation_decl_handler
+   75:         if self._options.comments:
+   75:             parser.CommentHandler = self.comment_handler
+   75:         if self._options.cdata_sections:
+   75:             parser.StartCdataSectionHandler = self.start_cdata_section_handler
+   75:             parser.EndCdataSectionHandler = self.end_cdata_section_handler
+   75:             parser.CharacterDataHandler = self.character_data_handler_cdata
+               else:
+>>>>>>             parser.CharacterDataHandler = self.character_data_handler
+   75:         parser.ExternalEntityRefHandler = self.external_entity_ref_handler
+   75:         parser.XmlDeclHandler = self.xml_decl_handler
+   75:         parser.ElementDeclHandler = self.element_decl_handler
+   75:         parser.AttlistDeclHandler = self.attlist_decl_handler
+       
+    1:     def parseFile(self, file):
+               """Parse a document from a file object, returning the document
+               node."""
+    5:         parser = self.getParser()
+    5:         first_buffer = True
+    5:         try:
+    5:             while 1:
+   10:                 buffer = file.read(16*1024)
+   10:                 if not buffer:
+    5:                     break
+    5:                 parser.Parse(buffer, 0)
+    5:                 if first_buffer and self.document.documentElement:
+    5:                     self._setup_subset(buffer)
+    5:                 first_buffer = False
+    5:             parser.Parse("", True)
+>>>>>>         except ParseEscape:
+>>>>>>             pass
+    5:         doc = self.document
+    5:         self.reset()
+    5:         self._parser = None
+    5:         return doc
+       
+    1:     def parseString(self, string):
+               """Parse a document from a string, returning the document node."""
+   75:         parser = self.getParser()
+   75:         try:
+   75:             parser.Parse(string, True)
+   69:             self._setup_subset(string)
+    6:         except ParseEscape:
+    5:             pass
+   74:         doc = self.document
+   74:         self.reset()
+   74:         self._parser = None
+   74:         return doc
+       
+    1:     def _setup_subset(self, buffer):
+               """Load the internal subset if there might be one."""
+   74:         if self.document.doctype:
+    5:             extractor = InternalSubsetExtractor()
+    5:             extractor.parseString(buffer)
+    5:             subset = extractor.getSubset()
+    5:             self.document.doctype.internalSubset = subset
+       
+    1:     def start_doctype_decl_handler(self, doctypeName, systemId, publicId,
+                                          has_internal_subset):
+    5:         doctype = self.document.implementation.createDocumentType(
+    5:             doctypeName, publicId, systemId)
+    5:         doctype.ownerDocument = self.document
+    5:         _append_child(self.document, doctype)
+    5:         self.document.doctype = doctype
+    5:         if self._filter and self._filter.acceptNode(doctype) == FILTER_REJECT:
+>>>>>>             self.document.doctype = None
+>>>>>>             del self.document.childNodes[-1]
+>>>>>>             doctype = None
+>>>>>>             self._parser.EntityDeclHandler = None
+>>>>>>             self._parser.NotationDeclHandler = None
+    5:         if has_internal_subset:
+    5:             if doctype is not None:
+    5:                 doctype.entities._seq = []
+    5:                 doctype.notations._seq = []
+    5:             self._parser.CommentHandler = None
+    5:             self._parser.ProcessingInstructionHandler = None
+    5:             self._parser.EndDoctypeDeclHandler = self.end_doctype_decl_handler
+       
+    1:     def end_doctype_decl_handler(self):
+    5:         if self._options.comments:
+    5:             self._parser.CommentHandler = self.comment_handler
+    5:         self._parser.ProcessingInstructionHandler = self.pi_handler
+    5:         if not (self._elem_info or self._filter):
+    2:             self._finish_end_element = id
+       
+    1:     def pi_handler(self, target, data):
+    6:         node = self.document.createProcessingInstruction(target, data)
+    6:         _append_child(self.curNode, node)
+    6:         if self._filter and self._filter.acceptNode(node) == FILTER_REJECT:
+>>>>>>             self.curNode.removeChild(node)
+       
+    1:     def character_data_handler_cdata(self, data):
+  419:         childNodes = self.curNode.childNodes
+  419:         if self._cdata:
+>>>>>>             if (  self._cdata_continue
+>>>>>>                   and childNodes[-1].nodeType == CDATA_SECTION_NODE):
+>>>>>>                 childNodes[-1].appendData(data)
+>>>>>>                 return
+>>>>>>             node = self.document.createCDATASection(data)
+>>>>>>             self._cdata_continue = True
+  419:         elif childNodes and childNodes[-1].nodeType == TEXT_NODE:
+>>>>>>             node = childNodes[-1]
+>>>>>>             value = node.data + data
+>>>>>>             d = node.__dict__
+>>>>>>             d['data'] = d['nodeValue'] = value
+>>>>>>             return
+               else:
+  419:             node = minidom.Text()
+  419:             d = node.__dict__
+  419:             d['data'] = d['nodeValue'] = data
+  419:             d['ownerDocument'] = self.document
+  419:         _append_child(self.curNode, node)
+       
+    1:     def character_data_handler(self, data):
+>>>>>>         childNodes = self.curNode.childNodes
+>>>>>>         if childNodes and childNodes[-1].nodeType == TEXT_NODE:
+>>>>>>             node = childNodes[-1]
+>>>>>>             d = node.__dict__
+>>>>>>             d['data'] = d['nodeValue'] = node.data + data
+>>>>>>             return
+>>>>>>         node = minidom.Text()
+>>>>>>         d = node.__dict__
+>>>>>>         d['data'] = d['nodeValue'] = node.data + data
+>>>>>>         d['ownerDocument'] = self.document
+>>>>>>         _append_child(self.curNode, node)
+       
+    1:     def entity_decl_handler(self, entityName, is_parameter_entity, value,
+                                   base, systemId, publicId, notationName):
+    4:         if is_parameter_entity:
+                   # we don't care about parameter entities for the DOM
+>>>>>>             return
+    4:         if not self._options.entities:
+>>>>>>             return
+    4:         node = self.document._create_entity(entityName, publicId,
+    4:                                             systemId, notationName)
+    4:         if value is not None:
+                   # internal entity
+                   # node *should* be readonly, but we'll cheat
+>>>>>>             child = self.document.createTextNode(value)
+>>>>>>             node.childNodes.append(child)
+    4:         self.document.doctype.entities._seq.append(node)
+    4:         if self._filter and self._filter.acceptNode(node) == FILTER_REJECT:
+>>>>>>             del self.document.doctype.entities._seq[-1]
+       
+    1:     def notation_decl_handler(self, notationName, base, systemId, publicId):
+    2:         node = self.document._create_notation(notationName, publicId, systemId)
+    2:         self.document.doctype.notations._seq.append(node)
+    2:         if self._filter and self._filter.acceptNode(node) == FILTER_ACCEPT:
+>>>>>>             del self.document.doctype.notations._seq[-1]
+       
+    1:     def comment_handler(self, data):
+    4:         node = self.document.createComment(data)
+    4:         _append_child(self.curNode, node)
+    4:         if self._filter and self._filter.acceptNode(node) == FILTER_REJECT:
+>>>>>>             self.curNode.removeChild(node)
+       
+    1:     def start_cdata_section_handler(self):
+>>>>>>         self._cdata = True
+>>>>>>         self._cdata_continue = False
+       
+    1:     def end_cdata_section_handler(self):
+>>>>>>         self._cdata = False
+>>>>>>         self._cdata_continue = False
+       
+    1:     def external_entity_ref_handler(self, context, base, systemId, publicId):
+>>>>>>         return 1
+       
+    1:     def first_element_handler(self, name, attributes):
+   74:         if self._filter is None and not self._elem_info:
+   71:             self._finish_end_element = id
+   74:         self.getParser().StartElementHandler = self.start_element_handler
+   74:         self.start_element_handler(name, attributes)
+       
+    1:     def start_element_handler(self, name, attributes):
+>>>>>>         node = self.document.createElement(name)
+>>>>>>         _append_child(self.curNode, node)
+>>>>>>         self.curNode = node
+       
+>>>>>>         if attributes:
+>>>>>>             for i in range(0, len(attributes), 2):
+>>>>>>                 a = minidom.Attr(attributes[i], EMPTY_NAMESPACE,
+>>>>>>                                  None, EMPTY_PREFIX)
+>>>>>>                 value = attributes[i+1]
+>>>>>>                 d = a.childNodes[0].__dict__
+>>>>>>                 d['data'] = d['nodeValue'] = value
+>>>>>>                 d = a.__dict__
+>>>>>>                 d['value'] = d['nodeValue'] = value
+>>>>>>                 d['ownerDocument'] = self.document
+>>>>>>                 _set_attribute_node(node, a)
+       
+>>>>>>         if node is not self.document.documentElement:
+>>>>>>             self._finish_start_element(node)
+       
+    1:     def _finish_start_element(self, node):
+>>>>>>         if self._filter:
+                   # To be general, we'd have to call isSameNode(), but this
+                   # is sufficient for minidom:
+>>>>>>             if node is self.document.documentElement:
+>>>>>>                 return
+>>>>>>             filt = self._filter.startContainer(node)
+>>>>>>             if filt == FILTER_REJECT:
+                       # ignore this node & all descendents
+>>>>>>                 Rejecter(self)
+>>>>>>             elif filt == FILTER_SKIP:
+                       # ignore this node, but make it's children become
+                       # children of the parent node
+>>>>>>                 Skipper(self)
+                   else:
+>>>>>>                 return
+>>>>>>             self.curNode = node.parentNode
+>>>>>>             node.parentNode.removeChild(node)
+>>>>>>             node.unlink()
+       
+           # If this ever changes, Namespaces.end_element_handler() needs to
+           # be changed to match.
+           #
+    1:     def end_element_handler(self, name):
+>>>>>>         curNode = self.curNode
+>>>>>>         self.curNode = curNode.parentNode
+>>>>>>         self._finish_end_element(curNode)
+       
+    1:     def _finish_end_element(self, curNode):
+    5:         info = self._elem_info.get(curNode.tagName)
+    5:         if info:
+    3:             self._handle_white_text_nodes(curNode, info)
+    5:         if self._filter:
+>>>>>>             if curNode is self.document.documentElement:
+>>>>>>                 return
+>>>>>>             if self._filter.acceptNode(curNode) == FILTER_REJECT:
+>>>>>>                 self.curNode.removeChild(curNode)
+>>>>>>                 curNode.unlink()
+       
+    1:     def _handle_white_text_nodes(self, node, info):
+    3:         if (self._options.whitespace_in_element_content
+>>>>>>             or not info.isElementContent()):
+    3:             return
+       
+               # We have element type information and should remove ignorable
+               # whitespace; identify for text nodes which contain only
+               # whitespace.
+>>>>>>         L = []
+>>>>>>         for child in node.childNodes:
+>>>>>>             if child.nodeType == TEXT_NODE and not child.data.strip():
+>>>>>>                 L.append(child)
+       
+               # Remove ignorable whitespace from the tree.
+>>>>>>         for child in L:
+>>>>>>             node.removeChild(child)
+       
+    1:     def element_decl_handler(self, name, model):
+    2:         info = self._elem_info.get(name)
+    2:         if info is None:
+    2:             self._elem_info[name] = ElementInfo(name, model)
+               else:
+>>>>>>             assert info._model is None
+>>>>>>             info._model = model
+       
+    1:     def attlist_decl_handler(self, elem, name, type, default, required):
+    9:         info = self._elem_info.get(elem)
+    9:         if info is None:
+    1:             info = ElementInfo(elem)
+    1:             self._elem_info[elem] = info
+    9:         info._attr_info.append(
+    9:             [None, name, None, None, default, 0, type, required])
+       
+    1:     def xml_decl_handler(self, version, encoding, standalone):
+   14:         self.document.version = version
+   14:         self.document.encoding = encoding
+               # This is still a little ugly, thanks to the pyexpat API. ;-(
+   14:         if standalone >= 0:
+>>>>>>             if standalone:
+>>>>>>                 self.document.standalone = True
+                   else:
+>>>>>>                 self.document.standalone = False
+       
+       
+       # Don't include FILTER_INTERRUPT, since that's checked separately
+       # where allowed.
+    1: _ALLOWED_FILTER_RETURNS = (FILTER_ACCEPT, FILTER_REJECT, FILTER_SKIP)
+       
+    2: class FilterVisibilityController(object):
+           """Wrapper around a DOMBuilderFilter which implements the checks
+    1:     to make the whatToShow filter attribute work."""
+       
+    1:     __slots__ = 'filter',
+       
+    1:     def __init__(self, filter):
+>>>>>>         self.filter = filter
+       
+    1:     def startContainer(self, node):
+>>>>>>         mask = self._nodetype_mask[node.nodeType]
+>>>>>>         if self.filter.whatToShow & mask:
+>>>>>>             val = self.filter.startContainer(node)
+>>>>>>             if val == FILTER_INTERRUPT:
+>>>>>>                 raise ParseEscape
+>>>>>>             if val not in _ALLOWED_FILTER_RETURNS:
+>>>>>>                 raise ValueError, \
+>>>>>>                       "startContainer() returned illegal value: " + repr(val)
+>>>>>>             return val
+               else:
+>>>>>>             return FILTER_ACCEPT
+       
+    1:     def acceptNode(self, node):
+>>>>>>         mask = self._nodetype_mask[node.nodeType]
+>>>>>>         if self.filter.whatToShow & mask:
+>>>>>>             val = self.filter.acceptNode(node)
+>>>>>>             if val == FILTER_INTERRUPT:
+>>>>>>                 raise ParseEscape
+>>>>>>             if val == FILTER_SKIP:
+                       # move all child nodes to the parent, and remove this node
+>>>>>>                 parent = node.parentNode
+>>>>>>                 for child in node.childNodes[:]:
+>>>>>>                     parent.appendChild(child)
+                       # node is handled by the caller
+>>>>>>                 return FILTER_REJECT
+>>>>>>             if val not in _ALLOWED_FILTER_RETURNS:
+>>>>>>                 raise ValueError, \
+>>>>>>                       "acceptNode() returned illegal value: " + repr(val)
+>>>>>>             return val
+               else:
+>>>>>>             return FILTER_ACCEPT
+       
+    1:     _nodetype_mask = {
+    1:         Node.ELEMENT_NODE:                NodeFilter.SHOW_ELEMENT,
+    1:         Node.ATTRIBUTE_NODE:              NodeFilter.SHOW_ATTRIBUTE,
+    1:         Node.TEXT_NODE:                   NodeFilter.SHOW_TEXT,
+    1:         Node.CDATA_SECTION_NODE:          NodeFilter.SHOW_CDATA_SECTION,
+    1:         Node.ENTITY_REFERENCE_NODE:       NodeFilter.SHOW_ENTITY_REFERENCE,
+    1:         Node.ENTITY_NODE:                 NodeFilter.SHOW_ENTITY,
+    1:         Node.PROCESSING_INSTRUCTION_NODE: NodeFilter.SHOW_PROCESSING_INSTRUCTION,
+    1:         Node.COMMENT_NODE:                NodeFilter.SHOW_COMMENT,
+    1:         Node.DOCUMENT_NODE:               NodeFilter.SHOW_DOCUMENT,
+    1:         Node.DOCUMENT_TYPE_NODE:          NodeFilter.SHOW_DOCUMENT_TYPE,
+    1:         Node.DOCUMENT_FRAGMENT_NODE:      NodeFilter.SHOW_DOCUMENT_FRAGMENT,
+    1:         Node.NOTATION_NODE:               NodeFilter.SHOW_NOTATION,
+               }
+       
+       
+    2: class FilterCrutch(object):
+    1:     __slots__ = '_builder', '_level', '_old_start', '_old_end'
+       
+    1:     def __init__(self, builder):
+>>>>>>         self._level = 0
+>>>>>>         self._builder = builder
+>>>>>>         parser = builder._parser
+>>>>>>         self._old_start = parser.StartElementHandler
+>>>>>>         self._old_end = parser.EndElementHandler
+>>>>>>         parser.StartElementHandler = self.start_element_handler
+>>>>>>         parser.EndElementHandler = self.end_element_handler
+       
+    2: class Rejecter(FilterCrutch):
+    1:     __slots__ = ()
+       
+    1:     def __init__(self, builder):
+>>>>>>         FilterCrutch.__init__(self, builder)
+>>>>>>         parser = builder._parser
+>>>>>>         for name in ("ProcessingInstructionHandler",
+                            "CommentHandler",
+                            "CharacterDataHandler",
+                            "StartCdataSectionHandler",
+                            "EndCdataSectionHandler",
+>>>>>>                      "ExternalEntityRefHandler",
+                            ):
+>>>>>>             setattr(parser, name, None)
+       
+    1:     def start_element_handler(self, *args):
+>>>>>>         self._level = self._level + 1
+       
+    1:     def end_element_handler(self, *args):
+>>>>>>         if self._level == 0:
+                   # restore the old handlers
+>>>>>>             parser = self._builder._parser
+>>>>>>             self._builder.install(parser)
+>>>>>>             parser.StartElementHandler = self._old_start
+>>>>>>             parser.EndElementHandler = self._old_end
+               else:
+>>>>>>             self._level = self._level - 1
+       
+    2: class Skipper(FilterCrutch):
+    1:     __slots__ = ()
+       
+    1:     def start_element_handler(self, *args):
+>>>>>>         node = self._builder.curNode
+>>>>>>         self._old_start(*args)
+>>>>>>         if self._builder.curNode is not node:
+>>>>>>             self._level = self._level + 1
+       
+    1:     def end_element_handler(self, *args):
+>>>>>>         if self._level == 0:
+                   # We're popping back out of the node we're skipping, so we
+                   # shouldn't need to do anything but reset the handlers.
+>>>>>>             self._builder._parser.StartElementHandler = self._old_start
+>>>>>>             self._builder._parser.EndElementHandler = self._old_end
+>>>>>>             self._builder = None
+               else:
+>>>>>>             self._level = self._level - 1
+>>>>>>             self._old_end(*args)
+       
+       
+       # framework document used by the fragment builder.
+       # Takes a string for the doctype, subset string, and namespace attrs string.
+       
+       _FRAGMENT_BUILDER_INTERNAL_SYSTEM_ID = \
+    1:     "http://xml.python.org/entities/fragment-builder/internal"
+       
+       _FRAGMENT_BUILDER_TEMPLATE = (
+           '''\
+       <!DOCTYPE wrapper
+         %%s [
+         <!ENTITY fragment-builder-internal
+           SYSTEM "%s">
+       %%s
+       ]>
+       <wrapper %%s
+    1: >&fragment-builder-internal;</wrapper>'''
+    1:     % _FRAGMENT_BUILDER_INTERNAL_SYSTEM_ID)
+       
+       
+    2: class FragmentBuilder(ExpatBuilder):
+           """Builder which constructs document fragments given XML source
+           text and a context node.
+       
+           The context node is expected to provide information about the
+           namespace declarations which are in scope at the start of the
+           fragment.
+    1:     """
+       
+    1:     def __init__(self, context, options=None):
+>>>>>>         if context.nodeType == DOCUMENT_NODE:
+>>>>>>             self.originalDocument = context
+>>>>>>             self.context = context
+               else:
+>>>>>>             self.originalDocument = context.ownerDocument
+>>>>>>             self.context = context
+>>>>>>         ExpatBuilder.__init__(self, options)
+       
+    1:     def reset(self):
+>>>>>>         ExpatBuilder.reset(self)
+>>>>>>         self.fragment = None
+       
+    1:     def parseFile(self, file):
+               """Parse a document fragment from a file object, returning the
+               fragment node."""
+>>>>>>         return self.parseString(file.read())
+       
+    1:     def parseString(self, string):
+               """Parse a document fragment from a string, returning the
+               fragment node."""
+>>>>>>         self._source = string
+>>>>>>         parser = self.getParser()
+>>>>>>         doctype = self.originalDocument.doctype
+>>>>>>         ident = ""
+>>>>>>         if doctype:
+>>>>>>             subset = doctype.internalSubset or self._getDeclarations()
+>>>>>>             if doctype.publicId:
+>>>>>>                 ident = ('PUBLIC "%s" "%s"'
+>>>>>>                          % (doctype.publicId, doctype.systemId))
+>>>>>>             elif doctype.systemId:
+>>>>>>                 ident = 'SYSTEM "%s"' % doctype.systemId
+               else:
+>>>>>>             subset = ""
+>>>>>>         nsattrs = self._getNSattrs() # get ns decls from node's ancestors
+>>>>>>         document = _FRAGMENT_BUILDER_TEMPLATE % (ident, subset, nsattrs)
+>>>>>>         try:
+>>>>>>             parser.Parse(document, 1)
+>>>>>>         except:
+>>>>>>             self.reset()
+>>>>>>             raise
+>>>>>>         fragment = self.fragment
+>>>>>>         self.reset()
+       ##         self._parser = None
+>>>>>>         return fragment
+       
+    1:     def _getDeclarations(self):
+               """Re-create the internal subset from the DocumentType node.
+       
+               This is only needed if we don't already have the
+               internalSubset as a string.
+               """
+>>>>>>         doctype = self.context.ownerDocument.doctype
+>>>>>>         s = ""
+>>>>>>         if doctype:
+>>>>>>             for i in range(doctype.notations.length):
+>>>>>>                 notation = doctype.notations.item(i)
+>>>>>>                 if s:
+>>>>>>                     s = s + "\n  "
+>>>>>>                 s = "%s<!NOTATION %s" % (s, notation.nodeName)
+>>>>>>                 if notation.publicId:
+>>>>>>                     s = '%s PUBLIC "%s"\n             "%s">' \
+>>>>>>                         % (s, notation.publicId, notation.systemId)
+                       else:
+>>>>>>                     s = '%s SYSTEM "%s">' % (s, notation.systemId)
+>>>>>>             for i in range(doctype.entities.length):
+>>>>>>                 entity = doctype.entities.item(i)
+>>>>>>                 if s:
+>>>>>>                     s = s + "\n  "
+>>>>>>                 s = "%s<!ENTITY %s" % (s, entity.nodeName)
+>>>>>>                 if entity.publicId:
+>>>>>>                     s = '%s PUBLIC "%s"\n             "%s"' \
+>>>>>>                         % (s, entity.publicId, entity.systemId)
+>>>>>>                 elif entity.systemId:
+>>>>>>                     s = '%s SYSTEM "%s"' % (s, entity.systemId)
+                       else:
+>>>>>>                     s = '%s "%s"' % (s, entity.firstChild.data)
+>>>>>>                 if entity.notationName:
+>>>>>>                     s = "%s NOTATION %s" % (s, entity.notationName)
+>>>>>>                 s = s + ">"
+>>>>>>         return s
+       
+    1:     def _getNSattrs(self):
+>>>>>>         return ""
+       
+    1:     def external_entity_ref_handler(self, context, base, systemId, publicId):
+>>>>>>         if systemId == _FRAGMENT_BUILDER_INTERNAL_SYSTEM_ID:
+                   # this entref is the one that we made to put the subtree
+                   # in; all of our given input is parsed in here.
+>>>>>>             old_document = self.document
+>>>>>>             old_cur_node = self.curNode
+>>>>>>             parser = self._parser.ExternalEntityParserCreate(context)
+                   # put the real document back, parse into the fragment to return
+>>>>>>             self.document = self.originalDocument
+>>>>>>             self.fragment = self.document.createDocumentFragment()
+>>>>>>             self.curNode = self.fragment
+>>>>>>             try:
+>>>>>>                 parser.Parse(self._source, 1)
+                   finally:
+>>>>>>                 self.curNode = old_cur_node
+>>>>>>                 self.document = old_document
+>>>>>>                 self._source = None
+>>>>>>             return -1
+               else:
+>>>>>>             return ExpatBuilder.external_entity_ref_handler(
+>>>>>>                 self, context, base, systemId, publicId)
+       
+       
+    2: class Namespaces:
+    1:     """Mix-in class for builders; adds support for namespaces."""
+       
+    1:     def _initNamespaces(self):
+               # list of (prefix, uri) ns declarations.  Namespace attrs are
+               # constructed from this and added to the element's attrs.
+  149:         self._ns_ordered_prefixes = []
+       
+    1:     def createParser(self):
+               """Create a new namespace-handling parser."""
+   75:         parser = expat.ParserCreate(namespace_separator=" ")
+   75:         parser.namespace_prefixes = True
+   75:         return parser
+       
+    1:     def install(self, parser):
+               """Insert the namespace-handlers onto the parser."""
+   75:         ExpatBuilder.install(self, parser)
+   75:         if self._options.namespace_declarations:
+                   parser.StartNamespaceDeclHandler = (
+   75:                 self.start_namespace_decl_handler)
+       
+    1:     def start_namespace_decl_handler(self, prefix, uri):
+               """Push this namespace declaration on our storage."""
+   14:         self._ns_ordered_prefixes.append((prefix, uri))
+       
+    1:     def start_element_handler(self, name, attributes):
+  307:         if ' ' in name:
+    3:             uri, localname, prefix, qname = _parse_ns_name(self, name)
+               else:
+  304:             uri = EMPTY_NAMESPACE
+  304:             qname = name
+  304:             localname = None
+  304:             prefix = EMPTY_PREFIX
+  307:         node = minidom.Element(qname, uri, prefix, localname)
+  307:         node.ownerDocument = self.document
+  307:         _append_child(self.curNode, node)
+  307:         self.curNode = node
+       
+  307:         if self._ns_ordered_prefixes:
+   26:             for prefix, uri in self._ns_ordered_prefixes:
+   14:                 if prefix:
+   11:                     a = minidom.Attr(_intern(self, 'xmlns:' + prefix),
+   11:                                      XMLNS_NAMESPACE, prefix, "xmlns")
+                       else:
+    3:                     a = minidom.Attr("xmlns", XMLNS_NAMESPACE,
+    3:                                      "xmlns", EMPTY_PREFIX)
+   14:                 d = a.childNodes[0].__dict__
+   14:                 d['data'] = d['nodeValue'] = uri
+   14:                 d = a.__dict__
+   14:                 d['value'] = d['nodeValue'] = uri
+   14:                 d['ownerDocument'] = self.document
+   14:                 _set_attribute_node(node, a)
+   12:             del self._ns_ordered_prefixes[:]
+       
+  307:         if attributes:
+   17:             _attrs = node._attrs
+   17:             _attrsNS = node._attrsNS
+   46:             for i in range(0, len(attributes), 2):
+   29:                 aname = attributes[i]
+   29:                 value = attributes[i+1]
+   29:                 if ' ' in aname:
+    5:                     uri, localname, prefix, qname = _parse_ns_name(self, aname)
+    5:                     a = minidom.Attr(qname, uri, localname, prefix)
+    5:                     _attrs[qname] = a
+    5:                     _attrsNS[(uri, localname)] = a
+                       else:
+   24:                     a = minidom.Attr(aname, EMPTY_NAMESPACE,
+   24:                                      aname, EMPTY_PREFIX)
+   24:                     _attrs[aname] = a
+   24:                     _attrsNS[(EMPTY_NAMESPACE, aname)] = a
+   29:                 d = a.childNodes[0].__dict__
+   29:                 d['data'] = d['nodeValue'] = value
+   29:                 d = a.__dict__
+   29:                 d['ownerDocument'] = self.document
+   29:                 d['value'] = d['nodeValue'] = value
+   29:                 d['ownerElement'] = node
+       
+           if __debug__:
+               # This only adds some asserts to the original
+               # end_element_handler(), so we only define this when -O is not
+               # used.  If changing one, be sure to check the other to see if
+               # it needs to be changed as well.
+               #
+    1:         def end_element_handler(self, name):
+  307:             curNode = self.curNode
+  307:             if ' ' in name:
+    3:                 uri, localname, prefix, qname = _parse_ns_name(self, name)
+    3:                 assert (curNode.namespaceURI == uri
+    3:                         and curNode.localName == localname
+    3:                         and curNode.prefix == prefix), \
+>>>>>>                         "element stack messed up! (namespace)"
+                   else:
+  304:                 assert curNode.nodeName == name, \
+>>>>>>                        "element stack messed up - bad nodeName"
+  304:                 assert curNode.namespaceURI == EMPTY_NAMESPACE, \
+>>>>>>                        "element stack messed up - bad namespaceURI"
+  307:             self.curNode = curNode.parentNode
+  307:             self._finish_end_element(curNode)
+       
+       
+    2: class ExpatBuilderNS(Namespaces, ExpatBuilder):
+    1:     """Document builder that supports namespaces."""
+       
+    1:     def reset(self):
+  149:         ExpatBuilder.reset(self)
+  149:         self._initNamespaces()
+       
+       
+    2: class FragmentBuilderNS(Namespaces, FragmentBuilder):
+    1:     """Fragment builder that supports namespaces."""
+       
+    1:     def reset(self):
+>>>>>>         FragmentBuilder.reset(self)
+>>>>>>         self._initNamespaces()
+       
+    1:     def _getNSattrs(self):
+               """Return string of namespace attributes from this element and
+               ancestors."""
+               # XXX This needs to be re-written to walk the ancestors of the
+               # context to build up the namespace information from
+               # declarations, elements, and attributes found in context.
+               # Otherwise we have to store a bunch more data on the DOM
+               # (though that *might* be more reliable -- not clear).
+>>>>>>         attrs = ""
+>>>>>>         context = self.context
+>>>>>>         L = []
+>>>>>>         while context:
+>>>>>>             if hasattr(context, '_ns_prefix_uri'):
+>>>>>>                 for prefix, uri in context._ns_prefix_uri.items():
+                           # add every new NS decl from context to L and attrs string
+>>>>>>                     if prefix in L:
+>>>>>>                         continue
+>>>>>>                     L.append(prefix)
+>>>>>>                     if prefix:
+>>>>>>                         declname = "xmlns:" + prefix
+                           else:
+>>>>>>                         declname = "xmlns"
+>>>>>>                     if attrs:
+>>>>>>                         attrs = "%s\n    %s='%s'" % (attrs, declname, uri)
+                           else:
+>>>>>>                         attrs = " %s='%s'" % (declname, uri)
+>>>>>>             context = context.parentNode
+>>>>>>         return attrs
+       
+       
+    2: class ParseEscape(Exception):
+    1:     """Exception raised to short-circuit parsing in InternalSubsetExtractor."""
+    1:     pass
+       
+    2: class InternalSubsetExtractor(ExpatBuilder):
+    1:     """XML processor which can rip out the internal document type subset."""
+       
+    1:     subset = None
+       
+    1:     def getSubset(self):
+               """Return the internal subset as a string."""
+    5:         return self.subset
+       
+    1:     def parseFile(self, file):
+>>>>>>         try:
+>>>>>>             ExpatBuilder.parseFile(self, file)
+>>>>>>         except ParseEscape:
+>>>>>>             pass
+       
+    1:     def parseString(self, string):
+    5:         try:
+    5:             ExpatBuilder.parseString(self, string)
+>>>>>>         except ParseEscape:
+>>>>>>             pass
+       
+    1:     def install(self, parser):
+    5:         parser.StartDoctypeDeclHandler = self.start_doctype_decl_handler
+    5:         parser.StartElementHandler = self.start_element_handler
+       
+    1:     def start_doctype_decl_handler(self, name, publicId, systemId,
+                                          has_internal_subset):
+    5:         if has_internal_subset:
+    5:             parser = self.getParser()
+    5:             self.subset = []
+    5:             parser.DefaultHandler = self.subset.append
+    5:             parser.EndDoctypeDeclHandler = self.end_doctype_decl_handler
+               else:
+>>>>>>             raise ParseEscape()
+       
+    1:     def end_doctype_decl_handler(self):
+    5:         s = ''.join(self.subset).replace('\r\n', '\n').replace('\r', '\n')
+    5:         self.subset = s
+    5:         raise ParseEscape()
+       
+    1:     def start_element_handler(self, name, attrs):
+>>>>>>         raise ParseEscape()
+       
+       
+    1: def parse(file, namespaces=True):
+           """Parse a document, returning the resulting Document node.
+       
+           'file' may be either a file name or an open file object.
+           """
+    5:     if namespaces:
+    5:         builder = ExpatBuilderNS()
+           else:
+>>>>>>         builder = ExpatBuilder()
+       
+    5:     if isinstance(file, StringTypes):
+    4:         fp = open(file, 'rb')
+    4:         try:
+    4:             result = builder.parseFile(fp)
+               finally:
+    4:             fp.close()
+           else:
+    1:         result = builder.parseFile(file)
+    5:     return result
+       
+       
+    1: def parseString(string, namespaces=True):
+           """Parse a document from a string, returning the resulting
+           Document node.
+           """
+   70:     if namespaces:
+   70:         builder = ExpatBuilderNS()
+           else:
+>>>>>>         builder = ExpatBuilder()
+   70:     return builder.parseString(string)
+       
+       
+    1: def parseFragment(file, context, namespaces=True):
+           """Parse a fragment of a document, given the context from which it
+           was originally extracted.  context should be the parent of the
+           node(s) which are in the fragment.
+       
+           'file' may be either a file name or an open file object.
+           """
+>>>>>>     if namespaces:
+>>>>>>         builder = FragmentBuilderNS(context)
+           else:
+>>>>>>         builder = FragmentBuilder(context)
+       
+>>>>>>     if isinstance(file, StringTypes):
+>>>>>>         fp = open(file, 'rb')
+>>>>>>         try:
+>>>>>>             result = builder.parseFile(fp)
+               finally:
+>>>>>>             fp.close()
+           else:
+>>>>>>         result = builder.parseFile(file)
+>>>>>>     return result
+       
+       
+    1: def parseFragmentString(string, context, namespaces=True):
+           """Parse a fragment of a document from a string, given the context
+           from which it was originally extracted.  context should be the
+           parent of the node(s) which are in the fragment.
+           """
+>>>>>>     if namespaces:
+>>>>>>         builder = FragmentBuilderNS(context)
+           else:
+>>>>>>         builder = FragmentBuilder(context)
+>>>>>>     return builder.parseString(string)
+       
+       
+    1: def makeBuilder(options):
+           """Create a builder based on an Options object."""
+>>>>>>     if options.namespaces:
+>>>>>>         return ExpatBuilderNS(options)
+           else:
+>>>>>>         return ExpatBuilder(options)

@@ -1,0 +1,221 @@
+    1: """Support code for distutils test cases."""
+    1: import os
+    1: import sys
+    1: import shutil
+    1: import tempfile
+    1: import unittest
+    1: import sysconfig
+    1: from copy import deepcopy
+    1: import warnings
+       
+    1: from distutils import log
+    1: from distutils.log import DEBUG, INFO, WARN, ERROR, FATAL
+    1: from distutils.core import Distribution
+       
+       
+    1: def capture_warnings(func):
+>>>>>>     def _capture_warnings(*args, **kw):
+>>>>>>         with warnings.catch_warnings():
+>>>>>>             warnings.simplefilter("ignore")
+>>>>>>             return func(*args, **kw)
+>>>>>>     return _capture_warnings
+       
+       
+    2: class LoggingSilencer(object):
+       
+    1:     def setUp(self):
+  119:         super(LoggingSilencer, self).setUp()
+  119:         self.threshold = log.set_threshold(log.FATAL)
+               # catching warnings
+               # when log will be replaced by logging
+               # we won't need such monkey-patch anymore
+  119:         self._old_log = log.Log._log
+  119:         log.Log._log = self._log
+  119:         self.logs = []
+       
+    1:     def tearDown(self):
+  119:         log.set_threshold(self.threshold)
+  119:         log.Log._log = self._old_log
+  119:         super(LoggingSilencer, self).tearDown()
+       
+    1:     def _log(self, level, msg, args):
+  521:         if level not in (DEBUG, INFO, WARN, ERROR, FATAL):
+    1:             raise ValueError('%s wrong log level' % str(level))
+  520:         self.logs.append((level, msg, args))
+       
+    1:     def get_logs(self, *levels):
+   20:         def _format(msg, args):
+   14:             if len(args) == 0:
+    6:                 return msg
+    8:             return msg % args
+   20:         return [_format(msg, args) for level, msg, args
+   55:                 in self.logs if level in levels]
+       
+    1:     def clear_logs(self):
+   17:         self.logs = []
+       
+       
+    2: class TempdirManager(object):
+           """Mix-in class that handles temporary directories for test cases.
+       
+           This is intended to be used with unittest.TestCase.
+    1:     """
+       
+    1:     def setUp(self):
+  141:         super(TempdirManager, self).setUp()
+  141:         self.old_cwd = os.getcwd()
+  141:         self.tempdirs = []
+       
+    1:     def tearDown(self):
+               # Restore working dir, for Solaris and derivatives, where rmdir()
+               # on the current directory fails.
+  141:         os.chdir(self.old_cwd)
+  141:         super(TempdirManager, self).tearDown()
+  307:         while self.tempdirs:
+  166:             d = self.tempdirs.pop()
+  166:             shutil.rmtree(d, os.name in ('nt', 'cygwin'))
+       
+    1:     def mkdtemp(self):
+               """Create a temporary directory that will be cleaned up.
+       
+               Returns the path of the directory.
+               """
+  166:         d = tempfile.mkdtemp()
+  166:         self.tempdirs.append(d)
+  166:         return d
+       
+    1:     def write_file(self, path, content='xxx'):
+               """Writes a file in the given path.
+       
+       
+               path can be a string or a sequence.
+               """
+  156:         if isinstance(path, (list, tuple)):
+  102:             path = os.path.join(*path)
+  156:         f = open(path, 'w')
+  156:         try:
+  156:             f.write(content)
+               finally:
+  156:             f.close()
+       
+    1:     def create_dist(self, pkg_name='foo', **kw):
+               """Will generate a test environment.
+       
+               This function creates:
+                - a Distribution instance using keywords
+                - a temporary directory with a package structure
+       
+               It returns the package directory and the distribution
+               instance.
+               """
+   38:         tmp_dir = self.mkdtemp()
+   38:         pkg_dir = os.path.join(tmp_dir, pkg_name)
+   38:         os.mkdir(pkg_dir)
+   38:         dist = Distribution(attrs=kw)
+       
+   38:         return pkg_dir, dist
+       
+       
+    2: class DummyCommand:
+    1:     """Class to store options for retrieval via set_undefined_options()."""
+       
+    1:     def __init__(self, **kwargs):
+   30:         for kw, val in kwargs.items():
+   21:             setattr(self, kw, val)
+       
+    1:     def ensure_finalized(self):
+    9:         pass
+       
+       
+    2: class EnvironGuard(object):
+       
+    1:     def setUp(self):
+  102:         super(EnvironGuard, self).setUp()
+  102:         self.old_environ = deepcopy(os.environ)
+       
+    1:     def tearDown(self):
+ 2346:         for key, value in self.old_environ.items():
+ 2244:             if os.environ.get(key) != value:
+   33:                 os.environ[key] = value
+       
+ 2351:         for key in os.environ.keys():
+ 2249:             if key not in self.old_environ:
+    5:                 del os.environ[key]
+       
+  102:         super(EnvironGuard, self).tearDown()
+       
+       
+    1: def copy_xxmodule_c(directory):
+           """Helper for tests that need the xxmodule.c source file.
+       
+           Example use:
+       
+               def test_compile(self):
+                   copy_xxmodule_c(self.tmpdir)
+                   self.assertIn('xxmodule.c', os.listdir(self.tmpdir))
+       
+           If the source file can be found, it will be copied to *directory*.  If not,
+           the test will be skipped.  Errors during copy are not caught.
+           """
+    2:     filename = _get_xxmodule_path()
+    2:     if filename is None:
+>>>>>>         raise unittest.SkipTest('cannot find xxmodule.c (test must run in '
+                                       'the python build dir)')
+    2:     shutil.copy(filename, directory)
+       
+       
+    1: def _get_xxmodule_path():
+           # FIXME when run from regrtest, srcdir seems to be '.', which does not help
+           # us find the xxmodule.c file
+    2:     srcdir = sysconfig.get_config_var('srcdir')
+           candidates = [
+               # use installed copy if available
+    2:         os.path.join(os.path.dirname(__file__), 'xxmodule.c'),
+               # otherwise try using copy from build directory
+    2:         os.path.join(srcdir, 'Modules', 'xxmodule.c'),
+               # srcdir mysteriously can be $srcdir/Lib/distutils/tests when
+               # this file is run from its parent directory, so walk up the
+               # tree to find the real srcdir
+    2:         os.path.join(srcdir, '..', '..', '..', 'Modules', 'xxmodule.c'),
+           ]
+    2:     for path in candidates:
+    2:         if os.path.exists(path):
+    2:             return path
+       
+       
+    1: def fixup_build_ext(cmd):
+           """Function needed to make build_ext tests pass.
+       
+           When Python was build with --enable-shared on Unix, -L. is not good
+           enough to find the libpython<blah>.so.  This is because regrtest runs
+           it under a tempdir, not in the top level where the .so lives.  By the
+           time we've gotten here, Python's already been chdir'd to the tempdir.
+       
+           When Python was built with in debug mode on Windows, build_ext commands
+           need their debug attribute set, and it is not done automatically for
+           some reason.
+       
+           This function handles both of these things.  Example use:
+       
+               cmd = build_ext(dist)
+               support.fixup_build_ext(cmd)
+               cmd.ensure_finalized()
+       
+           Unlike most other Unix platforms, Mac OS X embeds absolute paths
+           to shared libraries into executables, so the fixup is not needed there.
+           """
+    3:     if os.name == 'nt':
+>>>>>>         cmd.debug = sys.executable.endswith('_d.exe')
+    3:     elif sysconfig.get_config_var('Py_ENABLE_SHARED'):
+               # To further add to the shared builds fun on Unix, we can't just add
+               # library_dirs to the Extension() instance because that doesn't get
+               # plumbed through to the final compiler command.
+>>>>>>         runshared = sysconfig.get_config_var('RUNSHARED')
+>>>>>>         if runshared is None:
+>>>>>>             cmd.library_dirs = ['.']
+               else:
+>>>>>>             if sys.platform == 'darwin':
+>>>>>>                 cmd.library_dirs = []
+                   else:
+>>>>>>                 name, equals, value = runshared.partition('=')
+>>>>>>                 cmd.library_dirs = [d for d in value.split(os.pathsep) if d]

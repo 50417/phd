@@ -1,0 +1,254 @@
+       #
+       # Module which supports allocation of memory from an mmap
+       #
+       # multiprocessing/heap.py
+       #
+       # Copyright (c) 2006-2008, R Oudkerk
+       # All rights reserved.
+       #
+       # Redistribution and use in source and binary forms, with or without
+       # modification, are permitted provided that the following conditions
+       # are met:
+       #
+       # 1. Redistributions of source code must retain the above copyright
+       #    notice, this list of conditions and the following disclaimer.
+       # 2. Redistributions in binary form must reproduce the above copyright
+       #    notice, this list of conditions and the following disclaimer in the
+       #    documentation and/or other materials provided with the distribution.
+       # 3. Neither the name of author nor the names of any contributors may be
+       #    used to endorse or promote products derived from this software
+       #    without specific prior written permission.
+       #
+       # THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS "AS IS" AND
+       # ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+       # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+       # ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+       # FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+       # DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+       # OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+       # HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+       # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+       # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+       # SUCH DAMAGE.
+       #
+       
+    1: import bisect
+    1: import mmap
+    1: import tempfile
+    1: import os
+    1: import sys
+    1: import threading
+    1: import itertools
+       
+    1: import _multiprocessing
+    1: from multiprocessing.util import Finalize, info
+    1: from multiprocessing.forking import assert_spawning
+       
+    1: __all__ = ['BufferWrapper']
+       
+       #
+       # Inheirtable class which wraps an mmap, and from which blocks can be allocated
+       #
+       
+    1: if sys.platform == 'win32':
+       
+>>>>>>     from _multiprocessing import win32
+       
+>>>>>>     class Arena(object):
+       
+>>>>>>         _counter = itertools.count()
+       
+>>>>>>         def __init__(self, size):
+>>>>>>             self.size = size
+>>>>>>             self.name = 'pym-%d-%d' % (os.getpid(), Arena._counter.next())
+>>>>>>             self.buffer = mmap.mmap(-1, self.size, tagname=self.name)
+>>>>>>             assert win32.GetLastError() == 0, 'tagname already in use'
+>>>>>>             self._state = (self.size, self.name)
+       
+>>>>>>         def __getstate__(self):
+>>>>>>             assert_spawning(self)
+>>>>>>             return self._state
+       
+>>>>>>         def __setstate__(self, state):
+>>>>>>             self.size, self.name = self._state = state
+>>>>>>             self.buffer = mmap.mmap(-1, self.size, tagname=self.name)
+>>>>>>             assert win32.GetLastError() == win32.ERROR_ALREADY_EXISTS
+       
+       else:
+       
+    2:     class Arena(object):
+       
+    1:         def __init__(self, size):
+    6:             self.buffer = mmap.mmap(-1, size)
+    6:             self.size = size
+    6:             self.name = None
+       
+       #
+       # Class allowing allocation of chunks of memory from arenas
+       #
+       
+    2: class Heap(object):
+       
+    1:     _alignment = 8
+       
+    1:     def __init__(self, size=mmap.PAGESIZE):
+    1:         self._lastpid = os.getpid()
+    1:         self._lock = threading.Lock()
+    1:         self._size = size
+    1:         self._lengths = []
+    1:         self._len_to_seq = {}
+    1:         self._start_to_block = {}
+    1:         self._stop_to_block = {}
+    1:         self._allocated_blocks = set()
+    1:         self._arenas = []
+               # list of pending blocks to free - see free() comment below
+    1:         self._pending_free_blocks = []
+       
+    1:     @staticmethod
+           def _roundup(n, alignment):
+               # alignment must be a power of 2
+15044:         mask = alignment - 1
+15044:         return (n + mask) & ~mask
+       
+    1:     def _malloc(self, size):
+               # returns a large enough block -- it might be much larger
+15038:         i = bisect.bisect_left(self._lengths, size)
+15038:         if i == len(self._lengths):
+    6:             length = self._roundup(max(self._size, size), mmap.PAGESIZE)
+    6:             self._size *= 2
+    6:             info('allocating a new mmap of length %d', length)
+    6:             arena = Arena(length)
+    6:             self._arenas.append(arena)
+    6:             return (arena, 0, length)
+               else:
+15032:             length = self._lengths[i]
+15032:             seq = self._len_to_seq[length]
+15032:             block = seq.pop()
+15032:             if not seq:
+14047:                 del self._len_to_seq[length], self._lengths[i]
+       
+15032:         (arena, start, stop) = block
+15032:         del self._start_to_block[(arena, start)]
+15032:         del self._stop_to_block[(arena, stop)]
+15032:         return block
+       
+    1:     def _free(self, block):
+               # free location and try to merge with neighbours
+27207:         (arena, start, stop) = block
+       
+27207:         try:
+27207:             prev_block = self._stop_to_block[(arena, start)]
+19264:         except KeyError:
+19264:             pass
+               else:
+ 7943:             start, _ = self._absorb(prev_block)
+       
+27207:         try:
+27207:             next_block = self._start_to_block[(arena, stop)]
+22981:         except KeyError:
+22981:             pass
+               else:
+ 4226:             _, stop = self._absorb(next_block)
+       
+27207:         block = (arena, start, stop)
+27207:         length = stop - start
+       
+27207:         try:
+27207:             self._len_to_seq[length].append(block)
+21219:         except KeyError:
+21219:             self._len_to_seq[length] = [block]
+21219:             bisect.insort(self._lengths, length)
+       
+27207:         self._start_to_block[(arena, start)] = block
+27207:         self._stop_to_block[(arena, stop)] = block
+       
+    1:     def _absorb(self, block):
+               # deregister this block so it can be merged with a neighbour
+12169:         (arena, start, stop) = block
+12169:         del self._start_to_block[(arena, start)]
+12169:         del self._stop_to_block[(arena, stop)]
+       
+12169:         length = stop - start
+12169:         seq = self._len_to_seq[length]
+12169:         seq.remove(block)
+12169:         if not seq:
+ 7166:             del self._len_to_seq[length]
+ 7166:             self._lengths.remove(length)
+       
+12169:         return start, stop
+       
+    1:     def _free_pending_blocks(self):
+               # Free all the blocks in the pending list - called with the lock held.
+30073:         while True:
+30073:             try:
+30073:                 block = self._pending_free_blocks.pop()
+27797:             except IndexError:
+27797:                 break
+ 2276:             self._allocated_blocks.remove(block)
+ 2276:             self._free(block)
+       
+    1:     def free(self, block):
+               # free a block returned by malloc()
+               # Since free() can be called asynchronously by the GC, it could happen
+               # that it's called while self._lock is held: in that case,
+               # self._lock.acquire() would deadlock (issue #12352). To avoid that, a
+               # trylock is used instead, and if the lock can't be acquired
+               # immediately, the block is added to a list of blocks to be freed
+               # synchronously sometimes later from malloc() or free(), by calling
+               # _free_pending_blocks() (appending and retrieving from a list is not
+               # strictly thread-safe but under cPython it's atomic thanks to the GIL).
+15001:         assert os.getpid() == self._lastpid
+15001:         if not self._lock.acquire(False):
+                   # can't acquire the lock right now, add the block to the list of
+                   # pending blocks to free
+ 2242:             self._pending_free_blocks.append(block)
+               else:
+                   # we hold the lock
+12759:             try:
+12759:                 self._free_pending_blocks()
+12759:                 self._allocated_blocks.remove(block)
+12759:                 self._free(block)
+                   finally:
+12759:                 self._lock.release()
+       
+    1:     def malloc(self, size):
+               # return a block of right size (possibly rounded up)
+15038:         assert 0 <= size < sys.maxint
+15038:         if os.getpid() != self._lastpid:
+>>>>>>             self.__init__()                     # reinitialize after fork
+15038:         self._lock.acquire()
+15038:         self._free_pending_blocks()
+15038:         try:
+15038:             size = self._roundup(max(size,1), self._alignment)
+15038:             (arena, start, stop) = self._malloc(size)
+15038:             new_stop = start + size
+15038:             if new_stop < stop:
+12172:                 self._free((arena, new_stop, stop))
+15038:             block = (arena, start, new_stop)
+15038:             self._allocated_blocks.add(block)
+15038:             return block
+               finally:
+15038:             self._lock.release()
+       
+       #
+       # Class representing a chunk of an mmap -- can be inherited
+       #
+       
+    2: class BufferWrapper(object):
+       
+    1:     _heap = Heap()
+       
+    1:     def __init__(self, size):
+15038:         assert 0 <= size < sys.maxint
+15038:         block = BufferWrapper._heap.malloc(size)
+15038:         self._state = (block, size)
+15038:         Finalize(self, BufferWrapper._heap.free, args=(block,))
+       
+    1:     def get_address(self):
+   38:         (arena, start, stop), size = self._state
+   38:         address, length = _multiprocessing.address_of_buffer(arena.buffer)
+   38:         assert size <= length
+   38:         return address + start
+       
+    1:     def get_size(self):
+>>>>>>         return self._state[1]

@@ -1,0 +1,239 @@
+    1: """Interface to the compiler's internal symbol tables"""
+       
+    1: import _symtable
+    1: from _symtable import (USE, DEF_GLOBAL, DEF_LOCAL, DEF_PARAM,
+            DEF_IMPORT, DEF_BOUND, OPT_IMPORT_STAR, OPT_EXEC, OPT_BARE_EXEC,
+            SCOPE_OFF, SCOPE_MASK, FREE, GLOBAL_IMPLICIT, GLOBAL_EXPLICIT, CELL, LOCAL)
+       
+    1: import weakref
+       
+    1: __all__ = ["symtable", "SymbolTable", "Class", "Function", "Symbol"]
+       
+    1: def symtable(code, filename, compile_type):
+    6:     top = _symtable.symtable(code, filename, compile_type)
+    4:     return _newSymbolTable(top, filename)
+       
+    2: class SymbolTableFactory:
+    1:     def __init__(self):
+    1:         self.__memo = weakref.WeakValueDictionary()
+       
+    1:     def new(self, table, filename):
+   20:         if table.type == _symtable.TYPE_FUNCTION:
+   15:             return Function(table, filename)
+    5:         if table.type == _symtable.TYPE_CLASS:
+    1:             return Class(table, filename)
+    4:         return SymbolTable(table, filename)
+       
+    1:     def __call__(self, table, filename):
+   28:         key = table, filename
+   28:         obj = self.__memo.get(key, None)
+   28:         if obj is None:
+   20:             obj = self.__memo[key] = self.new(table, filename)
+   28:         return obj
+       
+    1: _newSymbolTable = SymbolTableFactory()
+       
+       
+    2: class SymbolTable(object):
+       
+    1:     def __init__(self, raw_table, filename):
+   20:         self._table = raw_table
+   20:         self._filename = filename
+   20:         self._symbols = {}
+       
+    1:     def __repr__(self):
+>>>>>>         if self.__class__ == SymbolTable:
+>>>>>>             kind = ""
+               else:
+>>>>>>             kind = "%s " % self.__class__.__name__
+       
+>>>>>>         if self._table.name == "global":
+>>>>>>             return "<{0}SymbolTable for module {1}>".format(kind, self._filename)
+               else:
+>>>>>>             return "<{0}SymbolTable for {1} in {2}>".format(kind,
+>>>>>>                                                             self._table.name,
+>>>>>>                                                             self._filename)
+       
+    1:     def get_type(self):
+    5:         if self._table.type == _symtable.TYPE_MODULE:
+    1:             return "module"
+    4:         if self._table.type == _symtable.TYPE_FUNCTION:
+    3:             return "function"
+    1:         if self._table.type == _symtable.TYPE_CLASS:
+    1:             return "class"
+>>>>>>         assert self._table.type in (1, 2, 3), \
+>>>>>>                "unexpected type: {0}".format(self._table.type)
+       
+    1:     def get_id(self):
+>>>>>>         return self._table.id
+       
+    1:     def get_name(self):
+   11:         return self._table.name
+       
+    1:     def get_lineno(self):
+    2:         return self._table.lineno
+       
+    1:     def is_optimized(self):
+    3:         return bool(self._table.type == _symtable.TYPE_FUNCTION
+    2:                     and not self._table.optimized)
+       
+    1:     def is_nested(self):
+    4:         return bool(self._table.nested)
+       
+    1:     def has_children(self):
+    3:         return bool(self._table.children)
+       
+    1:     def has_exec(self):
+               """Return true if the scope uses exec"""
+    2:         return bool(self._table.optimized & (OPT_EXEC | OPT_BARE_EXEC))
+       
+    1:     def has_import_star(self):
+               """Return true if the scope uses import *"""
+    2:         return bool(self._table.optimized & OPT_IMPORT_STAR)
+       
+    1:     def get_identifiers(self):
+    6:         return self._table.symbols.keys()
+       
+    1:     def lookup(self, name):
+   38:         sym = self._symbols.get(name)
+   38:         if sym is None:
+   18:             flags = self._table.symbols[name]
+   17:             namespaces = self.__check_children(name)
+   17:             sym = self._symbols[name] = Symbol(name, flags, namespaces)
+   37:         return sym
+       
+    1:     def get_symbols(self):
+    8:         return [self.lookup(ident) for ident in self.get_identifiers()]
+       
+    1:     def __check_children(self, name):
+   17:         return [_newSymbolTable(st, self._filename)
+   61:                 for st in self._table.children
+   44:                 if st.name == name]
+       
+    1:     def get_children(self):
+    5:         return [_newSymbolTable(st, self._filename)
+   22:                 for st in self._table.children]
+       
+       
+    2: class Function(SymbolTable):
+       
+           # Default values for instance variables
+    1:     __params = None
+    1:     __locals = None
+    1:     __frees = None
+    1:     __globals = None
+       
+    1:     def __idents_matching(self, test_func):
+   29:         return tuple([ident for ident in self.get_identifiers()
+   25:                       if test_func(self._table.symbols[ident])])
+       
+    1:     def get_parameters(self):
+    1:         if self.__params is None:
+    9:             self.__params = self.__idents_matching(lambda x:x & DEF_PARAM)
+    1:         return self.__params
+       
+    1:     def get_locals(self):
+    1:         if self.__locals is None:
+    1:             locs = (LOCAL, CELL)
+    9:             test = lambda x: ((x >> SCOPE_OFF) & SCOPE_MASK) in locs
+    1:             self.__locals = self.__idents_matching(test)
+    1:         return self.__locals
+       
+    1:     def get_globals(self):
+    1:         if self.__globals is None:
+    1:             glob = (GLOBAL_IMPLICIT, GLOBAL_EXPLICIT)
+    9:             test = lambda x:((x >> SCOPE_OFF) & SCOPE_MASK) in glob
+    1:             self.__globals = self.__idents_matching(test)
+    1:         return self.__globals
+       
+    1:     def get_frees(self):
+    1:         if self.__frees is None:
+    2:             is_free = lambda x:((x >> SCOPE_OFF) & SCOPE_MASK) == FREE
+    1:             self.__frees = self.__idents_matching(is_free)
+    1:         return self.__frees
+       
+       
+    2: class Class(SymbolTable):
+       
+    1:     __methods = None
+       
+    1:     def get_methods(self):
+    1:         if self.__methods is None:
+    1:             d = {}
+    2:             for st in self._table.children:
+    1:                 d[st.name] = 1
+    1:             self.__methods = tuple(d)
+    1:         return self.__methods
+       
+       
+    2: class Symbol(object):
+       
+    1:     def __init__(self, name, flags, namespaces=None):
+   17:         self.__name = name
+   17:         self.__flags = flags
+   17:         self.__scope = (flags >> SCOPE_OFF) & SCOPE_MASK # like PyST_GetScope()
+   17:         self.__namespaces = namespaces or ()
+       
+    1:     def __repr__(self):
+>>>>>>         return "<symbol {0!r}>".format(self.__name)
+       
+    1:     def get_name(self):
+    1:         return self.__name
+       
+    1:     def is_referenced(self):
+    3:         return bool(self.__flags & _symtable.USE)
+       
+    1:     def is_parameter(self):
+    4:         return bool(self.__flags & DEF_PARAM)
+       
+    1:     def is_global(self):
+    4:         return bool(self.__scope in (GLOBAL_IMPLICIT, GLOBAL_EXPLICIT))
+       
+    1:     def is_declared_global(self):
+    2:         return bool(self.__scope == GLOBAL_EXPLICIT)
+       
+    1:     def is_local(self):
+    2:         return bool(self.__flags & DEF_BOUND)
+       
+    1:     def is_free(self):
+>>>>>>         return bool(self.__scope == FREE)
+       
+    1:     def is_imported(self):
+    1:         return bool(self.__flags & DEF_IMPORT)
+       
+    1:     def is_assigned(self):
+    5:         return bool(self.__flags & DEF_LOCAL)
+       
+    1:     def is_namespace(self):
+               """Returns true if name binding introduces new namespace.
+       
+               If the name is used as the target of a function or class
+               statement, this will be true.
+       
+               Note that a single name can be bound to multiple objects.  If
+               is_namespace() is true, the name may also be bound to other
+               objects, like an int or list, that does not introduce a new
+               namespace.
+               """
+    6:         return bool(self.__namespaces)
+       
+    1:     def get_namespaces(self):
+               """Return a list of namespaces bound to this name"""
+    1:         return self.__namespaces
+       
+    1:     def get_namespace(self):
+               """Returns the single namespace bound to this name.
+       
+               Raises ValueError if the name is bound to multiple namespaces.
+               """
+    2:         if len(self.__namespaces) != 1:
+    1:             raise ValueError, "name is bound to multiple namespaces"
+    1:         return self.__namespaces[0]
+       
+    1: if __name__ == "__main__":
+>>>>>>     import os, sys
+>>>>>>     src = open(sys.argv[0]).read()
+>>>>>>     mod = symtable(src, os.path.split(sys.argv[0])[1], "exec")
+>>>>>>     for ident in mod.get_identifiers():
+>>>>>>         info = mod.lookup(ident)
+>>>>>>         print info, info.is_local(), info.is_namespace()

@@ -1,0 +1,169 @@
+       # -*- coding: koi8-r -*-
+       
+    1: import unittest
+    1: from test.test_support import run_unittest, rmtree, captured_stdout
+    1: import script_helper
+    1: import os
+    1: import tempfile
+       
+    2: class MiscSourceEncodingTest(unittest.TestCase):
+       
+    1:     def test_pep263(self):
+    1:         self.assertEqual(
+    1:             u"Питон".encode("utf-8"),
+    1:             '\xd0\x9f\xd0\xb8\xd1\x82\xd0\xbe\xd0\xbd'
+               )
+    1:         self.assertEqual(
+    1:             u"\П".encode("utf-8"),
+    1:             '\\\xd0\x9f'
+               )
+       
+    1:     def test_compilestring(self):
+               # see #1882
+    1:         c = compile("\n# coding: utf-8\nu = u'\xc3\xb3'\n", "dummy", "exec")
+    1:         d = {}
+    1:         exec c in d
+    1:         self.assertEqual(d['u'], u'\xf3')
+       
+    1:     def test_issue3297(self):
+    1:         c = compile("a, b = '\U0001010F', '\\U0001010F'", "dummy", "exec")
+    1:         d = {}
+    1:         exec(c, d)
+    1:         self.assertEqual(d['a'], d['b'])
+    1:         self.assertEqual(len(d['a']), len(d['b']))
+       
+    1:     def test_issue7820(self):
+               # Ensure that check_bom() restores all bytes in the right order if
+               # check_bom() fails in pydebug mode: a buffer starts with the first
+               # byte of a valid BOM, but next bytes are different
+       
+               # one byte in common with the UTF-16-LE BOM
+    1:         self.assertRaises(SyntaxError, eval, '\xff\x20')
+       
+               # two bytes in common with the UTF-8 BOM
+    1:         self.assertRaises(SyntaxError, eval, '\xef\xbb\x20')
+       
+    1:     def test_error_message(self):
+    1:         compile('# -*- coding: iso-8859-15 -*-\n', 'dummy', 'exec')
+    1:         compile('\xef\xbb\xbf\n', 'dummy', 'exec')
+    1:         compile('\xef\xbb\xbf# -*- coding: utf-8 -*-\n', 'dummy', 'exec')
+    1:         with self.assertRaisesRegexp(SyntaxError, 'fake'):
+    1:             compile('# -*- coding: fake -*-\n', 'dummy', 'exec')
+    1:         with self.assertRaisesRegexp(SyntaxError, 'iso-8859-15'):
+    1:             compile('\xef\xbb\xbf# -*- coding: iso-8859-15 -*-\n',
+    1:                     'dummy', 'exec')
+    1:         with self.assertRaisesRegexp(SyntaxError, 'BOM'):
+    1:             compile('\xef\xbb\xbf# -*- coding: iso-8859-15 -*-\n',
+    1:                     'dummy', 'exec')
+    1:         with self.assertRaisesRegexp(SyntaxError, 'fake'):
+    1:             compile('\xef\xbb\xbf# -*- coding: fake -*-\n', 'dummy', 'exec')
+    1:         with self.assertRaisesRegexp(SyntaxError, 'BOM'):
+    1:             compile('\xef\xbb\xbf# -*- coding: fake -*-\n', 'dummy', 'exec')
+       
+    1:     def test_non_unicode_codec(self):
+    1:         with self.assertRaisesRegexp(SyntaxError,
+    1:                                      'codec did not return a unicode'):
+    1:             from test import bad_coding3
+       
+       
+    1:     def test_bad_coding(self):
+    1:         module_name = 'bad_coding'
+    1:         self.verify_bad_module(module_name)
+       
+    1:     def test_bad_coding2(self):
+    1:         module_name = 'bad_coding2'
+    1:         self.verify_bad_module(module_name)
+       
+    1:     def verify_bad_module(self, module_name):
+    2:         self.assertRaises(SyntaxError, __import__, 'test.' + module_name)
+       
+    2:         path = os.path.dirname(__file__)
+    2:         filename = os.path.join(path, module_name + '.py')
+    2:         with open(filename) as fp:
+    2:             text = fp.read()
+    2:         self.assertRaises(SyntaxError, compile, text, filename, 'exec')
+       
+    1:     def test_error_from_string(self):
+               # See http://bugs.python.org/issue6289
+    1:         input = u"# coding: ascii\n\N{SNOWMAN}".encode('utf-8')
+    1:         with self.assertRaises(SyntaxError) as c:
+    1:             compile(input, "<string>", "exec")
+    1:         expected = "'ascii' codec can't decode byte 0xe2 in position 16: " \
+                          "ordinal not in range(128)"
+    1:         self.assertTrue(c.exception.args[0].startswith(expected))
+       
+       
+    2: class AbstractSourceEncodingTest:
+       
+    1:     def test_first_coding_line(self):
+    2:         src = ('#coding:iso8859-15\n'
+                      'print(repr(u"\xc3\xa4"))\n')
+    2:         self.check_script_output(src, r"u'\xc3\u20ac'")
+       
+    1:     def test_second_coding_line(self):
+    2:         src = ('#\n'
+                      '#coding:iso8859-15\n'
+                      'print(repr(u"\xc3\xa4"))\n')
+    2:         self.check_script_output(src, r"u'\xc3\u20ac'")
+       
+    1:     def test_double_coding_line(self):
+               # If the first line matches the second line is ignored.
+    2:         src = ('#coding:iso8859-15\n'
+                      '#coding:latin1\n'
+                      'print(repr(u"\xc3\xa4"))\n')
+    2:         self.check_script_output(src, r"u'\xc3\u20ac'")
+       
+    1:     def test_double_coding_same_line(self):
+    2:         src = ('#coding:iso8859-15 coding:latin1\n'
+                      'print(repr(u"\xc3\xa4"))\n')
+    2:         self.check_script_output(src, r"u'\xc3\u20ac'")
+       
+    1:     def test_first_non_utf8_coding_line(self):
+    2:         src = ('#coding:iso-8859-15 \xa4\n'
+                      'print(repr(u"\xc3\xa4"))\n')
+    2:         self.check_script_output(src, r"u'\xc3\u20ac'")
+       
+    1:     def test_second_non_utf8_coding_line(self):
+    2:         src = ('\n'
+                      '#coding:iso-8859-15 \xa4\n'
+                      'print(repr(u"\xc3\xa4"))\n')
+    2:         self.check_script_output(src, r"u'\xc3\u20ac'")
+       
+    1:     def test_utf8_bom(self):
+    2:         src = ('\xef\xbb\xbfprint(repr(u"\xc3\xa4"))\n')
+    2:         self.check_script_output(src, r"u'\xe4'")
+       
+    1:     def test_utf8_bom_and_utf8_coding_line(self):
+    2:         src = ('\xef\xbb\xbf#coding:utf-8\n'
+                      'print(repr(u"\xc3\xa4"))\n')
+    2:         self.check_script_output(src, r"u'\xe4'")
+       
+       
+    2: class BytesSourceEncodingTest(AbstractSourceEncodingTest, unittest.TestCase):
+       
+    1:     def check_script_output(self, src, expected):
+    8:         with captured_stdout() as stdout:
+    8:             exec(src)
+    8:         out = stdout.getvalue().encode('latin1')
+    8:         self.assertEqual(out.rstrip(), expected)
+       
+       
+    2: class FileSourceEncodingTest(AbstractSourceEncodingTest, unittest.TestCase):
+       
+    1:     def check_script_output(self, src, expected):
+    8:         tmpd = tempfile.mkdtemp()
+    8:         try:
+    8:             fn = os.path.join(tmpd, 'test.py')
+    8:             with open(fn, 'wb') as fp:
+    8:                 fp.write(src)
+    8:             rc, out, err = script_helper.assert_python_ok(fn)
+               finally:
+    8:             rmtree(tmpd)
+    8:         self.assertEqual(out.rstrip(), expected)
+       
+       
+    1: def test_main():
+    1:     run_unittest(MiscSourceEncodingTest, BytesSourceEncodingTest, FileSourceEncodingTest)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

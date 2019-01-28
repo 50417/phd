@@ -1,0 +1,246 @@
+    1: """Tests for distutils.command.install."""
+       
+    1: import os
+    1: import sys
+    1: import unittest
+    1: import site
+       
+    1: from test.test_support import captured_stdout, run_unittest
+       
+    1: from distutils import sysconfig
+    1: from distutils.command.install import install
+    1: from distutils.command import install as install_module
+    1: from distutils.command.build_ext import build_ext
+    1: from distutils.command.install import INSTALL_SCHEMES
+    1: from distutils.core import Distribution
+    1: from distutils.errors import DistutilsOptionError
+    1: from distutils.extension import Extension
+       
+    1: from distutils.tests import support
+       
+       
+    1: def _make_ext_name(modname):
+>>>>>>     if os.name == 'nt' and sys.executable.endswith('_d.exe'):
+>>>>>>         modname += '_d'
+>>>>>>     return modname + sysconfig.get_config_var('SO')
+       
+       
+    2: class InstallTestCase(support.TempdirManager,
+    1:                       support.EnvironGuard,
+    1:                       support.LoggingSilencer,
+    1:                       unittest.TestCase):
+       
+    1:     def test_home_installation_scheme(self):
+               # This ensure two things:
+               # - that --home generates the desired set of directory names
+               # - test --home is supported on all platforms
+    1:         builddir = self.mkdtemp()
+    1:         destination = os.path.join(builddir, "installation")
+       
+    1:         dist = Distribution({"name": "foopkg"})
+               # script_name need not exist, it just need to be initialized
+    1:         dist.script_name = os.path.join(builddir, "setup.py")
+    1:         dist.command_obj["build"] = support.DummyCommand(
+    1:             build_base=builddir,
+    1:             build_lib=os.path.join(builddir, "lib"),
+                   )
+       
+    1:         cmd = install(dist)
+    1:         cmd.home = destination
+    1:         cmd.ensure_finalized()
+       
+    1:         self.assertEqual(cmd.install_base, destination)
+    1:         self.assertEqual(cmd.install_platbase, destination)
+       
+    1:         def check_path(got, expected):
+    6:             got = os.path.normpath(got)
+    6:             expected = os.path.normpath(expected)
+    6:             self.assertEqual(got, expected)
+       
+    1:         libdir = os.path.join(destination, "lib", "python")
+    1:         check_path(cmd.install_lib, libdir)
+    1:         check_path(cmd.install_platlib, libdir)
+    1:         check_path(cmd.install_purelib, libdir)
+    1:         check_path(cmd.install_headers,
+    1:                    os.path.join(destination, "include", "python", "foopkg"))
+    1:         check_path(cmd.install_scripts, os.path.join(destination, "bin"))
+    1:         check_path(cmd.install_data, destination)
+       
+    1:     @unittest.skipIf(sys.version < '2.6',
+    1:                      'site.USER_SITE was introduced in 2.6')
+           def test_user_site(self):
+               # preparing the environment for the test
+    1:         self.old_user_base = site.USER_BASE
+    1:         self.old_user_site = site.USER_SITE
+    1:         self.tmpdir = self.mkdtemp()
+    1:         self.user_base = os.path.join(self.tmpdir, 'B')
+    1:         self.user_site = os.path.join(self.tmpdir, 'S')
+    1:         site.USER_BASE = self.user_base
+    1:         site.USER_SITE = self.user_site
+    1:         install_module.USER_BASE = self.user_base
+    1:         install_module.USER_SITE = self.user_site
+       
+    1:         def _expanduser(path):
+    8:             return self.tmpdir
+    1:         self.old_expand = os.path.expanduser
+    1:         os.path.expanduser = _expanduser
+       
+    1:         def cleanup():
+    1:             site.USER_BASE = self.old_user_base
+    1:             site.USER_SITE = self.old_user_site
+    1:             install_module.USER_BASE = self.old_user_base
+    1:             install_module.USER_SITE = self.old_user_site
+    1:             os.path.expanduser = self.old_expand
+       
+    1:         self.addCleanup(cleanup)
+       
+    4:         for key in ('nt_user', 'unix_user', 'os2_home'):
+    3:             self.assertIn(key, INSTALL_SCHEMES)
+       
+    1:         dist = Distribution({'name': 'xx'})
+    1:         cmd = install(dist)
+       
+               # making sure the user option is there
+    1:         options = [name for name, short, lable in
+   20:                    cmd.user_options]
+    1:         self.assertIn('user', options)
+       
+               # setting a value
+    1:         cmd.user = 1
+       
+               # user base and site shouldn't be created yet
+    1:         self.assertFalse(os.path.exists(self.user_base))
+    1:         self.assertFalse(os.path.exists(self.user_site))
+       
+               # let's run finalize
+    1:         cmd.ensure_finalized()
+       
+               # now they should
+    1:         self.assertTrue(os.path.exists(self.user_base))
+    1:         self.assertTrue(os.path.exists(self.user_site))
+       
+    1:         self.assertIn('userbase', cmd.config_vars)
+    1:         self.assertIn('usersite', cmd.config_vars)
+       
+    1:     def test_handle_extra_path(self):
+    1:         dist = Distribution({'name': 'xx', 'extra_path': 'path,dirs'})
+    1:         cmd = install(dist)
+       
+               # two elements
+    1:         cmd.handle_extra_path()
+    1:         self.assertEqual(cmd.extra_path, ['path', 'dirs'])
+    1:         self.assertEqual(cmd.extra_dirs, 'dirs')
+    1:         self.assertEqual(cmd.path_file, 'path')
+       
+               # one element
+    1:         cmd.extra_path = ['path']
+    1:         cmd.handle_extra_path()
+    1:         self.assertEqual(cmd.extra_path, ['path'])
+    1:         self.assertEqual(cmd.extra_dirs, 'path')
+    1:         self.assertEqual(cmd.path_file, 'path')
+       
+               # none
+    1:         dist.extra_path = cmd.extra_path = None
+    1:         cmd.handle_extra_path()
+    1:         self.assertEqual(cmd.extra_path, None)
+    1:         self.assertEqual(cmd.extra_dirs, '')
+    1:         self.assertEqual(cmd.path_file, None)
+       
+               # three elements (no way !)
+    1:         cmd.extra_path = 'path,dirs,again'
+    1:         self.assertRaises(DistutilsOptionError, cmd.handle_extra_path)
+       
+    1:     def test_finalize_options(self):
+    1:         dist = Distribution({'name': 'xx'})
+    1:         cmd = install(dist)
+       
+               # must supply either prefix/exec-prefix/home or
+               # install-base/install-platbase -- not both
+    1:         cmd.prefix = 'prefix'
+    1:         cmd.install_base = 'base'
+    1:         self.assertRaises(DistutilsOptionError, cmd.finalize_options)
+       
+               # must supply either home or prefix/exec-prefix -- not both
+    1:         cmd.install_base = None
+    1:         cmd.home = 'home'
+    1:         self.assertRaises(DistutilsOptionError, cmd.finalize_options)
+       
+               # can't combine user with prefix/exec_prefix/home or
+               # install_(plat)base
+    1:         cmd.prefix = None
+    1:         cmd.user = 'user'
+    1:         self.assertRaises(DistutilsOptionError, cmd.finalize_options)
+       
+    1:     def test_record(self):
+    2:         install_dir = self.mkdtemp()
+    2:         project_dir, dist = self.create_dist(py_modules=['hello'],
+    2:                                              scripts=['sayhi'])
+    2:         os.chdir(project_dir)
+    2:         self.write_file('hello.py', "def main(): print 'o hai'")
+    2:         self.write_file('sayhi', 'from hello import main; main()')
+       
+    2:         cmd = install(dist)
+    2:         dist.command_obj['install'] = cmd
+    2:         cmd.root = install_dir
+    2:         cmd.record = os.path.join(project_dir, 'filelist')
+    2:         cmd.ensure_finalized()
+    2:         cmd.run()
+       
+    2:         f = open(cmd.record)
+    2:         try:
+    2:             content = f.read()
+               finally:
+    2:             f.close()
+       
+   10:         found = [os.path.basename(line) for line in content.splitlines()]
+    2:         expected = ['hello.py', 'hello.pyc', 'sayhi',
+    2:                     'UNKNOWN-0.0.0-py%s.%s.egg-info' % sys.version_info[:2]]
+    2:         self.assertEqual(found, expected)
+       
+    1:     def test_record_extensions(self):
+    1:         install_dir = self.mkdtemp()
+    1:         project_dir, dist = self.create_dist(ext_modules=[
+    1:             Extension('xx', ['xxmodule.c'])])
+    1:         os.chdir(project_dir)
+    1:         support.copy_xxmodule_c(project_dir)
+       
+    1:         buildextcmd = build_ext(dist)
+    1:         support.fixup_build_ext(buildextcmd)
+    1:         buildextcmd.ensure_finalized()
+       
+    1:         cmd = install(dist)
+    1:         dist.command_obj['install'] = cmd
+    1:         dist.command_obj['build_ext'] = buildextcmd
+    1:         cmd.root = install_dir
+    1:         cmd.record = os.path.join(project_dir, 'filelist')
+    1:         cmd.ensure_finalized()
+    1:         cmd.run()
+       
+>>>>>>         f = open(cmd.record)
+>>>>>>         try:
+>>>>>>             content = f.read()
+               finally:
+>>>>>>             f.close()
+       
+>>>>>>         found = [os.path.basename(line) for line in content.splitlines()]
+>>>>>>         expected = [_make_ext_name('xx'),
+>>>>>>                     'UNKNOWN-0.0.0-py%s.%s.egg-info' % sys.version_info[:2]]
+>>>>>>         self.assertEqual(found, expected)
+       
+    1:     def test_debug_mode(self):
+               # this covers the code called when DEBUG is set
+    1:         old_logs_len = len(self.logs)
+    1:         install_module.DEBUG = True
+    1:         try:
+    1:             with captured_stdout():
+    1:                 self.test_record()
+               finally:
+    1:             install_module.DEBUG = False
+    1:         self.assertGreater(len(self.logs), old_logs_len)
+       
+       
+    1: def test_suite():
+    1:     return unittest.makeSuite(InstallTestCase)
+       
+    1: if __name__ == "__main__":
+>>>>>>     run_unittest(test_suite())

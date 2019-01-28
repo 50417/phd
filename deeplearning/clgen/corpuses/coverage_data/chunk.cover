@@ -1,0 +1,169 @@
+       """Simple class to read IFF chunks.
+       
+       An IFF chunk (used in formats such as AIFF, TIFF, RMFF (RealMedia File
+       Format)) has the following structure:
+       
+       +----------------+
+       | ID (4 bytes)   |
+       +----------------+
+       | size (4 bytes) |
+       +----------------+
+       | data           |
+       | ...            |
+       +----------------+
+       
+       The ID is a 4-byte string which identifies the type of chunk.
+       
+       The size field (a 32-bit value, encoded using big-endian byte order)
+       gives the size of the whole chunk, including the 8-byte header.
+       
+       Usually an IFF-type file consists of one or more chunks.  The proposed
+       usage of the Chunk class defined here is to instantiate an instance at
+       the start of each chunk and read from the instance until it reaches
+       the end, after which a new instance can be instantiated.  At the end
+       of the file, creating a new instance will fail with an EOFError
+       exception.
+       
+       Usage:
+       while True:
+           try:
+               chunk = Chunk(file)
+           except EOFError:
+               break
+           chunktype = chunk.getname()
+           while True:
+               data = chunk.read(nbytes)
+               if not data:
+                   pass
+               # do something with data
+       
+       The interface is file-like.  The implemented methods are:
+       read, close, seek, tell, isatty.
+       Extra methods are: skip() (called by close, skips to the end of the chunk),
+       getname() (returns the name (ID) of the chunk)
+       
+       The __init__ method has one required argument, a file-like object
+       (including a chunk instance), and one optional argument, a flag which
+       specifies whether or not chunks are aligned on 2-byte boundaries.  The
+       default is 1, i.e. aligned.
+    1: """
+       
+    2: class Chunk:
+    1:     def __init__(self, file, align=True, bigendian=True, inclheader=False):
+  672:         import struct
+  672:         self.closed = False
+  672:         self.align = align      # whether to align to word (2-byte) boundaries
+  672:         if bigendian:
+  520:             strflag = '>'
+               else:
+  152:             strflag = '<'
+  672:         self.file = file
+  672:         self.chunkname = file.read(4)
+  672:         if len(self.chunkname) < 4:
+   82:             raise EOFError
+  590:         try:
+  590:             self.chunksize = struct.unpack(strflag+'L', file.read(4))[0]
+    3:         except struct.error:
+    3:             raise EOFError
+  587:         if inclheader:
+>>>>>>             self.chunksize = self.chunksize - 8 # subtract header
+  587:         self.size_read = 0
+  587:         try:
+  587:             self.offset = self.file.tell()
+    4:         except (AttributeError, IOError):
+    4:             self.seekable = False
+               else:
+  583:             self.seekable = True
+       
+    1:     def getname(self):
+               """Return the name (ID) of the current chunk."""
+  587:         return self.chunkname
+       
+    1:     def getsize(self):
+               """Return the size of the current chunk."""
+>>>>>>         return self.chunksize
+       
+    1:     def close(self):
+>>>>>>         if not self.closed:
+>>>>>>             try:
+>>>>>>                 self.skip()
+                   finally:
+>>>>>>                 self.closed = True
+       
+    1:     def isatty(self):
+>>>>>>         if self.closed:
+>>>>>>             raise ValueError, "I/O operation on closed file"
+>>>>>>         return False
+       
+    1:     def seek(self, pos, whence=0):
+               """Seek to specified position into the chunk.
+               Default position is 0 (start of chunk).
+               If the file is not seekable, this will result in an error.
+               """
+       
+  200:         if self.closed:
+>>>>>>             raise ValueError, "I/O operation on closed file"
+  200:         if not self.seekable:
+    4:             raise IOError, "cannot seek"
+  196:         if whence == 1:
+   60:             pos = pos + self.size_read
+  136:         elif whence == 2:
+>>>>>>             pos = pos + self.chunksize
+  196:         if pos < 0 or pos > self.chunksize:
+>>>>>>             raise RuntimeError
+  196:         self.file.seek(self.offset + pos, 0)
+  196:         self.size_read = pos
+       
+    1:     def tell(self):
+  108:         if self.closed:
+>>>>>>             raise ValueError, "I/O operation on closed file"
+  108:         return self.size_read
+       
+    1:     def read(self, size=-1):
+               """Read at most size bytes from the chunk.
+               If size is omitted or negative, read until the end
+               of the chunk.
+               """
+       
+ 2809:         if self.closed:
+>>>>>>             raise ValueError, "I/O operation on closed file"
+ 2809:         if self.size_read >= self.chunksize:
+    1:             return ''
+ 2808:         if size < 0:
+>>>>>>             size = self.chunksize - self.size_read
+ 2808:         if size > self.chunksize - self.size_read:
+   11:             size = self.chunksize - self.size_read
+ 2808:         data = self.file.read(size)
+ 2808:         self.size_read = self.size_read + len(data)
+ 2808:         if self.size_read == self.chunksize and \
+  313:            self.align and \
+  313:            (self.chunksize & 1):
+    2:             dummy = self.file.read(1)
+    2:             self.size_read = self.size_read + len(dummy)
+ 2808:         return data
+       
+    1:     def skip(self):
+               """Skip the rest of the chunk.
+               If you are not interested in the contents of the chunk,
+               this method should be called so that the file points to
+               the start of the next chunk.
+               """
+       
+  409:         if self.closed:
+>>>>>>             raise ValueError, "I/O operation on closed file"
+  409:         if self.seekable:
+  409:             try:
+  409:                 n = self.chunksize - self.size_read
+                       # maybe fix alignment
+  409:                 if self.align and (self.chunksize & 1):
+   61:                     n = n + 1
+  409:                 self.file.seek(n, 1)
+  405:                 self.size_read = self.size_read + n
+  405:                 return
+    4:             except IOError:
+    4:                 pass
+    4:         while self.size_read < self.chunksize:
+>>>>>>             n = min(8192, self.chunksize - self.size_read)
+>>>>>>             dummy = self.read(n)
+>>>>>>             if not dummy:
+>>>>>>                 raise EOFError

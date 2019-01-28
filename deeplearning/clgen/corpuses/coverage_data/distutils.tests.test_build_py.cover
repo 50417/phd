@@ -1,0 +1,153 @@
+    1: """Tests for distutils.command.build_py."""
+       
+    1: import os
+    1: import sys
+    1: import StringIO
+    1: import unittest
+       
+    1: from distutils.command.build_py import build_py
+    1: from distutils.core import Distribution
+    1: from distutils.errors import DistutilsFileError
+       
+    1: from distutils.tests import support
+    1: from test.test_support import run_unittest
+       
+       
+    2: class BuildPyTestCase(support.TempdirManager,
+    1:                       support.LoggingSilencer,
+    1:                       unittest.TestCase):
+       
+    1:     def test_package_data(self):
+    1:         sources = self.mkdtemp()
+    1:         f = open(os.path.join(sources, "__init__.py"), "w")
+    1:         try:
+    1:             f.write("# Pretend this is a package.")
+               finally:
+    1:             f.close()
+    1:         f = open(os.path.join(sources, "README.txt"), "w")
+    1:         try:
+    1:             f.write("Info about this package")
+               finally:
+    1:             f.close()
+       
+    1:         destination = self.mkdtemp()
+       
+    1:         dist = Distribution({"packages": ["pkg"],
+    1:                              "package_dir": {"pkg": sources}})
+               # script_name need not exist, it just need to be initialized
+    1:         dist.script_name = os.path.join(sources, "setup.py")
+    1:         dist.command_obj["build"] = support.DummyCommand(
+    1:             force=0,
+    1:             build_lib=destination)
+    1:         dist.packages = ["pkg"]
+    1:         dist.package_data = {"pkg": ["README.txt"]}
+    1:         dist.package_dir = {"pkg": sources}
+       
+    1:         cmd = build_py(dist)
+    1:         cmd.compile = 1
+    1:         cmd.ensure_finalized()
+    1:         self.assertEqual(cmd.package_data, dist.package_data)
+       
+    1:         cmd.run()
+       
+               # This makes sure the list of outputs includes byte-compiled
+               # files for Python modules but not for package data files
+               # (there shouldn't *be* byte-code files for those!).
+               #
+    1:         self.assertEqual(len(cmd.get_outputs()), 3)
+    1:         pkgdest = os.path.join(destination, "pkg")
+    1:         files = os.listdir(pkgdest)
+    1:         self.assertIn("__init__.py", files)
+    1:         self.assertIn("README.txt", files)
+               # XXX even with -O, distutils writes pyc, not pyo; bug?
+    1:         if sys.dont_write_bytecode:
+>>>>>>             self.assertNotIn("__init__.pyc", files)
+               else:
+    1:             self.assertIn("__init__.pyc", files)
+       
+    1:     def test_empty_package_dir(self):
+               # See SF 1668596/1720897.
+    1:         cwd = os.getcwd()
+       
+               # create the distribution files.
+    1:         sources = self.mkdtemp()
+    1:         open(os.path.join(sources, "__init__.py"), "w").close()
+       
+    1:         testdir = os.path.join(sources, "doc")
+    1:         os.mkdir(testdir)
+    1:         open(os.path.join(testdir, "testfile"), "w").close()
+       
+    1:         os.chdir(sources)
+    1:         old_stdout = sys.stdout
+    1:         sys.stdout = StringIO.StringIO()
+       
+    1:         try:
+    1:             dist = Distribution({"packages": ["pkg"],
+    1:                                  "package_dir": {"pkg": ""},
+    1:                                  "package_data": {"pkg": ["doc/*"]}})
+                   # script_name need not exist, it just need to be initialized
+    1:             dist.script_name = os.path.join(sources, "setup.py")
+    1:             dist.script_args = ["build"]
+    1:             dist.parse_command_line()
+       
+    1:             try:
+    1:                 dist.run_commands()
+>>>>>>             except DistutilsFileError:
+>>>>>>                 self.fail("failed package_data test when package_dir is ''")
+               finally:
+                   # Restore state.
+    1:             os.chdir(cwd)
+    1:             sys.stdout = old_stdout
+       
+    1:     def test_dir_in_package_data(self):
+               """
+               A directory in package_data should not be added to the filelist.
+               """
+               # See bug 19286
+    1:         sources = self.mkdtemp()
+    1:         pkg_dir = os.path.join(sources, "pkg")
+       
+    1:         os.mkdir(pkg_dir)
+    1:         open(os.path.join(pkg_dir, "__init__.py"), "w").close()
+       
+    1:         docdir = os.path.join(pkg_dir, "doc")
+    1:         os.mkdir(docdir)
+    1:         open(os.path.join(docdir, "testfile"), "w").close()
+       
+               # create the directory that could be incorrectly detected as a file
+    1:         os.mkdir(os.path.join(docdir, 'otherdir'))
+       
+    1:         os.chdir(sources)
+    1:         dist = Distribution({"packages": ["pkg"],
+    1:                              "package_data": {"pkg": ["doc/*"]}})
+               # script_name need not exist, it just need to be initialized
+    1:         dist.script_name = os.path.join(sources, "setup.py")
+    1:         dist.script_args = ["build"]
+    1:         dist.parse_command_line()
+       
+    1:         try:
+    1:             dist.run_commands()
+>>>>>>         except DistutilsFileError:
+>>>>>>             self.fail("failed package_data when data dir includes a dir")
+       
+    1:     def test_dont_write_bytecode(self):
+               # makes sure byte_compile is not used
+    1:         pkg_dir, dist = self.create_dist()
+    1:         cmd = build_py(dist)
+    1:         cmd.compile = 1
+    1:         cmd.optimize = 1
+       
+    1:         old_dont_write_bytecode = sys.dont_write_bytecode
+    1:         sys.dont_write_bytecode = True
+    1:         try:
+    1:             cmd.byte_compile([])
+               finally:
+    1:             sys.dont_write_bytecode = old_dont_write_bytecode
+       
+    1:         self.assertIn('byte-compiling is disabled', self.logs[0][1])
+       
+    1: def test_suite():
+    1:     return unittest.makeSuite(BuildPyTestCase)
+       
+    1: if __name__ == "__main__":
+>>>>>>     run_unittest(test_suite())

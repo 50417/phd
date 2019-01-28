@@ -1,0 +1,261 @@
+       # test_pickle dumps and loads pickles via pickle.py.
+       # test_cpickle does the same, but via the cPickle module.
+       # This test covers the other two cases, making pickles with one module and
+       # loading them via the other. It also tests backwards compatibility with
+       # previous version of Python by bouncing pickled objects through Python 2.4
+       # and Python 2.5 running this file.
+       
+    1: import cPickle
+    1: import os
+    1: import os.path
+    1: import pickle
+    1: import subprocess
+    1: import sys
+    1: import types
+    1: import unittest
+       
+    1: from test import test_support
+       
+       # Most distro-supplied Pythons don't include the tests
+       # or test support files, and some don't include a way to get these back even if
+       # you're will to install extra packages (like Ubuntu). Doing things like this
+       # "provides" a pickletester module for older versions of Python that may be
+       # installed without it. Note that one other design for this involves messing
+       # with sys.path, which is less precise.
+    1: mod_path = os.path.abspath(os.path.join(os.path.dirname(__file__),
+    1:                                         "pickletester.py"))
+    1: pickletester = types.ModuleType("test.pickletester")
+    1: exec compile(open(mod_path).read(), mod_path, 'exec') in pickletester.__dict__
+    1: AbstractPickleTests = pickletester.AbstractPickleTests
+    1: if pickletester.__name__ in sys.modules:
+>>>>>>     raise RuntimeError("Did not expect to find test.pickletester loaded")
+    1: sys.modules[pickletester.__name__] = pickletester
+       
+       
+    2: class DumpCPickle_LoadPickle(AbstractPickleTests):
+       
+    1:     error = KeyError
+       
+    1:     def dumps(self, arg, proto=0, fast=False):
+               # Ignore fast
+  803:         return cPickle.dumps(arg, proto)
+       
+    1:     def loads(self, buf):
+               # Ignore fast
+  794:         return pickle.loads(buf)
+       
+    2: class DumpPickle_LoadCPickle(AbstractPickleTests):
+       
+    1:     error = cPickle.BadPickleGet
+       
+    1:     def dumps(self, arg, proto=0, fast=False):
+               # Ignore fast
+  803:         return pickle.dumps(arg, proto)
+       
+    1:     def loads(self, buf):
+               # Ignore fast
+  794:         return cPickle.loads(buf)
+       
+    1: def have_python_version(name, cache={}):
+           """Check whether the given name is a valid Python binary and has
+           test.test_support.
+       
+           This respects your PATH.
+       
+           Args:
+               name: short string name of a Python binary such as "python2.4".
+       
+           Returns:
+               True if the name is valid, False otherwise.
+           """
+>>>>>>     if name not in cache:
+>>>>>>         cache[name] = os.system(name + ' -c "import test.test_support"') == 0
+>>>>>>     return cache[name]
+       
+       
+    2: class AbstractCompatTests(AbstractPickleTests):
+       
+    1:     module = None
+    1:     python = None
+    1:     error = None
+       
+    1:     def setUp(self):
+  388:         self.assertTrue(self.python)
+  388:         self.assertTrue(self.module)
+  388:         self.assertTrue(self.error)
+  388:         test_support.requires("xpickle")
+>>>>>>         if not have_python_version(self.python):
+>>>>>>             self.skipTest('%s not available' % self.python)
+       
+    1:     def send_to_worker(self, python, obj, proto):
+               """Bounce a pickled object through another version of Python.
+       
+               This will pickle the object, send it to a child process where it will be
+               unpickled, then repickled and sent back to the parent process.
+       
+               Args:
+                   python: the name of the Python binary to start.
+                   obj: object to pickle.
+                   proto: pickle protocol number to use.
+       
+               Returns:
+                   The pickled data received from the child process.
+               """
+               # Prevent the subprocess from picking up invalid .pyc files.
+>>>>>>         target = __file__
+>>>>>>         if target[-1] in ("c", "o"):
+>>>>>>             target = target[:-1]
+       
+>>>>>>         data = self.module.dumps((proto, obj), proto)
+>>>>>>         worker = subprocess.Popen([python, target, "worker"],
+>>>>>>                                   stdin=subprocess.PIPE,
+>>>>>>                                   stdout=subprocess.PIPE,
+>>>>>>                                   stderr=subprocess.PIPE)
+>>>>>>         stdout, stderr = worker.communicate(data)
+>>>>>>         if worker.returncode != 0:
+>>>>>>             raise RuntimeError(stderr)
+>>>>>>         return stdout
+       
+    1:     def dumps(self, arg, proto=0, fast=False):
+>>>>>>         return self.send_to_worker(self.python, arg, proto)
+       
+    1:     def loads(self, input):
+>>>>>>         return self.module.loads(input)
+       
+           # These tests are disabled because they require some special setup
+           # on the worker that's hard to keep in sync.
+    1:     test_global_ext1 = None
+    1:     test_global_ext2 = None
+    1:     test_global_ext4 = None
+       
+           # This is a cut-down version of pickletester's test_float. Backwards
+           # compatibility for the values in for_bin_protos was explicitly broken in
+           # r68903 to fix a bug.
+    1:     def test_float(self):
+>>>>>>         for_bin_protos = [4.94e-324, 1e-310]
+>>>>>>         neg_for_bin_protos = [-x for x in for_bin_protos]
+>>>>>>         test_values = [0.0, 7e-308, 6.626e-34, 0.1, 0.5,
+>>>>>>                        3.14, 263.44582062374053, 6.022e23, 1e30]
+>>>>>>         test_proto0_values = test_values + [-x for x in test_values]
+>>>>>>         test_values = test_proto0_values + for_bin_protos + neg_for_bin_protos
+       
+>>>>>>         for value in test_proto0_values:
+>>>>>>             pickle = self.dumps(value, 0)
+>>>>>>             got = self.loads(pickle)
+>>>>>>             self.assertEqual(value, got)
+       
+>>>>>>         for proto in pickletester.protocols[1:]:
+>>>>>>             for value in test_values:
+>>>>>>                 pickle = self.dumps(value, proto)
+>>>>>>                 got = self.loads(pickle)
+>>>>>>                 self.assertEqual(value, got)
+       
+           # Backwards compatibility was explicitly broken in r67934 to fix a bug.
+    1:     test_unicode_high_plane = None
+       
+           # This tests a fix that's in 2.7 only
+    1:     test_dynamic_class = None
+       
+           # This is a cut-down version of pickletester's test_unicode. Backwards
+           # compatibility was explicitly broken in r67934 to fix a bug.
+    1:     def test_unicode(self):
+>>>>>>         if not test_support.have_unicode:
+                   # Python 2.5 has no unittest.skipUnless
+>>>>>>             self.skipTest('no unicode support')
+>>>>>>         endcases = [u'', u'<\\u>', u'<\\%c>' % 0x1234, u'<\n>', u'<\\>']
+>>>>>>         for proto in pickletester.protocols:
+>>>>>>             for u in endcases:
+>>>>>>                 p = self.dumps(u, proto)
+>>>>>>                 u2 = self.loads(p)
+>>>>>>                 self.assertEqual(u2, u)
+       
+           # The ability to pickle recursive objects was added in 2.7.11 to fix
+           # a crash in CPickle (issue #892902).
+    1:     test_recursive_list_subclass_and_inst = None
+    1:     test_recursive_tuple_subclass_and_inst = None
+    1:     test_recursive_dict_subclass_and_inst = None
+    1:     test_recursive_set_and_inst = None
+    1:     test_recursive_frozenset_and_inst = None
+       
+       
+       # Test backwards compatibility with Python 2.4.
+    2: class CPicklePython24Compat(AbstractCompatTests):
+       
+    1:     module = cPickle
+    1:     python = "python2.4"
+    1:     error = cPickle.BadPickleGet
+       
+           # Disable these tests for Python 2.4. Making them pass would require
+           # nontrivially monkeypatching the pickletester module in the worker.
+    1:     test_reduce_calls_base = None
+    1:     test_reduce_ex_calls_base = None
+       
+    2: class PicklePython24Compat(CPicklePython24Compat):
+       
+    1:     module = pickle
+    1:     error = KeyError
+       
+       
+       # Test backwards compatibility with Python 2.5.
+    2: class CPicklePython25Compat(AbstractCompatTests):
+       
+    1:     module = cPickle
+    1:     python = "python2.5"
+    1:     error = cPickle.BadPickleGet
+       
+    2: class PicklePython25Compat(CPicklePython25Compat):
+       
+    1:     module = pickle
+    1:     error = KeyError
+       
+       
+       # Test backwards compatibility with Python 2.6.
+    2: class CPicklePython26Compat(AbstractCompatTests):
+       
+    1:     module = cPickle
+    1:     python = "python2.6"
+    1:     error = cPickle.BadPickleGet
+       
+    2: class PicklePython26Compat(CPicklePython26Compat):
+       
+    1:     module = pickle
+    1:     error = KeyError
+       
+       
+    2: class CPicklePython27Compat(AbstractCompatTests):
+       
+    1:     module = cPickle
+    1:     python = "python2.7"
+    1:     error = cPickle.BadPickleGet
+       
+    2: class PicklePython27Compat(CPicklePython27Compat):
+       
+    1:     module = pickle
+    1:     error = KeyError
+       
+       
+    1: def worker_main(in_stream, out_stream):
+>>>>>>     message = cPickle.load(in_stream)
+>>>>>>     protocol, obj = message
+>>>>>>     cPickle.dump(obj, out_stream, protocol)
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(
+    1:         DumpCPickle_LoadPickle,
+    1:         DumpPickle_LoadCPickle,
+    1:         CPicklePython24Compat,
+    1:         CPicklePython25Compat,
+    1:         CPicklePython26Compat,
+    1:         CPicklePython27Compat,
+    1:         PicklePython24Compat,
+    1:         PicklePython25Compat,
+    1:         PicklePython26Compat,
+    1:         PicklePython27Compat,
+           )
+       
+    1: if __name__ == "__main__":
+>>>>>>     if "worker" in sys.argv:
+>>>>>>         worker_main(sys.stdin, sys.stdout)
+           else:
+>>>>>>         test_main()

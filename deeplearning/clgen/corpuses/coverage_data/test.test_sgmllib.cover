@@ -1,0 +1,439 @@
+    1: import pprint
+    1: import re
+    1: import unittest
+    1: from test import test_support
+    1: sgmllib = test_support.import_module('sgmllib', deprecated=True)
+       
+       
+    2: class EventCollector(sgmllib.SGMLParser):
+       
+    1:     def __init__(self):
+   31:         self.events = []
+   31:         self.append = self.events.append
+   31:         sgmllib.SGMLParser.__init__(self)
+       
+    1:     def get_events(self):
+               # Normalize the list of events so that buffer artefacts don't
+               # separate runs of contiguous characters.
+   30:         L = []
+   30:         prevtype = None
+  241:         for event in self.events:
+  211:             type = event[0]
+  211:             if type == prevtype == "data":
+  151:                 L[-1] = ("data", L[-1][1] + event[1])
+                   else:
+   60:                 L.append(event)
+  211:             prevtype = type
+   30:         self.events = L
+   30:         return L
+       
+           # structure markup
+       
+    1:     def unknown_starttag(self, tag, attrs):
+   26:         self.append(("starttag", tag, attrs))
+       
+    1:     def unknown_endtag(self, tag):
+    9:         self.append(("endtag", tag))
+       
+           # all other markup
+       
+    1:     def handle_comment(self, data):
+    1:         self.append(("comment", data))
+       
+    1:     def handle_charref(self, data):
+>>>>>>         self.append(("charref", data))
+       
+    1:     def handle_data(self, data):
+  161:         self.append(("data", data))
+       
+    1:     def handle_decl(self, decl):
+    3:         self.append(("decl", decl))
+       
+    1:     def handle_entityref(self, data):
+>>>>>>         self.append(("entityref", data))
+       
+    1:     def handle_pi(self, data):
+    1:         self.append(("pi", data))
+       
+    1:     def unknown_decl(self, decl):
+    1:         self.append(("unknown decl", decl))
+       
+       
+    2: class CDATAEventCollector(EventCollector):
+    1:     def start_cdata(self, attrs):
+    2:         self.append(("starttag", "cdata", attrs))
+    2:         self.setliteral()
+       
+       
+    2: class HTMLEntityCollector(EventCollector):
+       
+    1:     entity_or_charref = re.compile('(?:&([a-zA-Z][-.a-zA-Z0-9]*)'
+               '|&#(x[0-9a-zA-Z]+|[0-9]+))(;?)')
+       
+    1:     def convert_charref(self, name):
+    2:         self.append(("charref", "convert", name))
+    2:         if name[0] != "x":
+    1:             return EventCollector.convert_charref(self, name)
+       
+    1:     def convert_codepoint(self, codepoint):
+    1:         self.append(("codepoint", "convert", codepoint))
+    1:         EventCollector.convert_codepoint(self, codepoint)
+       
+    1:     def convert_entityref(self, name):
+    2:         self.append(("entityref", "convert", name))
+    2:         return EventCollector.convert_entityref(self, name)
+       
+           # These to record that they were called, then pass the call along
+           # to the default implementation so that it's actions can be
+           # recorded.
+       
+    1:     def handle_charref(self, data):
+    1:         self.append(("charref", data))
+    1:         sgmllib.SGMLParser.handle_charref(self, data)
+       
+    1:     def handle_entityref(self, data):
+    1:         self.append(("entityref", data))
+    1:         sgmllib.SGMLParser.handle_entityref(self, data)
+       
+       
+    2: class SGMLParserTestCase(unittest.TestCase):
+       
+    1:     collector = EventCollector
+       
+    1:     def get_events(self, source):
+   30:         parser = self.collector()
+   30:         try:
+ 1211:             for s in source:
+ 1181:                 parser.feed(s)
+   30:             parser.close()
+>>>>>>         except:
+                   #self.events = parser.events
+>>>>>>             raise
+   30:         return parser.get_events()
+       
+    1:     def check_events(self, source, expected_events):
+   30:         try:
+   30:             events = self.get_events(source)
+>>>>>>         except:
+                   #import sys
+                   #print >>sys.stderr, pprint.pformat(self.events)
+>>>>>>             raise
+   30:         if events != expected_events:
+>>>>>>             self.fail("received events did not match expected events\n"
+                             "Expected:\n" + pprint.pformat(expected_events) +
+>>>>>>                       "\nReceived:\n" + pprint.pformat(events))
+       
+    1:     def check_parse_error(self, source):
+    1:         parser = EventCollector()
+    1:         try:
+    1:             parser.feed(source)
+>>>>>>             parser.close()
+    1:         except sgmllib.SGMLParseError:
+    1:             pass
+               else:
+>>>>>>             self.fail("expected SGMLParseError for %r\nReceived:\n%s"
+>>>>>>                       % (source, pprint.pformat(parser.get_events())))
+       
+    1:     def test_doctype_decl_internal(self):
+               inside = """\
+       DOCTYPE html PUBLIC '-//W3C//DTD HTML 4.01//EN'
+                    SYSTEM 'http://www.w3.org/TR/html401/strict.dtd' [
+         <!ELEMENT html - O EMPTY>
+         <!ATTLIST html
+             version CDATA #IMPLIED
+             profile CDATA 'DublinCore'>
+         <!NOTATION datatype SYSTEM 'http://xml.python.org/notations/python-module'>
+         <!ENTITY myEntity 'internal parsed entity'>
+         <!ENTITY anEntity SYSTEM 'http://xml.python.org/entities/something.xml'>
+         <!ENTITY % paramEntity 'name|name|name'>
+         %paramEntity;
+         <!-- comment -->
+    1: ]"""
+    1:         self.check_events(["<!%s>" % inside], [
+    1:             ("decl", inside),
+                   ])
+       
+    1:     def test_doctype_decl_external(self):
+    1:         inside = "DOCTYPE html PUBLIC '-//W3C//DTD HTML 4.01//EN'"
+    1:         self.check_events("<!%s>" % inside, [
+    1:             ("decl", inside),
+                   ])
+       
+    1:     def test_underscore_in_attrname(self):
+               # SF bug #436621
+               """Make sure attribute names with underscores are accepted"""
+    1:         self.check_events("<a has_under _under>", [
+    1:             ("starttag", "a", [("has_under", "has_under"),
+    1:                                ("_under", "_under")]),
+                   ])
+       
+    1:     def test_underscore_in_tagname(self):
+               # SF bug #436621
+               """Make sure tag names with underscores are accepted"""
+    1:         self.check_events("<has_under></has_under>", [
+    1:             ("starttag", "has_under", []),
+    1:             ("endtag", "has_under"),
+                   ])
+       
+    1:     def test_quotes_in_unquoted_attrs(self):
+               # SF bug #436621
+               """Be sure quotes in unquoted attributes are made part of the value"""
+    1:         self.check_events("<a href=foo'bar\"baz>", [
+    1:             ("starttag", "a", [("href", "foo'bar\"baz")]),
+                   ])
+       
+    1:     def test_xhtml_empty_tag(self):
+               """Handling of XHTML-style empty start tags"""
+    1:         self.check_events("<br />text<i></i>", [
+    1:             ("starttag", "br", []),
+    1:             ("data", "text"),
+    1:             ("starttag", "i", []),
+    1:             ("endtag", "i"),
+                   ])
+       
+    1:     def test_processing_instruction_only(self):
+    1:         self.check_events("<?processing instruction>", [
+    1:             ("pi", "processing instruction"),
+                   ])
+       
+    1:     def test_bad_nesting(self):
+    1:         self.check_events("<a><b></a></b>", [
+    1:             ("starttag", "a", []),
+    1:             ("starttag", "b", []),
+    1:             ("endtag", "a"),
+    1:             ("endtag", "b"),
+                   ])
+       
+    1:     def test_bare_ampersands(self):
+    1:         self.check_events("this text & contains & ampersands &", [
+    1:             ("data", "this text & contains & ampersands &"),
+                   ])
+       
+    1:     def test_bare_pointy_brackets(self):
+    1:         self.check_events("this < text > contains < bare>pointy< brackets", [
+    1:             ("data", "this < text > contains < bare>pointy< brackets"),
+                   ])
+       
+    1:     def test_attr_syntax(self):
+               output = [
+    1:           ("starttag", "a", [("b", "v"), ("c", "v"), ("d", "v"), ("e", "e")])
+                 ]
+    1:         self.check_events("""<a b='v' c="v" d=v e>""", output)
+    1:         self.check_events("""<a  b = 'v' c = "v" d = v e>""", output)
+    1:         self.check_events("""<a\nb\n=\n'v'\nc\n=\n"v"\nd\n=\nv\ne>""", output)
+    1:         self.check_events("""<a\tb\t=\t'v'\tc\t=\t"v"\td\t=\tv\te>""", output)
+       
+    1:     def test_attr_values(self):
+    1:         self.check_events("""<a b='xxx\n\txxx' c="yyy\t\nyyy" d='\txyz\n'>""",
+    1:                         [("starttag", "a", [("b", "xxx\n\txxx"),
+    1:                                             ("c", "yyy\t\nyyy"),
+    1:                                             ("d", "\txyz\n")])
+                                ])
+    1:         self.check_events("""<a b='' c="">""", [
+    1:             ("starttag", "a", [("b", ""), ("c", "")]),
+                   ])
+               # URL construction stuff from RFC 1808:
+    1:         safe = "$-_.+"
+    1:         extra = "!*'(),"
+    1:         reserved = ";/?:@&="
+    1:         url = "http://example.com:8080/path/to/file?%s%s%s" % (
+    1:             safe, extra, reserved)
+    1:         self.check_events("""<e a=%s>""" % url, [
+    1:             ("starttag", "e", [("a", url)]),
+                   ])
+               # Regression test for SF patch #669683.
+    1:         self.check_events("<e a=rgb(1,2,3)>", [
+    1:             ("starttag", "e", [("a", "rgb(1,2,3)")]),
+                   ])
+       
+    1:     def test_attr_values_entities(self):
+               """Substitution of entities and charrefs in attribute values"""
+               # SF bug #1452246
+    1:         self.check_events("""<a b=&lt; c=&lt;&gt; d=&lt-&gt; e='&lt; '
+                                       f="&xxx;" g='&#32;&#33;' h='&#500;'
+                                       i='x?a=b&c=d;'
+    1:                                 j='&amp;#42;' k='&#38;#42;'>""",
+    1:             [("starttag", "a", [("b", "<"),
+    1:                                 ("c", "<>"),
+    1:                                 ("d", "&lt->"),
+    1:                                 ("e", "< "),
+    1:                                 ("f", "&xxx;"),
+    1:                                 ("g", " !"),
+    1:                                 ("h", "&#500;"),
+    1:                                 ("i", "x?a=b&c=d;"),
+    1:                                 ("j", "&#42;"),
+    1:                                 ("k", "&#42;"),
+                                       ])])
+       
+    1:     def test_convert_overrides(self):
+               # This checks that the character and entity reference
+               # conversion helpers are called at the documented times.  No
+               # attempt is made to really change what the parser accepts.
+               #
+    1:         self.collector = HTMLEntityCollector
+    1:         self.check_events(('<a title="&ldquo;test&#x201d;">foo</a>'
+                                  '&foobar;&#42;'), [
+    1:             ('entityref', 'convert', 'ldquo'),
+    1:             ('charref', 'convert', 'x201d'),
+    1:             ('starttag', 'a', [('title', '&ldquo;test&#x201d;')]),
+    1:             ('data', 'foo'),
+    1:             ('endtag', 'a'),
+    1:             ('entityref', 'foobar'),
+    1:             ('entityref', 'convert', 'foobar'),
+    1:             ('charref', '42'),
+    1:             ('charref', 'convert', '42'),
+    1:             ('codepoint', 'convert', 42),
+                   ])
+       
+    1:     def test_attr_funky_names(self):
+    1:         self.check_events("""<a a.b='v' c:d=v e-f=v>""", [
+    1:             ("starttag", "a", [("a.b", "v"), ("c:d", "v"), ("e-f", "v")]),
+                   ])
+       
+    1:     def test_attr_value_ip6_url(self):
+               # http://www.python.org/sf/853506
+    1:         self.check_events(("<a href='http://[1080::8:800:200C:417A]/'>"
+                                  "<a href=http://[1080::8:800:200C:417A]/>"), [
+    1:             ("starttag", "a", [("href", "http://[1080::8:800:200C:417A]/")]),
+    1:             ("starttag", "a", [("href", "http://[1080::8:800:200C:417A]/")]),
+                   ])
+       
+    1:     def test_weird_starttags(self):
+    1:         self.check_events("<a<a>", [
+    1:             ("starttag", "a", []),
+    1:             ("starttag", "a", []),
+                   ])
+    1:         self.check_events("</a<a>", [
+    1:             ("endtag", "a"),
+    1:             ("starttag", "a", []),
+                   ])
+       
+    1:     def test_declaration_junk_chars(self):
+    1:         self.check_parse_error("<!DOCTYPE foo $ >")
+       
+    1:     def test_get_starttag_text(self):
+    1:         s = """<foobar   \n   one="1"\ttwo=2   >"""
+    1:         self.check_events(s, [
+    1:             ("starttag", "foobar", [("one", "1"), ("two", "2")]),
+                   ])
+       
+    1:     def test_cdata_content(self):
+    1:         s = ("<cdata> <!-- not a comment --> &not-an-entity-ref; </cdata>"
+                    "<notcdata> <!-- comment --> </notcdata>")
+    1:         self.collector = CDATAEventCollector
+    1:         self.check_events(s, [
+    1:             ("starttag", "cdata", []),
+    1:             ("data", " <!-- not a comment --> &not-an-entity-ref; "),
+    1:             ("endtag", "cdata"),
+    1:             ("starttag", "notcdata", []),
+    1:             ("data", " "),
+    1:             ("comment", " comment "),
+    1:             ("data", " "),
+    1:             ("endtag", "notcdata"),
+                   ])
+    1:         s = """<cdata> <not a='start tag'> </cdata>"""
+    1:         self.check_events(s, [
+    1:             ("starttag", "cdata", []),
+    1:             ("data", " <not a='start tag'> "),
+    1:             ("endtag", "cdata"),
+                   ])
+       
+    1:     def test_illegal_declarations(self):
+    1:         s = 'abc<!spacer type="block" height="25">def'
+    1:         self.check_events(s, [
+    1:             ("data", "abc"),
+    1:             ("unknown decl", 'spacer type="block" height="25"'),
+    1:             ("data", "def"),
+                   ])
+       
+    1:     def test_enumerated_attr_type(self):
+    1:         s = "<!DOCTYPE doc [<!ATTLIST doc attr (a | b) >]>"
+    1:         self.check_events(s, [
+    1:             ('decl', 'DOCTYPE doc [<!ATTLIST doc attr (a | b) >]'),
+                   ])
+       
+    1:     def test_read_chunks(self):
+               # SF bug #1541697, this caused sgml parser to hang
+               # Just verify this code doesn't cause a hang.
+    1:         CHUNK = 1024  # increasing this to 8212 makes the problem go away
+       
+    1:         f = open(test_support.findfile('sgml_input.html'))
+    1:         fp = sgmllib.SGMLParser()
+    1:         while 1:
+    9:             data = f.read(CHUNK)
+    9:             fp.feed(data)
+    9:             if len(data) != CHUNK:
+    1:                 break
+       
+    1:     def test_only_decode_ascii(self):
+               # SF bug #1651995, make sure non-ascii character references are not decoded
+    1:         s = '<signs exclamation="&#33" copyright="&#169" quoteleft="&#8216;">'
+    1:         self.check_events(s, [
+    1:             ('starttag', 'signs',
+    1:              [('exclamation', '!'), ('copyright', '&#169'),
+    1:               ('quoteleft', '&#8216;')]),
+                   ])
+       
+           # XXX These tests have been disabled by prefixing their names with
+           # an underscore.  The first two exercise outstanding bugs in the
+           # sgmllib module, and the third exhibits questionable behavior
+           # that needs to be carefully considered before changing it.
+       
+    1:     def _test_starttag_end_boundary(self):
+>>>>>>         self.check_events("<a b='<'>", [("starttag", "a", [("b", "<")])])
+>>>>>>         self.check_events("<a b='>'>", [("starttag", "a", [("b", ">")])])
+       
+    1:     def _test_buffer_artefacts(self):
+>>>>>>         output = [("starttag", "a", [("b", "<")])]
+>>>>>>         self.check_events(["<a b='<'>"], output)
+>>>>>>         self.check_events(["<a ", "b='<'>"], output)
+>>>>>>         self.check_events(["<a b", "='<'>"], output)
+>>>>>>         self.check_events(["<a b=", "'<'>"], output)
+>>>>>>         self.check_events(["<a b='<", "'>"], output)
+>>>>>>         self.check_events(["<a b='<'", ">"], output)
+       
+>>>>>>         output = [("starttag", "a", [("b", ">")])]
+>>>>>>         self.check_events(["<a b='>'>"], output)
+>>>>>>         self.check_events(["<a ", "b='>'>"], output)
+>>>>>>         self.check_events(["<a b", "='>'>"], output)
+>>>>>>         self.check_events(["<a b=", "'>'>"], output)
+>>>>>>         self.check_events(["<a b='>", "'>"], output)
+>>>>>>         self.check_events(["<a b='>'", ">"], output)
+       
+>>>>>>         output = [("comment", "abc")]
+>>>>>>         self.check_events(["", "<!--abc-->"], output)
+>>>>>>         self.check_events(["<", "!--abc-->"], output)
+>>>>>>         self.check_events(["<!", "--abc-->"], output)
+>>>>>>         self.check_events(["<!-", "-abc-->"], output)
+>>>>>>         self.check_events(["<!--", "abc-->"], output)
+>>>>>>         self.check_events(["<!--a", "bc-->"], output)
+>>>>>>         self.check_events(["<!--ab", "c-->"], output)
+>>>>>>         self.check_events(["<!--abc", "-->"], output)
+>>>>>>         self.check_events(["<!--abc-", "->"], output)
+>>>>>>         self.check_events(["<!--abc--", ">"], output)
+>>>>>>         self.check_events(["<!--abc-->", ""], output)
+       
+    1:     def _test_starttag_junk_chars(self):
+>>>>>>         self.check_parse_error("<")
+>>>>>>         self.check_parse_error("<>")
+>>>>>>         self.check_parse_error("</$>")
+>>>>>>         self.check_parse_error("</")
+>>>>>>         self.check_parse_error("</a")
+>>>>>>         self.check_parse_error("<$")
+>>>>>>         self.check_parse_error("<$>")
+>>>>>>         self.check_parse_error("<!")
+>>>>>>         self.check_parse_error("<a $>")
+>>>>>>         self.check_parse_error("<a")
+>>>>>>         self.check_parse_error("<a foo='bar'")
+>>>>>>         self.check_parse_error("<a foo='bar")
+>>>>>>         self.check_parse_error("<a foo='>'")
+>>>>>>         self.check_parse_error("<a foo='>")
+>>>>>>         self.check_parse_error("<a foo=>")
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(SGMLParserTestCase)
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

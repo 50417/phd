@@ -1,0 +1,292 @@
+    1: from test.test_support import verbose, TESTFN
+    1: import random
+    1: import os
+       
+       # From SF bug #422121:  Insecurities in dict comparison.
+       
+       # Safety of code doing comparisons has been a historical Python weak spot.
+       # The problem is that comparison of structures written in C *naturally*
+       # wants to hold on to things like the size of the container, or "the
+       # biggest" containee so far, across a traversal of the container; but
+       # code to do containee comparisons can call back into Python and mutate
+       # the container in arbitrary ways while the C loop is in midstream.  If the
+       # C code isn't extremely paranoid about digging things out of memory on
+       # each trip, and artificially boosting refcounts for the duration, anything
+       # from infinite loops to OS crashes can result (yes, I use Windows <wink>).
+       #
+       # The other problem is that code designed to provoke a weakness is usually
+       # white-box code, and so catches only the particular vulnerabilities the
+       # author knew to protect against.  For example, Python's list.sort() code
+       # went thru many iterations as one "new" vulnerability after another was
+       # discovered.
+       #
+       # So the dict comparison test here uses a black-box approach instead,
+       # generating dicts of various sizes at random, and performing random
+       # mutations on them at random times.  This proved very effective,
+       # triggering at least six distinct failure modes the first 20 times I
+       # ran it.  Indeed, at the start, the driver never got beyond 6 iterations
+       # before the test died.
+       
+       # The dicts are global to make it easy to mutate tham from within functions.
+    1: dict1 = {}
+    1: dict2 = {}
+       
+       # The current set of keys in dict1 and dict2.  These are materialized as
+       # lists to make it easy to pick a dict key at random.
+    1: dict1keys = []
+    1: dict2keys = []
+       
+       # Global flag telling maybe_mutate() whether to *consider* mutating.
+    1: mutate = 0
+       
+       # If global mutate is true, consider mutating a dict.  May or may not
+       # mutate a dict even if mutate is true.  If it does decide to mutate a
+       # dict, it picks one of {dict1, dict2} at random, and deletes a random
+       # entry from it; or, more rarely, adds a random element.
+       
+    1: def maybe_mutate():
+           global mutate
+195170:     if not mutate:
+194120:         return
+ 1050:     if random.random() < 0.5:
+  532:         return
+       
+  518:     if random.random() < 0.5:
+  265:         target, keys = dict1, dict1keys
+           else:
+  253:         target, keys = dict2, dict2keys
+       
+  518:     if random.random() < 0.2:
+               # Insert a new key.
+   94:         mutate = 0   # disable mutation until key inserted
+   94:         while 1:
+  117:             newkey = Horrid(random.randrange(100))
+  117:             if newkey not in target:
+   94:                 break
+   94:         target[newkey] = Horrid(random.randrange(100))
+   94:         keys.append(newkey)
+   94:         mutate = 1
+       
+  424:     elif keys:
+               # Delete a key at random.
+  423:         mutate = 0   # disable mutation until key deleted
+  423:         i = random.randrange(len(keys))
+  423:         key = keys[i]
+  423:         del target[key]
+  423:         del keys[i]
+  423:         mutate = 1
+       
+       # A horrid class that triggers random mutations of dict1 and dict2 when
+       # instances are compared.
+       
+    2: class Horrid:
+    1:     def __init__(self, i):
+               # Comparison outcomes are determined by the value of i.
+19683:         self.i = i
+       
+               # An artificial hashcode is selected at random so that we don't
+               # have any systematic relationship between comparison outcomes
+               # (based on self.i and other.i) and relative position within the
+               # hash vector (based on hashcode).
+19683:         self.hashcode = random.randrange(1000000000)
+       
+    1:     def __hash__(self):
+10432:         return 42
+>>>>>>         return self.hashcode
+       
+    1:     def __cmp__(self, other):
+  209:         maybe_mutate()   # The point of the test.
+  209:         return cmp(self.i, other.i)
+       
+    1:     def __eq__(self, other):
+194961:         maybe_mutate()   # The point of the test.
+194961:         return self.i == other.i
+       
+    1:     def __repr__(self):
+>>>>>>         return "Horrid(%d)" % self.i
+       
+       # Fill dict d with numentries (Horrid(i), Horrid(j)) key-value pairs,
+       # where i and j are selected at random from the candidates list.
+       # Return d.keys() after filling.
+       
+    1: def fill_dict(d, candidates, numentries):
+  200:     d.clear()
+ 9936:     for i in xrange(numentries):
+               d[Horrid(random.choice(candidates))] = \
+ 9736:             Horrid(random.choice(candidates))
+  200:     return d.keys()
+       
+       # Test one pair of randomly generated dicts, each with n entries.
+       # Note that dict comparison is trivial if they don't have the same number
+       # of entires (then the "shorter" dict is instantly considered to be the
+       # smaller one, without even looking at the entries).
+       
+    1: def test_one(n):
+           global mutate, dict1, dict2, dict1keys, dict2keys
+       
+           # Fill the dicts without mutating them.
+  100:     mutate = 0
+  100:     dict1keys = fill_dict(dict1, range(n), n)
+  100:     dict2keys = fill_dict(dict2, range(n), n)
+       
+           # Enable mutation, then compare the dicts so long as they have the
+           # same size.
+  100:     mutate = 1
+  100:     if verbose:
+>>>>>>         print "trying w/ lengths", len(dict1), len(dict2),
+  120:     while dict1 and len(dict1) == len(dict2):
+   20:         if verbose:
+>>>>>>             print ".",
+   20:         if random.random() < 0.5:
+   11:             c = cmp(dict1, dict2)
+               else:
+    9:             c = dict1 == dict2
+  100:     if verbose:
+>>>>>>         print
+       
+       # Run test_one n times.  At the start (before the bugs were fixed), 20
+       # consecutive runs of this test each blew up on or before the sixth time
+       # test_one was run.  So n doesn't have to be large to get an interesting
+       # test.
+       # OTOH, calling with large n is also interesting, to ensure that the fixed
+       # code doesn't hold on to refcounts *too* long (in which case memory would
+       # leak).
+       
+    1: def test(n):
+  101:     for i in xrange(n):
+  100:         test_one(random.randrange(1, 100))
+       
+       # See last comment block for clues about good values for n.
+    1: test(100)
+       
+       ##########################################################################
+       # Another segfault bug, distilled by Michael Hudson from a c.l.py post.
+       
+    2: class Child:
+    1:     def __init__(self, parent):
+    1:         self.__dict__['parent'] = parent
+    1:     def __getattr__(self, attr):
+    1:         self.parent.a = 1
+    1:         self.parent.b = 1
+    1:         self.parent.c = 1
+    1:         self.parent.d = 1
+    1:         self.parent.e = 1
+    1:         self.parent.f = 1
+    1:         self.parent.g = 1
+    1:         self.parent.h = 1
+    1:         self.parent.i = 1
+    1:         return getattr(self.parent, attr)
+       
+    2: class Parent:
+    1:     def __init__(self):
+    1:         self.a = Child(self)
+       
+       # Hard to say what this will print!  May vary from time to time.  But
+       # we're specifically trying to test the tp_print slot here, and this is
+       # the clearest way to do it.  We print the result to a temp file so that
+       # the expected-output file doesn't need to change.
+       
+    1: f = open(TESTFN, "w")
+    1: print >> f, Parent().__dict__
+    1: f.close()
+    1: os.unlink(TESTFN)
+       
+       ##########################################################################
+       # And another core-dumper from Michael Hudson.
+       
+    1: dict = {}
+       
+       # Force dict to malloc its table.
+   10: for i in range(1, 10):
+    9:     dict[i] = i
+       
+    1: f = open(TESTFN, "w")
+       
+    2: class Machiavelli:
+    1:     def __repr__(self):
+    2:         dict.clear()
+       
+               # Michael sez:  "doesn't crash without this.  don't know why."
+               # Tim sez:  "luck of the draw; crashes with or without for me."
+    2:         print >> f
+       
+    2:         return repr("machiavelli")
+       
+    1:     def __hash__(self):
+    1:         return 0
+       
+    1: dict[Machiavelli()] = Machiavelli()
+       
+    1: print >> f, str(dict)
+    1: f.close()
+    1: os.unlink(TESTFN)
+    1: del f, dict
+       
+       
+       ##########################################################################
+       # And another core-dumper from Michael Hudson.
+       
+    1: dict = {}
+       
+       # let's force dict to malloc its table
+   10: for i in range(1, 10):
+    9:     dict[i] = i
+       
+    2: class Machiavelli2:
+    1:     def __eq__(self, other):
+    1:         dict.clear()
+    1:         return 1
+       
+    1:     def __hash__(self):
+    2:         return 0
+       
+    1: dict[Machiavelli2()] = Machiavelli2()
+       
+    1: try:
+    1:     dict[Machiavelli2()]
+    1: except KeyError:
+    1:     pass
+       
+    1: del dict
+       
+       ##########################################################################
+       # And another core-dumper from Michael Hudson.
+       
+    1: dict = {}
+       
+       # let's force dict to malloc its table
+   10: for i in range(1, 10):
+    9:     dict[i] = i
+       
+    2: class Machiavelli3:
+    1:     def __init__(self, id):
+    5:         self.id = id
+       
+    1:     def __eq__(self, other):
+    3:         if self.id == other.id:
+    1:             dict.clear()
+    1:             return 1
+               else:
+    2:             return 0
+       
+    1:     def __repr__(self):
+>>>>>>         return "%s(%s)"%(self.__class__.__name__, self.id)
+       
+    1:     def __hash__(self):
+    3:         return 0
+       
+    1: dict[Machiavelli3(1)] = Machiavelli3(0)
+    1: dict[Machiavelli3(2)] = Machiavelli3(0)
+       
+    1: f = open(TESTFN, "w")
+    1: try:
+    1:     try:
+    1:         print >> f, dict[Machiavelli3(2)]
+    1:     except KeyError:
+    1:         pass
+       finally:
+    1:     f.close()
+    1:     os.unlink(TESTFN)
+       
+    1: del dict
+    1: del dict1, dict2, dict1keys, dict2keys

@@ -1,0 +1,309 @@
+    1: import unittest
+    1: from test import test_support
+       
+    1: def funcattrs(**kwds):
+    2:     def decorate(func):
+    2:         func.__dict__.update(kwds)
+    2:         return func
+    2:     return decorate
+       
+    2: class MiscDecorators (object):
+    1:     @staticmethod
+           def author(name):
+    1:         def decorate(func):
+    1:             func.__dict__['author'] = name
+    1:             return func
+    1:         return decorate
+       
+       # -----------------------------------------------
+       
+    2: class DbcheckError (Exception):
+    1:     def __init__(self, exprstr, func, args, kwds):
+               # A real version of this would set attributes here
+    1:         Exception.__init__(self, "dbcheck %r failed (func=%s args=%s kwds=%s)" %
+    1:                            (exprstr, func, args, kwds))
+       
+       
+    1: def dbcheck(exprstr, globals=None, locals=None):
+           "Decorator to implement debugging assertions"
+    1:     def decorate(func):
+    1:         expr = compile(exprstr, "dbcheck-%s" % func.func_name, "eval")
+    1:         def check(*args, **kwds):
+    2:             if not eval(expr, globals, locals):
+    1:                 raise DbcheckError(exprstr, func, args, kwds)
+    1:             return func(*args, **kwds)
+    1:         return check
+    1:     return decorate
+       
+       # -----------------------------------------------
+       
+    1: def countcalls(counts):
+           "Decorator to count calls to a function"
+    1:     def decorate(func):
+    1:         func_name = func.func_name
+    1:         counts[func_name] = 0
+    1:         def call(*args, **kwds):
+    4:             counts[func_name] += 1
+    4:             return func(*args, **kwds)
+    1:         call.func_name = func_name
+    1:         return call
+    1:     return decorate
+       
+       # -----------------------------------------------
+       
+    1: def memoize(func):
+    1:     saved = {}
+    1:     def call(*args):
+    5:         try:
+    5:             return saved[args]
+    4:         except KeyError:
+    2:             res = func(*args)
+    2:             saved[args] = res
+    2:             return res
+    2:         except TypeError:
+                   # Unhashable argument
+    2:             return func(*args)
+    1:     call.func_name = func.func_name
+    1:     return call
+       
+       # -----------------------------------------------
+       
+    2: class TestDecorators(unittest.TestCase):
+       
+    1:     def test_single(self):
+    2:         class C(object):
+    1:             @staticmethod
+    2:             def foo(): return 42
+    1:         self.assertEqual(C.foo(), 42)
+    1:         self.assertEqual(C().foo(), 42)
+       
+    1:     def test_staticmethod_function(self):
+    1:         @staticmethod
+               def notamethod(x):
+>>>>>>             return x
+    1:         self.assertRaises(TypeError, notamethod, 1)
+       
+    1:     def test_dotted(self):
+    1:         decorators = MiscDecorators()
+    1:         @decorators.author('Cleese')
+    1:         def foo(): return 42
+    1:         self.assertEqual(foo(), 42)
+    1:         self.assertEqual(foo.author, 'Cleese')
+       
+    1:     def test_argforms(self):
+               # A few tests of argument passing, as we use restricted form
+               # of expressions for decorators.
+       
+    1:         def noteargs(*args, **kwds):
+    3:             def decorate(func):
+    3:                 setattr(func, 'dbval', (args, kwds))
+    3:                 return func
+    3:             return decorate
+       
+    1:         args = ( 'Now', 'is', 'the', 'time' )
+    1:         kwds = dict(one=1, two=2)
+    1:         @noteargs(*args, **kwds)
+    1:         def f1(): return 42
+    1:         self.assertEqual(f1(), 42)
+    1:         self.assertEqual(f1.dbval, (args, kwds))
+       
+    1:         @noteargs('terry', 'gilliam', eric='idle', john='cleese')
+    1:         def f2(): return 84
+    1:         self.assertEqual(f2(), 84)
+    1:         self.assertEqual(f2.dbval, (('terry', 'gilliam'),
+    1:                                      dict(eric='idle', john='cleese')))
+       
+    1:         @noteargs(1, 2,)
+>>>>>>         def f3(): pass
+    1:         self.assertEqual(f3.dbval, ((1, 2), {}))
+       
+    1:     def test_dbcheck(self):
+    1:         @dbcheck('args[1] is not None')
+               def f(a, b):
+    1:             return a + b
+    1:         self.assertEqual(f(1, 2), 3)
+    1:         self.assertRaises(DbcheckError, f, 1, None)
+       
+    1:     def test_memoize(self):
+    1:         counts = {}
+       
+    1:         @memoize
+    1:         @countcalls(counts)
+               def double(x):
+    4:             return x * 2
+    1:         self.assertEqual(double.func_name, 'double')
+       
+    1:         self.assertEqual(counts, dict(double=0))
+       
+               # Only the first call with a given argument bumps the call count:
+               #
+    1:         self.assertEqual(double(2), 4)
+    1:         self.assertEqual(counts['double'], 1)
+    1:         self.assertEqual(double(2), 4)
+    1:         self.assertEqual(counts['double'], 1)
+    1:         self.assertEqual(double(3), 6)
+    1:         self.assertEqual(counts['double'], 2)
+       
+               # Unhashable arguments do not get memoized:
+               #
+    1:         self.assertEqual(double([10]), [10, 10])
+    1:         self.assertEqual(counts['double'], 3)
+    1:         self.assertEqual(double([10]), [10, 10])
+    1:         self.assertEqual(counts['double'], 4)
+       
+    1:     def test_errors(self):
+               # Test syntax restrictions - these are all compile-time errors:
+               #
+    4:         for expr in [ "1+2", "x[3]", "(1, 2)" ]:
+                   # Sanity check: is expr is a valid expression by itself?
+    3:             compile(expr, "testexpr", "exec")
+       
+    3:             codestr = "@%s\ndef f(): pass" % expr
+    3:             self.assertRaises(SyntaxError, compile, codestr, "test", "exec")
+       
+               # You can't put multiple decorators on a single line:
+               #
+    1:         self.assertRaises(SyntaxError, compile,
+    1:                           "@f1 @f2\ndef f(): pass", "test", "exec")
+       
+               # Test runtime errors
+       
+    1:         def unimp(func):
+    1:             raise NotImplementedError
+    1:         context = dict(nullval=None, unimp=unimp)
+       
+    1:         for expr, exc in [ ("undef", NameError),
+    1:                            ("nullval", TypeError),
+    1:                            ("nullval.attr", AttributeError),
+    5:                            ("unimp", NotImplementedError)]:
+    4:             codestr = "@%s\ndef f(): pass\nassert f() is None" % expr
+    4:             code = compile(codestr, "test", "exec")
+    4:             self.assertRaises(exc, eval, code, context)
+       
+    1:     def test_double(self):
+    2:         class C(object):
+    1:             @funcattrs(abc=1, xyz="haha")
+    1:             @funcattrs(booh=42)
+    1:             def foo(self): return 42
+    1:         self.assertEqual(C().foo(), 42)
+    1:         self.assertEqual(C.foo.abc, 1)
+    1:         self.assertEqual(C.foo.xyz, "haha")
+    1:         self.assertEqual(C.foo.booh, 42)
+       
+    1:     def test_order(self):
+               # Test that decorators are applied in the proper order to the function
+               # they are decorating.
+    1:         def callnum(num):
+                   """Decorator factory that returns a decorator that replaces the
+                   passed-in function with one that returns the value of 'num'"""
+    2:             def deco(func):
+    3:                 return lambda: num
+    2:             return deco
+    1:         @callnum(2)
+    1:         @callnum(1)
+>>>>>>         def foo(): return 42
+    1:         self.assertEqual(foo(), 2,
+    1:                             "Application order of decorators is incorrect")
+       
+    1:     def test_eval_order(self):
+               # Evaluating a decorated function involves four steps for each
+               # decorator-maker (the function that returns a decorator):
+               #
+               #    1: Evaluate the decorator-maker name
+               #    2: Evaluate the decorator-maker arguments (if any)
+               #    3: Call the decorator-maker to make a decorator
+               #    4: Call the decorator
+               #
+               # When there are multiple decorators, these steps should be
+               # performed in the above order for each decorator, but we should
+               # iterate through the decorators in the reverse of the order they
+               # appear in the source.
+       
+    1:         actions = []
+       
+    1:         def make_decorator(tag):
+    6:             actions.append('makedec' + tag)
+    6:             def decorate(func):
+    6:                 actions.append('calldec' + tag)
+    6:                 return func
+    6:             return decorate
+       
+    2:         class NameLookupTracer (object):
+    1:             def __init__(self, index):
+    3:                 self.index = index
+       
+    1:             def __getattr__(self, fname):
+   12:                 if fname == 'make_decorator':
+    6:                     opname, res = ('evalname', make_decorator)
+    6:                 elif fname == 'arg':
+    6:                     opname, res = ('evalargs', str(self.index))
+                       else:
+>>>>>>                     assert False, "Unknown attrname %s" % fname
+   12:                 actions.append('%s%d' % (opname, self.index))
+   12:                 return res
+       
+    1:         c1, c2, c3 = map(NameLookupTracer, [ 1, 2, 3 ])
+       
+    1:         expected_actions = [ 'evalname1', 'evalargs1', 'makedec1',
+    1:                              'evalname2', 'evalargs2', 'makedec2',
+    1:                              'evalname3', 'evalargs3', 'makedec3',
+    1:                              'calldec3', 'calldec2', 'calldec1' ]
+       
+    1:         actions = []
+    1:         @c1.make_decorator(c1.arg)
+    1:         @c2.make_decorator(c2.arg)
+    1:         @c3.make_decorator(c3.arg)
+    1:         def foo(): return 42
+    1:         self.assertEqual(foo(), 42)
+       
+    1:         self.assertEqual(actions, expected_actions)
+       
+               # Test the equivalence claim in chapter 7 of the reference manual.
+               #
+    1:         actions = []
+    2:         def bar(): return 42
+    1:         bar = c1.make_decorator(c1.arg)(c2.make_decorator(c2.arg)(c3.make_decorator(c3.arg)(bar)))
+    1:         self.assertEqual(bar(), 42)
+    1:         self.assertEqual(actions, expected_actions)
+       
+    2: class TestClassDecorators(unittest.TestCase):
+       
+    1:     def test_simple(self):
+    1:         def plain(x):
+    1:             x.extra = 'Hello'
+    1:             return x
+    2:         @plain
+    2:         class C(object): pass
+    1:         self.assertEqual(C.extra, 'Hello')
+       
+    1:     def test_double(self):
+    1:         def ten(x):
+    1:             x.extra = 10
+    1:             return x
+    1:         def add_five(x):
+    1:             x.extra += 5
+    1:             return x
+       
+    2:         @add_five
+    1:         @ten
+    2:         class C(object): pass
+    1:         self.assertEqual(C.extra, 15)
+       
+    1:     def test_order(self):
+    1:         def applied_first(x):
+    1:             x.extra = 'first'
+    1:             return x
+    1:         def applied_second(x):
+    1:             x.extra = 'second'
+    1:             return x
+    2:         @applied_second
+    1:         @applied_first
+    2:         class C(object): pass
+    1:         self.assertEqual(C.extra, 'second')
+       
+    1: def test_main():
+    1:     test_support.run_unittest(TestDecorators)
+    1:     test_support.run_unittest(TestClassDecorators)
+       
+    1: if __name__=="__main__":
+>>>>>>     test_main()

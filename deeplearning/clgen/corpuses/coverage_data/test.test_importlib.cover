@@ -1,0 +1,176 @@
+    1: import contextlib
+    1: import imp
+    1: import importlib
+    1: import sys
+    1: import unittest
+       
+       
+    1: @contextlib.contextmanager
+       def uncache(*names):
+           """Uncache a module from sys.modules.
+       
+           A basic sanity check is performed to prevent uncaching modules that either
+           cannot/shouldn't be uncached.
+       
+           """
+   17:     for name in names:
+   12:         if name in ('sys', 'marshal', 'imp'):
+>>>>>>             raise ValueError(
+>>>>>>                 "cannot uncache {0} as it will break _importlib".format(name))
+   12:         try:
+   12:             del sys.modules[name]
+   12:         except KeyError:
+   12:             pass
+    5:     try:
+    5:         yield
+           finally:
+   17:         for name in names:
+   12:             try:
+   12:                 del sys.modules[name]
+    1:             except KeyError:
+    1:                 pass
+       
+       
+    1: @contextlib.contextmanager
+       def import_state(**kwargs):
+           """Context manager to manage the various importers and stored state in the
+           sys module.
+       
+           The 'modules' attribute is not supported as the interpreter state stores a
+           pointer to the dict that the interpreter uses internally;
+           reassigning to sys.modules does not have the desired effect.
+       
+           """
+    5:     originals = {}
+    5:     try:
+    5:         for attr, default in (('meta_path', []), ('path', []),
+    5:                               ('path_hooks', []),
+   25:                               ('path_importer_cache', {})):
+   20:             originals[attr] = getattr(sys, attr)
+   20:             if attr in kwargs:
+    5:                 new_value = kwargs[attr]
+    5:                 del kwargs[attr]
+                   else:
+   15:                 new_value = default
+   20:             setattr(sys, attr, new_value)
+    5:         if len(kwargs):
+>>>>>>             raise ValueError(
+>>>>>>                     'unrecognized arguments: {0}'.format(kwargs.keys()))
+    5:         yield
+           finally:
+   25:         for attr, value in originals.items():
+   20:             setattr(sys, attr, value)
+       
+       
+    2: class mock_modules(object):
+       
+    1:     """A mock importer/loader."""
+       
+    1:     def __init__(self, *names):
+    5:         self.modules = {}
+   17:         for name in names:
+   12:             if not name.endswith('.__init__'):
+    5:                 import_name = name
+                   else:
+    7:                 import_name = name[:-len('.__init__')]
+   12:             if '.' not in name:
+    1:                 package = None
+   11:             elif import_name == name:
+    4:                 package = name.rsplit('.', 1)[0]
+                   else:
+    7:                 package = import_name
+   12:             module = imp.new_module(import_name)
+   12:             module.__loader__ = self
+   12:             module.__file__ = '<mock __file__>'
+   12:             module.__package__ = package
+   12:             module.attr = name
+   12:             if import_name != name:
+    7:                 module.__path__ = ['<mock __path__>']
+   12:             self.modules[import_name] = module
+       
+    1:     def __getitem__(self, name):
+>>>>>>         return self.modules[name]
+       
+    1:     def find_module(self, fullname, path=None):
+   11:         if fullname not in self.modules:
+>>>>>>             return None
+               else:
+   11:             return self
+       
+    1:     def load_module(self, fullname):
+   11:         if fullname not in self.modules:
+>>>>>>             raise ImportError
+               else:
+   11:             sys.modules[fullname] = self.modules[fullname]
+   11:             return self.modules[fullname]
+       
+    1:     def __enter__(self):
+    5:         self._uncache = uncache(*self.modules.keys())
+    5:         self._uncache.__enter__()
+    5:         return self
+       
+    1:     def __exit__(self, *exc_info):
+    5:         self._uncache.__exit__(None, None, None)
+       
+       
+       
+    2: class ImportModuleTests(unittest.TestCase):
+       
+    1:     """Test importlib.import_module."""
+       
+    1:     def test_module_import(self):
+               # Test importing a top-level module.
+    1:         with mock_modules('top_level') as mock:
+    1:             with import_state(meta_path=[mock]):
+    1:                 module = importlib.import_module('top_level')
+    1:                 self.assertEqual(module.__name__, 'top_level')
+       
+    1:     def test_absolute_package_import(self):
+               # Test importing a module from a package with an absolute name.
+    1:         pkg_name = 'pkg'
+    1:         pkg_long_name = '{0}.__init__'.format(pkg_name)
+    1:         name = '{0}.mod'.format(pkg_name)
+    1:         with mock_modules(pkg_long_name, name) as mock:
+    1:             with import_state(meta_path=[mock]):
+    1:                 module = importlib.import_module(name)
+    1:                 self.assertEqual(module.__name__, name)
+       
+    1:     def test_shallow_relative_package_import(self):
+    1:         modules = ['a.__init__', 'a.b.__init__', 'a.b.c.__init__', 'a.b.c.d']
+    1:         with mock_modules(*modules) as mock:
+    1:             with import_state(meta_path=[mock]):
+    1:                 module = importlib.import_module('.d', 'a.b.c')
+    1:                 self.assertEqual(module.__name__, 'a.b.c.d')
+       
+    1:     def test_deep_relative_package_import(self):
+               # Test importing a module from a package through a relatve import.
+    1:         modules = ['a.__init__', 'a.b.__init__', 'a.c']
+    1:         with mock_modules(*modules) as mock:
+    1:             with import_state(meta_path=[mock]):
+    1:                 module = importlib.import_module('..c', 'a.b')
+    1:                 self.assertEqual(module.__name__, 'a.c')
+       
+    1:     def test_absolute_import_with_package(self):
+               # Test importing a module from a package with an absolute name with
+               # the 'package' argument given.
+    1:         pkg_name = 'pkg'
+    1:         pkg_long_name = '{0}.__init__'.format(pkg_name)
+    1:         name = '{0}.mod'.format(pkg_name)
+    1:         with mock_modules(pkg_long_name, name) as mock:
+    1:             with import_state(meta_path=[mock]):
+    1:                 module = importlib.import_module(name, pkg_name)
+    1:                 self.assertEqual(module.__name__, name)
+       
+    1:     def test_relative_import_wo_package(self):
+               # Relative imports cannot happen without the 'package' argument being
+               # set.
+    1:         self.assertRaises(TypeError, importlib.import_module, '.support')
+       
+       
+    1: def test_main():
+    1:     from test.test_support import run_unittest
+    1:     run_unittest(ImportModuleTests)
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

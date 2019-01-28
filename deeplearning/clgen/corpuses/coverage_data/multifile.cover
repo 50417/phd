@@ -1,0 +1,162 @@
+       """A readline()-style interface to the parts of a multipart message.
+       
+       The MultiFile class makes each part of a multipart message "feel" like
+       an ordinary file, as long as you use fp.readline().  Allows recursive
+       use, for nested multipart messages.  Probably best used together
+       with module mimetools.
+       
+       Suggested use:
+       
+       real_fp = open(...)
+       fp = MultiFile(real_fp)
+       
+       "read some lines from fp"
+       fp.push(separator)
+       while 1:
+               "read lines from fp until it returns an empty string" (A)
+               if not fp.next(): break
+       fp.pop()
+       "read remaining lines from fp until it returns an empty string"
+       
+       The latter sequence may be used recursively at (A).
+       It is also allowed to use multiple push()...pop() sequences.
+       
+       If seekable is given as 0, the class code will not do the bookkeeping
+       it normally attempts in order to make seeks relative to the beginning of the
+       current file part.  This may be useful when using MultiFile with a non-
+       seekable stream object.
+    1: """
+    1: from warnings import warn
+    1: warn("the multifile module has been deprecated since Python 2.5",
+    1:         DeprecationWarning, stacklevel=2)
+    1: del warn
+       
+    1: __all__ = ["MultiFile","Error"]
+       
+    2: class Error(Exception):
+    1:     pass
+       
+    2: class MultiFile:
+       
+    1:     seekable = 0
+       
+    1:     def __init__(self, fp, seekable=1):
+    1:         self.fp = fp
+    1:         self.stack = []
+    1:         self.level = 0
+    1:         self.last = 0
+    1:         if seekable:
+    1:             self.seekable = 1
+    1:             self.start = self.fp.tell()
+    1:             self.posstack = []
+       
+    1:     def tell(self):
+   36:         if self.level > 0:
+>>>>>>             return self.lastpos
+   36:         return self.fp.tell() - self.start
+       
+    1:     def seek(self, pos, whence=0):
+>>>>>>         here = self.tell()
+>>>>>>         if whence:
+>>>>>>             if whence == 1:
+>>>>>>                 pos = pos + here
+>>>>>>             elif whence == 2:
+>>>>>>                 if self.level > 0:
+>>>>>>                     pos = pos + self.lastpos
+                       else:
+>>>>>>                     raise Error, "can't use whence=2 yet"
+>>>>>>         if not 0 <= pos <= here or \
+>>>>>>                         self.level > 0 and pos > self.lastpos:
+>>>>>>             raise Error, 'bad MultiFile.seek() call'
+>>>>>>         self.fp.seek(pos + self.start)
+>>>>>>         self.level = 0
+>>>>>>         self.last = 0
+       
+    1:     def readline(self):
+   34:         if self.level > 0:
+    3:             return ''
+   31:         line = self.fp.readline()
+               # Real EOF?
+   31:         if not line:
+>>>>>>             self.level = len(self.stack)
+>>>>>>             self.last = (self.level > 0)
+>>>>>>             if self.last:
+>>>>>>                 raise Error, 'sudden EOF in MultiFile.readline()'
+>>>>>>             return ''
+   31:         assert self.level == 0
+               # Fast check to see if this is just data
+   31:         if self.is_data(line):
+   25:             return line
+               else:
+                   # Ignore trailing whitespace on marker lines
+    6:             marker = line.rstrip()
+               # No?  OK, try to match a boundary.
+               # Return the line (unstripped) if we don't.
+    6:         for i, sep in enumerate(reversed(self.stack)):
+    6:             if marker == self.section_divider(sep):
+    4:                 self.last = 0
+    4:                 break
+    2:             elif marker == self.end_marker(sep):
+    2:                 self.last = 1
+    2:                 break
+               else:
+>>>>>>             return line
+               # We only get here if we see a section divider or EOM line
+    6:         if self.seekable:
+    6:             self.lastpos = self.tell() - len(line)
+    6:         self.level = i+1
+    6:         if self.level > 1:
+>>>>>>             raise Error,'Missing endmarker in MultiFile.readline()'
+    6:         return ''
+       
+    1:     def readlines(self):
+    3:         list = []
+    3:         while 1:
+   12:             line = self.readline()
+   12:             if not line: break
+    9:             list.append(line)
+    3:         return list
+       
+    1:     def read(self): # Note: no size argument -- read until EOF only!
+>>>>>>         return ''.join(self.readlines())
+       
+    1:     def next(self):
+    7:         while self.readline(): pass
+    6:         if self.level > 1 or self.last:
+    2:             return 0
+    4:         self.level = 0
+    4:         self.last = 0
+    4:         if self.seekable:
+    4:             self.start = self.fp.tell()
+    4:         return 1
+       
+    1:     def push(self, sep):
+    2:         if self.level > 0:
+>>>>>>             raise Error, 'bad MultiFile.push() call'
+    2:         self.stack.append(sep)
+    2:         if self.seekable:
+    2:             self.posstack.append(self.start)
+    2:             self.start = self.fp.tell()
+       
+    1:     def pop(self):
+    2:         if self.stack == []:
+>>>>>>             raise Error, 'bad MultiFile.pop() call'
+    2:         if self.level <= 1:
+    2:             self.last = 0
+               else:
+>>>>>>             abslastpos = self.lastpos + self.start
+    2:         self.level = max(0, self.level - 1)
+    2:         self.stack.pop()
+    2:         if self.seekable:
+    2:             self.start = self.posstack.pop()
+    2:             if self.level > 0:
+>>>>>>                 self.lastpos = abslastpos - self.start
+       
+    1:     def is_data(self, line):
+   31:         return line[:2] != '--'
+       
+    1:     def section_divider(self, str):
+    6:         return "--" + str
+       
+    1:     def end_marker(self, str):
+    2:         return "--" + str + "--"

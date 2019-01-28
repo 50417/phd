@@ -1,0 +1,317 @@
+    1: import test.test_support
+    1: compiler = test.test_support.import_module('compiler', deprecated=True)
+    1: from compiler.ast import flatten
+    1: import os, sys, time, unittest
+    1: from random import random
+    1: from StringIO import StringIO
+       
+       # How much time in seconds can pass before we print a 'Still working' message.
+    1: _PRINT_WORKING_MSG_INTERVAL = 5 * 60
+       
+    2: class TrivialContext(object):
+    1:     def __enter__(self):
+    2:         return self
+    1:     def __exit__(self, *exc_info):
+    2:         pass
+       
+    2: class CompilerTest(unittest.TestCase):
+       
+    1:     def testCompileLibrary(self):
+               # A simple but large test.  Compile all the code in the
+               # standard library and its test suite.  This doesn't verify
+               # that any of the code is correct, merely the compiler is able
+               # to generate some kind of code for it.
+       
+    1:         next_time = time.time() + _PRINT_WORKING_MSG_INTERVAL
+               # warning: if 'os' or 'test_support' are moved in some other dir,
+               # they should be changed here.
+    1:         libdir = os.path.dirname(os.__file__)
+    1:         testdir = test.test_support.TEST_HOME_DIR
+       
+    2:         for dir in [testdir]:
+    2:             for basename in "test_os.py",:
+                       # Print still working message since this test can be really slow
+    1:                 if next_time <= time.time():
+>>>>>>                     next_time = time.time() + _PRINT_WORKING_MSG_INTERVAL
+>>>>>>                     print >>sys.__stdout__, \
+>>>>>>                        '  testCompileLibrary still working, be patient...'
+>>>>>>                     sys.__stdout__.flush()
+       
+    1:                 if not basename.endswith(".py"):
+>>>>>>                     continue
+    1:                 if not TEST_ALL and random() < 0.98:
+    1:                     continue
+>>>>>>                 path = os.path.join(dir, basename)
+>>>>>>                 if test.test_support.verbose:
+>>>>>>                     print "compiling", path
+>>>>>>                 f = open(path, "U")
+>>>>>>                 buf = f.read()
+>>>>>>                 f.close()
+>>>>>>                 if "badsyntax" in basename or "bad_coding" in basename:
+>>>>>>                     self.assertRaises(SyntaxError, compiler.compile,
+>>>>>>                                       buf, basename, "exec")
+                       else:
+>>>>>>                     try:
+>>>>>>                         compiler.compile(buf, basename, "exec")
+>>>>>>                     except Exception, e:
+>>>>>>                         args = list(e.args)
+>>>>>>                         args.append("in file %s]" % basename)
+                               #args[0] += "[in file %s]" % basename
+>>>>>>                         e.args = tuple(args)
+>>>>>>                         raise
+       
+    1:     def testNewClassSyntax(self):
+    1:         compiler.compile("class foo():pass\n\n","<string>","exec")
+       
+    1:     def testYieldExpr(self):
+    1:         compiler.compile("def g(): yield\n\n", "<string>", "exec")
+       
+    1:     def testKeywordAfterStarargs(self):
+    1:         def f(*args, **kwargs):
+    1:             self.assertEqual((args, kwargs), ((2,3), {'x': 1, 'y': 4}))
+    1:         c = compiler.compile('f(x=1, *(2, 3), y=4)', '<string>', 'exec')
+    1:         exec c in {'f': f}
+       
+    1:         self.assertRaises(SyntaxError, compiler.parse, "foo(a=1, b)")
+    1:         self.assertRaises(SyntaxError, compiler.parse, "foo(1, *args, 3)")
+       
+    1:     def testTryExceptFinally(self):
+               # Test that except and finally clauses in one try stmt are recognized
+    1:         c = compiler.compile("try:\n 1//0\nexcept:\n e = 1\nfinally:\n f = 1",
+    1:                              "<string>", "exec")
+    1:         dct = {}
+    1:         exec c in dct
+    1:         self.assertEqual(dct.get('e'), 1)
+    1:         self.assertEqual(dct.get('f'), 1)
+       
+    1:     def testDefaultArgs(self):
+    1:         self.assertRaises(SyntaxError, compiler.parse, "def foo(a=1, b): pass")
+       
+    1:     def testDocstrings(self):
+    1:         c = compiler.compile('"doc"', '<string>', 'exec')
+    1:         self.assertIn('__doc__', c.co_names)
+    1:         c = compiler.compile('def f():\n "doc"', '<string>', 'exec')
+    1:         g = {}
+    1:         exec c in g
+    1:         self.assertEqual(g['f'].__doc__, "doc")
+       
+    1:     def testLineNo(self):
+               # Test that all nodes except Module have a correct lineno attribute.
+    1:         filename = __file__
+    1:         if filename.endswith((".pyc", ".pyo")):
+    1:             filename = filename[:-1]
+    1:         tree = compiler.parseFile(filename)
+    1:         self.check_lineno(tree)
+       
+    1:     def check_lineno(self, node):
+ 1105:         try:
+ 1105:             self._check_lineno(node)
+>>>>>>         except AssertionError:
+>>>>>>             print node.__class__, node.lineno
+>>>>>>             raise
+       
+    1:     def _check_lineno(self, node):
+ 1105:         if not node.__class__ in NOLINENO:
+  993:             self.assertIsInstance(node.lineno, int,
+  993:                 "lineno=%s on %s" % (node.lineno, node.__class__))
+  993:             self.assertTrue(node.lineno > 0,
+  993:                 "lineno=%s on %s" % (node.lineno, node.__class__))
+ 2209:         for child in node.getChildNodes():
+ 1104:             self.check_lineno(child)
+       
+    1:     def testFlatten(self):
+    1:         self.assertEqual(flatten([1, [2]]), [1, 2])
+    1:         self.assertEqual(flatten((1, (2,))), [1, 2])
+       
+    1:     def testNestedScope(self):
+    1:         c = compiler.compile('def g():\n'
+                                    '    a = 1\n'
+                                    '    def f(): return a + 2\n'
+                                    '    return f()\n'
+                                    'result = g()',
+    1:                              '<string>',
+    1:                              'exec')
+    1:         dct = {}
+    1:         exec c in dct
+    1:         self.assertEqual(dct.get('result'), 3)
+       
+    1:     def testGenExp(self):
+    1:         c = compiler.compile('list((i,j) for i in range(3) if i < 3'
+                                    '           for j in range(4) if j > 2)',
+    1:                              '<string>',
+    1:                              'eval')
+    1:         self.assertEqual(eval(c), [(0, 3), (1, 3), (2, 3)])
+       
+    1:     def testSetLiteral(self):
+    1:         c = compiler.compile('{1, 2, 3}', '<string>', 'eval')
+    1:         self.assertEqual(eval(c), {1,2,3})
+    1:         c = compiler.compile('{1, 2, 3,}', '<string>', 'eval')
+    1:         self.assertEqual(eval(c), {1,2,3})
+       
+    1:     def testDictLiteral(self):
+    1:         c = compiler.compile('{1:2, 2:3, 3:4}', '<string>', 'eval')
+    1:         self.assertEqual(eval(c), {1:2, 2:3, 3:4})
+    1:         c = compiler.compile('{1:2, 2:3, 3:4,}', '<string>', 'eval')
+    1:         self.assertEqual(eval(c), {1:2, 2:3, 3:4})
+       
+    1:     def testSetComp(self):
+    1:         c = compiler.compile('{x for x in range(1, 4)}', '<string>', 'eval')
+    1:         self.assertEqual(eval(c), {1, 2, 3})
+    1:         c = compiler.compile('{x * y for x in range(3) if x != 0'
+                                    '       for y in range(4) if y != 0}',
+    1:                              '<string>',
+    1:                              'eval')
+    1:         self.assertEqual(eval(c), {1, 2, 3, 4, 6})
+       
+    1:     def testDictComp(self):
+    1:         c = compiler.compile('{x:x+1 for x in range(1, 4)}', '<string>', 'eval')
+    1:         self.assertEqual(eval(c), {1:2, 2:3, 3:4})
+    1:         c = compiler.compile('{(x, y) : y for x in range(2) if x != 0'
+                                    '            for y in range(3) if y != 0}',
+    1:                              '<string>',
+    1:                              'eval')
+    1:         self.assertEqual(eval(c), {(1, 2): 2, (1, 1): 1})
+       
+    1:     def testWith(self):
+               # SF bug 1638243
+    1:         c = compiler.compile('from __future__ import with_statement\n'
+                                    'def f():\n'
+                                    '    with TrivialContext():\n'
+                                    '        return 1\n'
+                                    'result = f()',
+    1:                              '<string>',
+    1:                              'exec' )
+    1:         dct = {'TrivialContext': TrivialContext}
+    1:         exec c in dct
+    1:         self.assertEqual(dct.get('result'), 1)
+       
+    1:     def testWithAss(self):
+    1:         c = compiler.compile('from __future__ import with_statement\n'
+                                    'def f():\n'
+                                    '    with TrivialContext() as tc:\n'
+                                    '        return 1\n'
+                                    'result = f()',
+    1:                              '<string>',
+    1:                              'exec' )
+    1:         dct = {'TrivialContext': TrivialContext}
+    1:         exec c in dct
+    1:         self.assertEqual(dct.get('result'), 1)
+       
+    1:     def testWithMult(self):
+    1:         events = []
+    2:         class Ctx:
+    1:             def __init__(self, n):
+    2:                 self.n = n
+    1:             def __enter__(self):
+    2:                 events.append(self.n)
+    1:             def __exit__(self, *args):
+    2:                 pass
+    1:         c = compiler.compile('from __future__ import with_statement\n'
+                                    'def f():\n'
+                                    '    with Ctx(1) as tc, Ctx(2) as tc2:\n'
+                                    '        return 1\n'
+                                    'result = f()',
+    1:                              '<string>',
+    1:                              'exec' )
+    1:         dct = {'Ctx': Ctx}
+    1:         exec c in dct
+    1:         self.assertEqual(dct.get('result'), 1)
+    1:         self.assertEqual(events, [1, 2])
+       
+    1:     def testGlobal(self):
+    1:         code = compiler.compile('global x\nx=1', '<string>', 'exec')
+    1:         d1 = {'__builtins__': {}}
+    1:         d2 = {}
+    1:         exec code in d1, d2
+               # x should be in the globals dict
+    1:         self.assertEqual(d1.get('x'), 1)
+       
+    1:     def testPrintFunction(self):
+    1:         c = compiler.compile('from __future__ import print_function\n'
+                                    'print("a", "b", sep="**", end="++", '
+                                           'file=output)',
+    1:                              '<string>',
+    1:                              'exec' )
+    1:         dct = {'output': StringIO()}
+    1:         exec c in dct
+    1:         self.assertEqual(dct['output'].getvalue(), 'a**b++')
+       
+    1:     def _testErrEnc(self, src, text, offset):
+    4:         try:
+    4:             compile(src, "", "exec")
+    4:         except SyntaxError, e:
+    4:             self.assertEqual(e.offset, offset)
+    4:             self.assertEqual(e.text, text)
+       
+    1:     def testSourceCodeEncodingsError(self):
+               # Test SyntaxError with encoding definition
+    1:         sjis = "print '\x83\x70\x83\x43\x83\x5c\x83\x93', '\n"
+    1:         ascii = "print '12345678', '\n"
+    1:         encdef = "#! -*- coding: ShiftJIS -*-\n"
+       
+               # ascii source without encdef
+    1:         self._testErrEnc(ascii, ascii, 19)
+       
+               # ascii source with encdef
+    1:         self._testErrEnc(encdef+ascii, ascii, 19)
+       
+               # non-ascii source with encdef
+    1:         self._testErrEnc(encdef+sjis, sjis, 19)
+       
+               # ShiftJIS source without encdef
+    1:         self._testErrEnc(sjis, sjis, 19)
+       
+       
+    1: NOLINENO = (compiler.ast.Module, compiler.ast.Stmt, compiler.ast.Discard)
+       
+       ###############################################################################
+       # code below is just used to trigger some possible errors, for the benefit of
+       # testLineNo
+       ###############################################################################
+       
+    2: class Toto:
+    1:     """docstring"""
+    1:     pass
+       
+    1: a, b = 2, 3
+    1: [c, d] = 5, 6
+    6: l = [(x, y) for x, y in zip(range(5), range(5,10))]
+    1: l[0]
+    1: l[3:4]
+    1: d = {'a': 2}
+    1: d = {}
+    7: d = {x: y for x, y in zip(range(5), range(5,10))}
+   12: s = {x for x in range(10)}
+    1: s = {1}
+    1: t = ()
+    1: t = (1, 2)
+    1: l = []
+    1: l = [1, 2]
+    1: if l:
+    1:     pass
+       else:
+>>>>>>     a, b = b, a
+       
+    1: try:
+    1:     print yo
+    1: except:
+    1:     yo = 3
+       else:
+>>>>>>     yo += 3
+       
+    1: try:
+    1:     a += b
+       finally:
+    1:     b = 0
+       
+    1: from math import *
+       
+       ###############################################################################
+       
+    1: def test_main():
+           global TEST_ALL
+    1:     TEST_ALL = test.test_support.is_resource_enabled("cpu")
+    1:     test.test_support.run_unittest(CompilerTest)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

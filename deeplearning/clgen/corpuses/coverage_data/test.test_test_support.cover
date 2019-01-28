@@ -1,0 +1,366 @@
+    1: import importlib
+    1: import shutil
+    1: import stat
+    1: import sys
+    1: import os
+    1: import unittest
+    1: import socket
+    1: import tempfile
+    1: import errno
+    1: from test import support
+       
+    1: TESTFN = support.TESTFN
+       
+       
+    2: class ClassicClass:
+    1:     pass
+       
+    2: class NewStyleClass(object):
+    1:     pass
+       
+       
+    2: class TestSupport(unittest.TestCase):
+       
+    1:     def test_import_module(self):
+    1:         support.import_module("ftplib")
+    1:         self.assertRaises(unittest.SkipTest, support.import_module, "foo")
+       
+    1:     def test_import_fresh_module(self):
+    1:         support.import_fresh_module("ftplib")
+       
+    1:     def test_get_attribute(self):
+    1:         self.assertEqual(support.get_attribute(self, "test_get_attribute"),
+    1:                         self.test_get_attribute)
+    1:         self.assertRaises(unittest.SkipTest, support.get_attribute, self, "foo")
+    1:         with self.assertRaisesRegexp(unittest.SkipTest, 'unittest'):
+    1:             support.get_attribute(unittest, 'foo')
+    1:         with self.assertRaisesRegexp(unittest.SkipTest, 'ClassicClass'):
+    1:             support.get_attribute(ClassicClass, 'foo')
+    1:         with self.assertRaisesRegexp(unittest.SkipTest, 'ClassicClass'):
+    1:             support.get_attribute(ClassicClass(), 'foo')
+    1:         with self.assertRaisesRegexp(unittest.SkipTest, 'NewStyleClass'):
+    1:             support.get_attribute(NewStyleClass, 'foo')
+    1:         with self.assertRaisesRegexp(unittest.SkipTest, 'NewStyleClass'):
+    1:             support.get_attribute(NewStyleClass(), 'foo')
+       
+    1:     @unittest.skip("failing buildbots")
+           def test_get_original_stdout(self):
+>>>>>>         self.assertEqual(support.get_original_stdout(), sys.stdout)
+       
+    1:     def test_unload(self):
+    1:         import sched
+    1:         self.assertIn("sched", sys.modules)
+    1:         support.unload("sched")
+    1:         self.assertNotIn("sched", sys.modules)
+       
+    1:     def test_unlink(self):
+    1:         with open(TESTFN, "w") as f:
+    1:             pass
+    1:         support.unlink(TESTFN)
+    1:         self.assertFalse(os.path.exists(TESTFN))
+    1:         support.unlink(TESTFN)
+       
+    1:     def test_rmtree(self):
+    1:         dirpath = support.TESTFN + 'd'
+    1:         subdirpath = os.path.join(dirpath, 'subdir')
+    1:         os.mkdir(dirpath)
+    1:         os.mkdir(subdirpath)
+    1:         support.rmtree(dirpath)
+    1:         self.assertFalse(os.path.exists(dirpath))
+    1:         with support.swap_attr(support, 'verbose', 0):
+    1:             support.rmtree(dirpath)
+       
+    1:         os.mkdir(dirpath)
+    1:         os.mkdir(subdirpath)
+    1:         os.chmod(dirpath, stat.S_IRUSR|stat.S_IXUSR)
+    1:         with support.swap_attr(support, 'verbose', 0):
+    1:             support.rmtree(dirpath)
+    1:         self.assertFalse(os.path.exists(dirpath))
+       
+    1:         os.mkdir(dirpath)
+    1:         os.mkdir(subdirpath)
+    1:         os.chmod(dirpath, 0)
+    1:         with support.swap_attr(support, 'verbose', 0):
+    1:             support.rmtree(dirpath)
+    1:         self.assertFalse(os.path.exists(dirpath))
+       
+    1:     def test_forget(self):
+    1:         mod_filename = TESTFN + '.py'
+    1:         with open(mod_filename, 'wt') as f:
+    1:             f.write('foo = 1\n')
+    1:         sys.path.insert(0, os.curdir)
+    1:         try:
+    1:             mod = __import__(TESTFN)
+    1:             self.assertIn(TESTFN, sys.modules)
+       
+    1:             support.forget(TESTFN)
+    1:             self.assertNotIn(TESTFN, sys.modules)
+               finally:
+    1:             del sys.path[0]
+    1:             support.unlink(mod_filename)
+    1:             support.rmtree('__pycache__')
+       
+    1:     def test_HOST(self):
+    1:         s = socket.socket()
+    1:         s.bind((support.HOST, 0))
+    1:         s.close()
+       
+    1:     def test_find_unused_port(self):
+    1:         port = support.find_unused_port()
+    1:         s = socket.socket()
+    1:         s.bind((support.HOST, port))
+    1:         s.close()
+       
+    1:     def test_bind_port(self):
+    1:         s = socket.socket()
+    1:         support.bind_port(s)
+    1:         s.listen(5)
+    1:         s.close()
+       
+           # Tests for temp_dir()
+       
+    1:     def test_temp_dir(self):
+               """Test that temp_dir() creates and destroys its directory."""
+    1:         parent_dir = tempfile.mkdtemp()
+    1:         parent_dir = os.path.realpath(parent_dir)
+       
+    1:         try:
+    1:             path = os.path.join(parent_dir, 'temp')
+    1:             self.assertFalse(os.path.isdir(path))
+    1:             with support.temp_dir(path) as temp_path:
+    1:                 self.assertEqual(temp_path, path)
+    1:                 self.assertTrue(os.path.isdir(path))
+    1:             self.assertFalse(os.path.isdir(path))
+               finally:
+    1:             support.rmtree(parent_dir)
+       
+    1:     def test_temp_dir__path_none(self):
+               """Test passing no path."""
+    1:         with support.temp_dir() as temp_path:
+    1:             self.assertTrue(os.path.isdir(temp_path))
+    1:         self.assertFalse(os.path.isdir(temp_path))
+       
+    1:     def test_temp_dir__existing_dir__quiet_default(self):
+               """Test passing a directory that already exists."""
+    1:         def call_temp_dir(path):
+    1:             with support.temp_dir(path) as temp_path:
+>>>>>>                 raise Exception("should not get here")
+       
+    1:         path = tempfile.mkdtemp()
+    1:         path = os.path.realpath(path)
+    1:         try:
+    1:             self.assertTrue(os.path.isdir(path))
+    1:             with self.assertRaises(OSError) as cm:
+    1:                 call_temp_dir(path)
+    1:             self.assertEqual(cm.exception.errno, errno.EEXIST)
+                   # Make sure temp_dir did not delete the original directory.
+    1:             self.assertTrue(os.path.isdir(path))
+               finally:
+    1:             shutil.rmtree(path)
+       
+    1:     def test_temp_dir__existing_dir__quiet_true(self):
+               """Test passing a directory that already exists with quiet=True."""
+    1:         path = tempfile.mkdtemp()
+    1:         path = os.path.realpath(path)
+       
+    1:         try:
+    1:             with support.check_warnings() as recorder:
+    1:                 with support.temp_dir(path, quiet=True) as temp_path:
+    1:                     self.assertEqual(path, temp_path)
+    2:                 warnings = [str(w.message) for w in recorder.warnings]
+                   # Make sure temp_dir did not delete the original directory.
+    1:             self.assertTrue(os.path.isdir(path))
+               finally:
+    1:             shutil.rmtree(path)
+       
+    1:         expected = ['tests may fail, unable to create temp dir: ' + path]
+    1:         self.assertEqual(warnings, expected)
+       
+           # Tests for change_cwd()
+       
+    1:     def test_change_cwd(self):
+    1:         original_cwd = os.getcwd()
+       
+    1:         with support.temp_dir() as temp_path:
+    1:             with support.change_cwd(temp_path) as new_cwd:
+    1:                 self.assertEqual(new_cwd, temp_path)
+    1:                 self.assertEqual(os.getcwd(), new_cwd)
+       
+    1:         self.assertEqual(os.getcwd(), original_cwd)
+       
+    1:     def test_change_cwd__non_existent_dir(self):
+               """Test passing a non-existent directory."""
+    1:         original_cwd = os.getcwd()
+       
+    1:         def call_change_cwd(path):
+    1:             with support.change_cwd(path) as new_cwd:
+>>>>>>                 raise Exception("should not get here")
+       
+    1:         with support.temp_dir() as parent_dir:
+    1:             non_existent_dir = os.path.join(parent_dir, 'does_not_exist')
+    1:             with self.assertRaises(OSError) as cm:
+    1:                 call_change_cwd(non_existent_dir)
+    1:             self.assertEqual(cm.exception.errno, errno.ENOENT)
+       
+    1:         self.assertEqual(os.getcwd(), original_cwd)
+       
+    1:     def test_change_cwd__non_existent_dir__quiet_true(self):
+               """Test passing a non-existent directory with quiet=True."""
+    1:         original_cwd = os.getcwd()
+       
+    1:         with support.temp_dir() as parent_dir:
+    1:             bad_dir = os.path.join(parent_dir, 'does_not_exist')
+    1:             with support.check_warnings() as recorder:
+    1:                 with support.change_cwd(bad_dir, quiet=True) as new_cwd:
+    1:                     self.assertEqual(new_cwd, original_cwd)
+    1:                     self.assertEqual(os.getcwd(), new_cwd)
+    2:                 warnings = [str(w.message) for w in recorder.warnings]
+       
+    1:         expected = ['tests may fail, unable to change CWD to: ' + bad_dir]
+    1:         self.assertEqual(warnings, expected)
+       
+           # Tests for change_cwd()
+       
+    1:     def test_change_cwd__chdir_warning(self):
+               """Check the warning message when os.chdir() fails."""
+    1:         path = TESTFN + '_does_not_exist'
+    1:         with support.check_warnings() as recorder:
+    1:             with support.change_cwd(path=path, quiet=True):
+    1:                 pass
+    2:             messages = [str(w.message) for w in recorder.warnings]
+    1:         self.assertEqual(messages, ['tests may fail, unable to change CWD to: ' + path])
+       
+           # Tests for temp_cwd()
+       
+    1:     def test_temp_cwd(self):
+    1:         here = os.getcwd()
+    1:         with support.temp_cwd(name=TESTFN):
+    1:             self.assertEqual(os.path.basename(os.getcwd()), TESTFN)
+    1:         self.assertFalse(os.path.exists(TESTFN))
+    1:         self.assertTrue(os.path.basename(os.getcwd()), here)
+       
+       
+    1:     def test_temp_cwd__name_none(self):
+               """Test passing None to temp_cwd()."""
+    1:         original_cwd = os.getcwd()
+    1:         with support.temp_cwd(name=None) as new_cwd:
+    1:             self.assertNotEqual(new_cwd, original_cwd)
+    1:             self.assertTrue(os.path.isdir(new_cwd))
+    1:             self.assertEqual(os.getcwd(), new_cwd)
+    1:         self.assertEqual(os.getcwd(), original_cwd)
+       
+    1:     def test_sortdict(self):
+    1:         self.assertEqual(support.sortdict({3:3, 2:2, 1:1}), "{1: 1, 2: 2, 3: 3}")
+       
+    1:     def test_make_bad_fd(self):
+    1:         fd = support.make_bad_fd()
+    1:         with self.assertRaises(OSError) as cm:
+    1:             os.write(fd, b"foo")
+    1:         self.assertEqual(cm.exception.errno, errno.EBADF)
+       
+    1:     def test_check_syntax_error(self):
+    1:         support.check_syntax_error(self, "def class", lineno=1, offset=9)
+    1:         with self.assertRaises(AssertionError):
+    1:             support.check_syntax_error(self, "x=1")
+       
+    1:     def test_CleanImport(self):
+    1:         import importlib
+    1:         with support.CleanImport("asyncore"):
+    1:             importlib.import_module("asyncore")
+       
+    1:     def test_DirsOnSysPath(self):
+    1:         with support.DirsOnSysPath('foo', 'bar'):
+    1:             self.assertIn("foo", sys.path)
+    1:             self.assertIn("bar", sys.path)
+    1:         self.assertNotIn("foo", sys.path)
+    1:         self.assertNotIn("bar", sys.path)
+       
+    1:     def test_captured_stdout(self):
+    1:         with support.captured_stdout() as stdout:
+    1:             print "hello"
+    1:         self.assertEqual(stdout.getvalue(), "hello\n")
+       
+    1:     def test_captured_stderr(self):
+    1:         with support.captured_stderr() as stderr:
+    1:             print >>sys.stderr, "hello"
+    1:         self.assertEqual(stderr.getvalue(), "hello\n")
+       
+    1:     def test_captured_stdin(self):
+    1:         with support.captured_stdin() as stdin:
+    1:             stdin.write('hello\n')
+    1:             stdin.seek(0)
+                   # call test code that consumes from sys.stdin
+    1:             captured = raw_input()
+    1:         self.assertEqual(captured, "hello")
+       
+    1:     def test_gc_collect(self):
+    1:         support.gc_collect()
+       
+    1:     def test_python_is_optimized(self):
+    1:         self.assertIsInstance(support.python_is_optimized(), bool)
+       
+    1:     def test_swap_attr(self):
+    2:         class Obj:
+    1:             pass
+    1:         obj = Obj()
+    1:         obj.x = 1
+    1:         with support.swap_attr(obj, "x", 5) as x:
+    1:             self.assertEqual(obj.x, 5)
+    1:             self.assertEqual(x, 1)
+    1:         self.assertEqual(obj.x, 1)
+    1:         with support.swap_attr(obj, "y", 5) as y:
+    1:             self.assertEqual(obj.y, 5)
+    1:             self.assertIsNone(y)
+    1:         self.assertFalse(hasattr(obj, 'y'))
+    1:         with support.swap_attr(obj, "y", 5):
+    1:             del obj.y
+    1:         self.assertFalse(hasattr(obj, 'y'))
+       
+    1:     def test_swap_item(self):
+    1:         D = {"x":1}
+    1:         with support.swap_item(D, "x", 5) as x:
+    1:             self.assertEqual(D["x"], 5)
+    1:             self.assertEqual(x, 1)
+    1:         self.assertEqual(D["x"], 1)
+    1:         with support.swap_item(D, "y", 5) as y:
+    1:             self.assertEqual(D["y"], 5)
+    1:             self.assertIsNone(y)
+    1:         self.assertNotIn("y", D)
+    1:         with support.swap_item(D, "y", 5):
+    1:             del D["y"]
+    1:         self.assertNotIn("y", D)
+       
+           # XXX -follows a list of untested API
+           # make_legacy_pyc
+           # is_resource_enabled
+           # requires
+           # fcmp
+           # umaks
+           # findfile
+           # check_warnings
+           # EnvironmentVarGuard
+           # TransientResource
+           # transient_internet
+           # run_with_locale
+           # set_memlimit
+           # bigmemtest
+           # precisionbigmemtest
+           # bigaddrspacetest
+           # requires_resource
+           # run_doctest
+           # threading_cleanup
+           # reap_threads
+           # reap_children
+           # strip_python_stderr
+           # args_from_interpreter_flags
+           # can_symlink
+           # skip_unless_symlink
+           # SuppressCrashReport
+       
+       
+    1: def test_main():
+    1:     tests = [TestSupport]
+    1:     support.run_unittest(*tests)
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

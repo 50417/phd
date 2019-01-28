@@ -1,0 +1,205 @@
+       """Helper to provide extensibility for pickle/cPickle.
+       
+       This is only useful to add pickle support for extension types defined in
+       C, not for instances of user-defined classes.
+       """
+       
+>>>>>> from types import ClassType as _ClassType
+       
+>>>>>> __all__ = ["pickle", "constructor",
+>>>>>>            "add_extension", "remove_extension", "clear_extension_cache"]
+       
+>>>>>> dispatch_table = {}
+       
+>>>>>> def pickle(ob_type, pickle_function, constructor_ob=None):
+   24:     if type(ob_type) is _ClassType:
+    1:         raise TypeError("copy_reg is not intended for use with classes")
+       
+   23:     if not hasattr(pickle_function, '__call__'):
+    1:         raise TypeError("reduction functions must be callable")
+   22:     dispatch_table[ob_type] = pickle_function
+       
+           # The constructor_ob function is a vestige of safe for unpickling.
+           # There is no reason for the caller to pass it anymore.
+   22:     if constructor_ob is not None:
+    9:         constructor(constructor_ob)
+       
+>>>>>> def constructor(object):
+    9:     if not hasattr(object, '__call__'):
+    1:         raise TypeError("constructors must be callable")
+       
+       # Example: provide pickling support for complex numbers.
+       
+>>>>>> try:
+>>>>>>     complex
+>>>>>> except NameError:
+>>>>>>     pass
+       else:
+       
+>>>>>>     def pickle_complex(c):
+   88:         return complex, (c.real, c.imag)
+       
+>>>>>>     pickle(complex, pickle_complex, complex)
+       
+       # Support for pickling new-style objects
+       
+>>>>>> def _reconstructor(cls, base, state):
+ 1151:     if base is object:
+  382:         obj = object.__new__(cls)
+           else:
+  769:         obj = base.__new__(cls, state)
+  769:         if base.__init__ != object.__init__:
+  348:             base.__init__(obj, state)
+ 1151:     return obj
+       
+>>>>>> _HEAPTYPE = 1<<9
+       
+       # Python code for object.__reduce_ex__ for protocols 0 and 1
+       
+>>>>>> def _reduce_ex(self, proto):
+ 1260:     assert proto < 2
+ 2681:     for base in self.__class__.__mro__:
+ 2681:         if hasattr(base, '__flags__') and not base.__flags__ & _HEAPTYPE:
+ 1260:             break
+           else:
+>>>>>>         base = object # not really reachable
+ 1260:     if base is object:
+  450:         state = None
+           else:
+  810:         if base is self.__class__:
+   16:             raise TypeError, "can't pickle %s objects" % base.__name__
+  794:         state = base(self)
+ 1244:     args = (self.__class__, base, state)
+ 1244:     try:
+ 1244:         getstate = self.__getstate__
+ 1173:     except AttributeError:
+ 1173:         if getattr(self, "__slots__", None):
+   16:             raise TypeError("a class that defines __slots__ without "
+                                   "defining __getstate__ cannot be pickled")
+ 1157:         try:
+ 1157:             dict = self.__dict__
+   10:         except AttributeError:
+   10:             dict = None
+           else:
+   71:         dict = getstate()
+ 1228:     if dict:
+ 1006:         return _reconstructor, args, dict
+           else:
+  222:         return _reconstructor, args
+       
+       # Helper for __reduce_ex__ protocol 2
+       
+>>>>>> def __newobj__(cls, *args):
+  464:     return cls.__new__(cls, *args)
+       
+>>>>>> def _slotnames(cls):
+           """Return a list of slot names for a given class.
+       
+           This needs to find slots defined by the class and its bases, so we
+           can't simply return the __slots__ attribute.  We must walk down
+           the Method Resolution Order and concatenate the __slots__ of each
+           class found there.  (This assumes classes don't modify their
+           __slots__ attribute to misrepresent their slots after the class is
+           defined.)
+           """
+       
+           # Get the value from a cache in the class if possible
+  130:     names = cls.__dict__.get("__slotnames__")
+  130:     if names is not None:
+>>>>>>         return names
+       
+           # Not cached -- calculate the value
+  130:     names = []
+  130:     if not hasattr(cls, "__slots__"):
+               # This class has no slots
+  117:         pass
+           else:
+               # Slots found -- gather slot names from all base classes
+   49:         for c in cls.__mro__:
+   36:             if "__slots__" in c.__dict__:
+   14:                 slots = c.__dict__['__slots__']
+                       # if class has a single slot, it can be given as a string
+   14:                 if isinstance(slots, basestring):
+    2:                     slots = (slots,)
+   27:                 for name in slots:
+                           # special descriptors
+   13:                     if name in ("__dict__", "__weakref__"):
+    1:                         continue
+                           # mangled names
+   12:                     elif name.startswith('__') and not name.endswith('__'):
+    3:                         stripped = c.__name__.lstrip('_')
+    3:                         if stripped:
+    2:                             names.append('_%s%s' % (stripped, name))
+                               else:
+    1:                             names.append(name)
+                           else:
+    9:                         names.append(name)
+       
+           # Cache the outcome in the class if at all possible
+  130:     try:
+  130:         cls.__slotnames__ = names
+   29:     except:
+   29:         pass # But don't die if we can't
+       
+  130:     return names
+       
+       # A registry of extension codes.  This is an ad-hoc compression
+       # mechanism.  Whenever a global reference to <module>, <name> is about
+       # to be pickled, the (<module>, <name>) tuple is looked up here to see
+       # if it is a registered extension code for it.  Extension codes are
+       # universal, so that the meaning of a pickle does not depend on
+       # context.  (There are also some codes reserved for local use that
+       # don't have this restriction.)  Codes are positive ints; 0 is
+       # reserved.
+       
+>>>>>> _extension_registry = {}                # key -> code
+>>>>>> _inverted_registry = {}                 # code -> key
+>>>>>> _extension_cache = {}                   # code -> object
+       # Don't ever rebind those names:  cPickle grabs a reference to them when
+       # it's initialized, and won't see a rebinding.
+       
+>>>>>> def add_extension(module, name, code):
+           """Register an extension code."""
+  114:     code = int(code)
+  114:     if not 1 <= code <= 0x7fffffff:
+    3:         raise ValueError, "code out of range"
+  111:     key = (module, name)
+  111:     if (_extension_registry.get(key) == code and
+    1:         _inverted_registry.get(code) == key):
+    1:         return # Redundant registrations are benign
+  110:     if key in _extension_registry:
+    1:         raise ValueError("key %s is already registered with code %s" %
+    1:                          (key, _extension_registry[key]))
+  109:     if code in _inverted_registry:
+    2:         raise ValueError("code %s is already in use for key %s" %
+    2:                          (code, _inverted_registry[code]))
+  107:     _extension_registry[key] = code
+  107:     _inverted_registry[code] = key
+       
+>>>>>> def remove_extension(module, name, code):
+           """Unregister an extension code.  For testing only."""
+  112:     key = (module, name)
+  112:     if (_extension_registry.get(key) != code or
+  107:         _inverted_registry.get(code) != key):
+    5:         raise ValueError("key %s is not registered with code %s" %
+    5:                          (key, code))
+  107:     del _extension_registry[key]
+  107:     del _inverted_registry[code]
+  107:     if code in _extension_cache:
+  104:         del _extension_cache[code]
+       
+>>>>>> def clear_extension_cache():
+>>>>>>     _extension_cache.clear()
+       
+       # Standard extension code assignments
+       
+       # Reserved ranges
+       
+       # First  Last Count  Purpose
+       #     1   127   127  Reserved for Python standard library
+       #   128   191    64  Reserved for Zope
+       #   192   239    48  Reserved for 3rd parties
+       #   240   255    16  Reserved for private use (will never be assigned)
+       #   256   Inf   Inf  Reserved for future assignment
+       
+       # Extension codes are assigned by the Python Software Foundation.

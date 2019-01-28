@@ -1,0 +1,464 @@
+       # Test hashlib module
+       #
+       # $Id$
+       #
+       #  Copyright (C) 2005-2010   Gregory P. Smith (greg@krypto.org)
+       #  Licensed to PSF under a Contributor Agreement.
+       #
+       
+    1: import array
+    1: import hashlib
+    1: import itertools
+    1: import sys
+    1: try:
+    1:     import threading
+>>>>>> except ImportError:
+>>>>>>     threading = None
+    1: import unittest
+    1: import warnings
+    1: from binascii import unhexlify
+       
+    1: from test import test_support
+    1: from test.test_support import _4G, precisionbigmemtest
+       
+       # Were we compiled --with-pydebug or with #define Py_DEBUG?
+    1: COMPILED_WITH_PYDEBUG = hasattr(sys, 'gettotalrefcount')
+       
+       
+    1: def hexstr(s):
+   12:     import string
+   12:     h = string.hexdigits
+   12:     r = ''
+  428:     for c in s:
+  416:         i = ord(c)
+  416:         r = r + h[(i >> 4) & 0xF] + h[i & 0xF]
+   12:     return r
+       
+       
+    2: class HashLibTestCase(unittest.TestCase):
+           supported_hash_names = ( 'md5', 'MD5', 'sha1', 'SHA1',
+                                    'sha224', 'SHA224', 'sha256', 'SHA256',
+    1:                              'sha384', 'SHA384', 'sha512', 'SHA512' )
+       
+    1:     _warn_on_extension_import = COMPILED_WITH_PYDEBUG
+       
+    1:     def _conditional_import_module(self, module_name):
+               """Import a module and return a reference to it or None on failure."""
+  190:         try:
+  190:             exec('import '+module_name)
+  152:         except ImportError, error:
+  152:             if self._warn_on_extension_import:
+>>>>>>                 warnings.warn('Did a C extension fail to compile? %s' % error)
+  190:         return locals().get(module_name)
+       
+    1:     def __init__(self, *args, **kwargs):
+   38:         algorithms = set()
+  494:         for algorithm in self.supported_hash_names:
+  456:             algorithms.add(algorithm.lower())
+   38:         self.constructors_to_test = {}
+  266:         for algorithm in algorithms:
+  228:             self.constructors_to_test[algorithm] = set()
+       
+               # For each algorithm, test the direct constructor and the use
+               # of hashlib.new given the algorithm name.
+  266:         for algorithm, constructors in self.constructors_to_test.items():
+  228:             constructors.add(getattr(hashlib, algorithm))
+  228:             def _test_algorithm_via_hashlib_new(data=None, _alg=algorithm):
+   35:                 if data is None:
+>>>>>>                     return hashlib.new(_alg)
+   35:                 return hashlib.new(_alg, data)
+  228:             constructors.add(_test_algorithm_via_hashlib_new)
+       
+   38:         _hashlib = self._conditional_import_module('_hashlib')
+   38:         if _hashlib:
+                   # These two algorithms should always be present when this module
+                   # is compiled.  If not, something was compiled wrong.
+   38:             assert hasattr(_hashlib, 'openssl_md5')
+   38:             assert hasattr(_hashlib, 'openssl_sha1')
+  266:             for algorithm, constructors in self.constructors_to_test.items():
+  228:                 constructor = getattr(_hashlib, 'openssl_'+algorithm, None)
+  228:                 if constructor:
+  228:                     constructors.add(constructor)
+       
+   38:         _md5 = self._conditional_import_module('_md5')
+   38:         if _md5:
+>>>>>>             self.constructors_to_test['md5'].add(_md5.new)
+   38:         _sha = self._conditional_import_module('_sha')
+   38:         if _sha:
+>>>>>>             self.constructors_to_test['sha1'].add(_sha.new)
+   38:         _sha256 = self._conditional_import_module('_sha256')
+   38:         if _sha256:
+>>>>>>             self.constructors_to_test['sha224'].add(_sha256.sha224)
+>>>>>>             self.constructors_to_test['sha256'].add(_sha256.sha256)
+   38:         _sha512 = self._conditional_import_module('_sha512')
+   38:         if _sha512:
+>>>>>>             self.constructors_to_test['sha384'].add(_sha512.sha384)
+>>>>>>             self.constructors_to_test['sha512'].add(_sha512.sha512)
+       
+   38:         super(HashLibTestCase, self).__init__(*args, **kwargs)
+       
+    1:     def test_hash_array(self):
+    1:         a = array.array("b", range(10))
+    1:         constructors = self.constructors_to_test.itervalues()
+   13:         for cons in itertools.chain.from_iterable(constructors):
+   12:             c = cons(a)
+   12:             c.hexdigest()
+       
+    1:     def test_algorithms_attribute(self):
+    1:         self.assertEqual(hashlib.algorithms,
+   13:             tuple([_algo for _algo in self.supported_hash_names if
+   12:                                                 _algo.islower()]))
+       
+    1:     def test_algorithms_guaranteed(self):
+    1:         self.assertEqual(hashlib.algorithms_guaranteed,
+   14:             set(_algo for _algo in self.supported_hash_names
+   12:                   if _algo.islower()))
+       
+    1:     def test_algorithms_available(self):
+    1:         self.assertTrue(set(hashlib.algorithms_guaranteed).
+    1:                             issubset(hashlib.algorithms_available))
+       
+    1:     def test_unknown_hash(self):
+    1:         self.assertRaises(ValueError, hashlib.new, 'spam spam spam spam spam')
+    1:         self.assertRaises(TypeError, hashlib.new, 1)
+       
+    1:     def test_get_builtin_constructor(self):
+    1:         get_builtin_constructor = hashlib.__dict__[
+    1:                 '__get_builtin_constructor']
+    1:         self.assertRaises(ValueError, get_builtin_constructor, 'test')
+    1:         try:
+    1:             import _md5
+    1:         except ImportError:
+    1:             pass
+               # This forces an ImportError for "import _md5" statements
+    1:         sys.modules['_md5'] = None
+    1:         try:
+    1:             self.assertRaises(ValueError, get_builtin_constructor, 'md5')
+               finally:
+    1:             if '_md5' in locals():
+>>>>>>                 sys.modules['_md5'] = _md5
+                   else:
+    1:                 del sys.modules['_md5']
+    1:         self.assertRaises(TypeError, get_builtin_constructor, 3)
+       
+    1:     def test_hexdigest(self):
+   13:         for name in self.supported_hash_names:
+   12:             h = hashlib.new(name)
+   12:             self.assertTrue(hexstr(h.digest()) == h.hexdigest())
+       
+    1:     def test_large_update(self):
+    1:         aas = 'a' * 128
+    1:         bees = 'b' * 127
+    1:         cees = 'c' * 126
+    1:         abcs = aas + bees + cees
+       
+   13:         for name in self.supported_hash_names:
+   12:             m1 = hashlib.new(name)
+   12:             m1.update(aas)
+   12:             m1.update(bees)
+   12:             m1.update(cees)
+       
+   12:             m2 = hashlib.new(name)
+   12:             m2.update(abcs)
+   12:             self.assertEqual(m1.digest(), m2.digest(), name+' update problem.')
+       
+   12:             m3 = hashlib.new(name, abcs)
+   12:             self.assertEqual(m1.digest(), m3.digest(), name+' new problem.')
+       
+    1:     def check(self, name, data, digest):
+   29:         constructors = self.constructors_to_test[name]
+               # 2 is for hashlib.name(...) and hashlib.new(name, ...)
+   29:         self.assertGreaterEqual(len(constructors), 2)
+   87:         for hash_object_constructor in constructors:
+   58:             computed = hash_object_constructor(data).hexdigest()
+   58:             self.assertEqual(
+   58:                     computed, digest,
+   58:                     "Hash algorithm %s constructed using %s returned hexdigest"
+                           " %r for %d byte input data that should have hashed to %r."
+   58:                     % (name, hash_object_constructor,
+   58:                        computed, len(data), digest))
+       
+    1:     def check_update(self, name, data, digest):
+>>>>>>         constructors = self.constructors_to_test[name]
+               # 2 is for hashlib.name(...) and hashlib.new(name, ...)
+>>>>>>         self.assertGreaterEqual(len(constructors), 2)
+>>>>>>         for hash_object_constructor in constructors:
+>>>>>>             h = hash_object_constructor()
+>>>>>>             h.update(data)
+>>>>>>             computed = h.hexdigest()
+>>>>>>             self.assertEqual(
+>>>>>>                     computed, digest,
+>>>>>>                     "Hash algorithm %s using %s when updated returned hexdigest"
+                           " %r for %d byte input data that should have hashed to %r."
+>>>>>>                     % (name, hash_object_constructor,
+>>>>>>                        computed, len(data), digest))
+       
+    1:     def check_unicode(self, algorithm_name):
+               # Unicode objects are not allowed as input.
+    6:         expected = hashlib.new(algorithm_name, str(u'spam')).hexdigest()
+    6:         self.check(algorithm_name, u'spam', expected)
+       
+    1:     def test_unicode(self):
+               # In python 2.x unicode is auto-encoded to the system default encoding
+               # when passed to hashlib functions.
+    1:         self.check_unicode('md5')
+    1:         self.check_unicode('sha1')
+    1:         self.check_unicode('sha224')
+    1:         self.check_unicode('sha256')
+    1:         self.check_unicode('sha384')
+    1:         self.check_unicode('sha512')
+       
+    1:     def test_case_md5_0(self):
+    1:         self.check('md5', '', 'd41d8cd98f00b204e9800998ecf8427e')
+       
+    1:     def test_case_md5_1(self):
+    1:         self.check('md5', 'abc', '900150983cd24fb0d6963f7d28e17f72')
+       
+    1:     def test_case_md5_2(self):
+    1:         self.check('md5', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+    1:                    'd174ab98d277d9f5a5611c2c9f419d9f')
+       
+    1:     @unittest.skipIf(sys.maxsize < _4G + 5, 'test cannot run on 32-bit systems')
+    1:     @precisionbigmemtest(size=_4G + 5, memuse=1, dry_run=False)
+           def test_case_md5_huge(self, size):
+>>>>>>         self.check('md5', 'A'*size, 'c9af2dff37468ce5dfee8f2cfc0a9c6d')
+       
+    1:     @unittest.skipIf(sys.maxsize < _4G + 5, 'test cannot run on 32-bit systems')
+    1:     @precisionbigmemtest(size=_4G + 5, memuse=1, dry_run=False)
+           def test_case_md5_huge_update(self, size):
+>>>>>>         self.check_update('md5', 'A'*size, 'c9af2dff37468ce5dfee8f2cfc0a9c6d')
+       
+    1:     @unittest.skipIf(sys.maxsize < _4G - 1, 'test cannot run on 32-bit systems')
+    1:     @precisionbigmemtest(size=_4G - 1, memuse=1, dry_run=False)
+           def test_case_md5_uintmax(self, size):
+>>>>>>         self.check('md5', 'A'*size, '28138d306ff1b8281f1a9067e1a1a2b3')
+       
+           # use the three examples from Federal Information Processing Standards
+           # Publication 180-1, Secure Hash Standard,  1995 April 17
+           # http://www.itl.nist.gov/div897/pubs/fip180-1.htm
+       
+    1:     def test_case_sha1_0(self):
+    1:         self.check('sha1', "",
+    1:                    "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+       
+    1:     def test_case_sha1_1(self):
+    1:         self.check('sha1', "abc",
+    1:                    "a9993e364706816aba3e25717850c26c9cd0d89d")
+       
+    1:     def test_case_sha1_2(self):
+    1:         self.check('sha1', "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+    1:                    "84983e441c3bd26ebaae4aa1f95129e5e54670f1")
+       
+    1:     def test_case_sha1_3(self):
+    1:         self.check('sha1', "a" * 1000000,
+    1:                    "34aa973cd4c4daa4f61eeb2bdbad27316534016f")
+       
+    1:     @precisionbigmemtest(size=_4G + 5, memuse=1)
+           def test_case_sha1_huge(self, size):
+    1:         if size == _4G + 5:
+>>>>>>             try:
+>>>>>>                 self.check('sha1', 'A'*size,
+>>>>>>                         '87d745c50e6b2879ffa0fb2c930e9fbfe0dc9a5b')
+>>>>>>             except OverflowError:
+>>>>>>                 pass # 32-bit arch
+       
+    1:     @precisionbigmemtest(size=_4G + 5, memuse=1)
+           def test_case_sha1_huge_update(self, size):
+    1:         if size == _4G + 5:
+>>>>>>             try:
+>>>>>>                 self.check_update('sha1', 'A'*size,
+>>>>>>                         '87d745c50e6b2879ffa0fb2c930e9fbfe0dc9a5b')
+>>>>>>             except OverflowError:
+>>>>>>                 pass # 32-bit arch
+       
+           # use the examples from Federal Information Processing Standards
+           # Publication 180-2, Secure Hash Standard,  2002 August 1
+           # http://csrc.nist.gov/publications/fips/fips180-2/fips180-2.pdf
+       
+    1:     def test_case_sha224_0(self):
+    1:         self.check('sha224', "",
+    1:           "d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f")
+       
+    1:     def test_case_sha224_1(self):
+    1:         self.check('sha224', "abc",
+    1:           "23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7")
+       
+    1:     def test_case_sha224_2(self):
+    1:         self.check('sha224',
+    1:           "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+    1:           "75388b16512776cc5dba5da1fd890150b0c6455cb4f58b1952522525")
+       
+    1:     def test_case_sha224_3(self):
+    1:         self.check('sha224', "a" * 1000000,
+    1:           "20794655980c91d8bbb4c1ea97618a4bf03f42581948b2ee4ee7ad67")
+       
+       
+    1:     def test_case_sha256_0(self):
+    1:         self.check('sha256', "",
+    1:           "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+       
+    1:     def test_case_sha256_1(self):
+    1:         self.check('sha256', "abc",
+    1:           "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+       
+    1:     def test_case_sha256_2(self):
+    1:         self.check('sha256',
+    1:           "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+    1:           "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+       
+    1:     def test_case_sha256_3(self):
+    1:         self.check('sha256', "a" * 1000000,
+    1:           "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
+       
+       
+    1:     def test_case_sha384_0(self):
+    1:         self.check('sha384', "",
+    1:           "38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da"+
+    1:           "274edebfe76f65fbd51ad2f14898b95b")
+       
+    1:     def test_case_sha384_1(self):
+    1:         self.check('sha384', "abc",
+    1:           "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed"+
+    1:           "8086072ba1e7cc2358baeca134c825a7")
+       
+    1:     def test_case_sha384_2(self):
+    1:         self.check('sha384',
+    1:                    "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmn"+
+    1:                    "hijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+    1:           "09330c33f71147e83d192fc782cd1b4753111b173b3b05d22fa08086e3b0f712"+
+    1:           "fcc7c71a557e2db966c3e9fa91746039")
+       
+    1:     def test_case_sha384_3(self):
+    1:         self.check('sha384', "a" * 1000000,
+    1:           "9d0e1809716474cb086e834e310a4a1ced149e9c00f248527972cec5704c2a5b"+
+    1:           "07b8b3dc38ecc4ebae97ddd87f3d8985")
+       
+       
+    1:     def test_case_sha512_0(self):
+    1:         self.check('sha512', "",
+    1:           "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce"+
+    1:           "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e")
+       
+    1:     def test_case_sha512_1(self):
+    1:         self.check('sha512', "abc",
+    1:           "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"+
+    1:           "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
+       
+    1:     def test_case_sha512_2(self):
+    1:         self.check('sha512',
+    1:                    "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmn"+
+    1:                    "hijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+    1:           "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018"+
+    1:           "501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909")
+       
+    1:     def test_case_sha512_3(self):
+    1:         self.check('sha512', "a" * 1000000,
+    1:           "e718483d0ce769644e2e42c7bc15b4638e1f98b13b2044285632a803afa973eb"+
+    1:           "de0ff244877ea60a4cb0432ce577c31beb009c5c2c49aa2e4eadb217ad8cc09b")
+       
+    1:     @unittest.skipUnless(threading, 'Threading required for this test.')
+    1:     @test_support.reap_threads
+           def test_threaded_hashing(self):
+               # Updating the same hash object from several threads at once
+               # using data chunk sizes containing the same byte sequences.
+               #
+               # If the internal locks are working to prevent multiple
+               # updates on the same object from running at once, the resulting
+               # hash will be the same as doing it single threaded upfront.
+    1:         hasher = hashlib.sha1()
+    1:         num_threads = 5
+    1:         smallest_data = 'swineflu'
+    1:         data = smallest_data*200000
+    1:         expected_hash = hashlib.sha1(data*num_threads).hexdigest()
+       
+    1:         def hash_in_chunks(chunk_size, event):
+    5:             index = 0
+11116:             while index < len(data):
+11107:                 hasher.update(data[index:index+chunk_size])
+11088:                 index += chunk_size
+    5:             event.set()
+       
+    1:         events = []
+    6:         for threadnum in xrange(num_threads):
+    5:             chunk_size = len(data) // (10**threadnum)
+    5:             assert chunk_size > 0
+    5:             assert chunk_size % len(smallest_data) == 0
+    5:             event = threading.Event()
+    5:             events.append(event)
+    5:             threading.Thread(target=hash_in_chunks,
+    5:                              args=(chunk_size, event)).start()
+       
+    6:         for event in events:
+    5:             event.wait()
+       
+    1:         self.assertEqual(expected_hash, hasher.hexdigest())
+       
+       
+    2: class KDFTests(unittest.TestCase):
+           pbkdf2_test_vectors = [
+    1:         (b'password', b'salt', 1, None),
+    1:         (b'password', b'salt', 2, None),
+    1:         (b'password', b'salt', 4096, None),
+               # too slow, it takes over a minute on a fast CPU.
+               #(b'password', b'salt', 16777216, None),
+               (b'passwordPASSWORDpassword', b'saltSALTsaltSALTsaltSALTsaltSALTsalt',
+    1:          4096, -1),
+    1:         (b'pass\0word', b'sa\0lt', 4096, 16),
+           ]
+       
+    1:     pbkdf2_results = {
+               "sha1": [
+                   # official test vectors from RFC 6070
+    1:             (unhexlify('0c60c80f961f0e71f3a9b524af6012062fe037a6'), None),
+    1:             (unhexlify('ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957'), None),
+    1:             (unhexlify('4b007901b765489abead49d926f721d065a429c1'), None),
+                   #(unhexlify('eefe3d61cd4da4e4e9945b3d6ba2158c2634e984'), None),
+    1:             (unhexlify('3d2eec4fe41c849b80c8d83662c0e44a8b291a964c'
+    1:                            'f2f07038'), 25),
+    1:             (unhexlify('56fa6aa75548099dcc37d7f03425e0c3'), None),],
+               "sha256": [
+    1:             (unhexlify('120fb6cffcf8b32c43e7225256c4f837'
+    1:                            'a86548c92ccc35480805987cb70be17b'), None),
+    1:             (unhexlify('ae4d0c95af6b46d32d0adff928f06dd0'
+    1:                            '2a303f8ef3c251dfd6e2d85a95474c43'), None),
+    1:             (unhexlify('c5e478d59288c841aa530db6845c4c8d'
+    1:                            '962893a001ce4e11a4963873aa98134a'), None),
+                   #(unhexlify('cf81c66fe8cfc04d1f31ecb65dab4089'
+                   #               'f7f179e89b3b0bcb17ad10e3ac6eba46'), None),
+    1:             (unhexlify('348c89dbcbd32b2f32d814b8116e84cf2b17'
+    1:                            '347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9'), 40),
+    1:             (unhexlify('89b69d0516f829893c696226650a8687'), None),],
+               "sha512": [
+    1:             (unhexlify('867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5'
+                                  'd513554e1c8cf252c02d470a285a0501bad999bfe943c08f'
+    1:                            '050235d7d68b1da55e63f73b60a57fce'), None),
+    1:             (unhexlify('e1d9c16aa681708a45f5c7c4e215ceb66e011a2e9f004071'
+                                  '3f18aefdb866d53cf76cab2868a39b9f7840edce4fef5a82'
+    1:                            'be67335c77a6068e04112754f27ccf4e'), None),
+    1:             (unhexlify('d197b1b33db0143e018b12f3d1d1479e6cdebdcc97c5c0f8'
+                                  '7f6902e072f457b5143f30602641b3d55cd335988cb36b84'
+    1:                            '376060ecd532e039b742a239434af2d5'), None),
+    1:             (unhexlify('8c0511f4c6e597c6ac6315d8f0362e225f3c501495ba23b8'
+                                  '68c005174dc4ee71115b59f9e60cd9532fa33e0f75aefe30'
+    1:                            '225c583a186cd82bd4daea9724a3d3b8'), 64),
+    1:             (unhexlify('9d9e9c4cd21fe4be24d5b8244c759665'), None),],
+           }
+       
+    1:     def test_pbkdf2_hmac(self):
+    4:         for digest_name, results in self.pbkdf2_results.items():
+   18:             for i, vector in enumerate(self.pbkdf2_test_vectors):
+   15:                 password, salt, rounds, dklen = vector
+   15:                 expected, overwrite_dklen = results[i]
+   15:                 if overwrite_dklen:
+    3:                     dklen = overwrite_dklen
+   15:                 out = hashlib.pbkdf2_hmac(
+   15:                     digest_name, password, salt, rounds, dklen)
+   15:                 self.assertEqual(out, expected,
+   15:                                  (digest_name, password, salt, rounds, dklen))
+       
+       
+    1: def test_main():
+    1:     test_support.run_unittest(HashLibTestCase, KDFTests)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

@@ -1,0 +1,303 @@
+       #
+       # ElementTree
+       # $Id: ElementPath.py 3375 2008-02-13 08:05:08Z fredrik $
+       #
+       # limited xpath support for element trees
+       #
+       # history:
+       # 2003-05-23 fl   created
+       # 2003-05-28 fl   added support for // etc
+       # 2003-08-27 fl   fixed parsing of periods in element names
+       # 2007-09-10 fl   new selection engine
+       # 2007-09-12 fl   fixed parent selector
+       # 2007-09-13 fl   added iterfind; changed findall to return a list
+       # 2007-11-30 fl   added namespaces support
+       # 2009-10-30 fl   added child element value filter
+       #
+       # Copyright (c) 2003-2009 by Fredrik Lundh.  All rights reserved.
+       #
+       # fredrik@pythonware.com
+       # http://www.pythonware.com
+       #
+       # --------------------------------------------------------------------
+       # The ElementTree toolkit is
+       #
+       # Copyright (c) 1999-2009 by Fredrik Lundh
+       #
+       # By obtaining, using, and/or copying this software and/or its
+       # associated documentation, you agree that you have read, understood,
+       # and will comply with the following terms and conditions:
+       #
+       # Permission to use, copy, modify, and distribute this software and
+       # its associated documentation for any purpose and without fee is
+       # hereby granted, provided that the above copyright notice appears in
+       # all copies, and that both that copyright notice and this permission
+       # notice appear in supporting documentation, and that the name of
+       # Secret Labs AB or the author not be used in advertising or publicity
+       # pertaining to distribution of the software without specific, written
+       # prior permission.
+       #
+       # SECRET LABS AB AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD
+       # TO THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANT-
+       # ABILITY AND FITNESS.  IN NO EVENT SHALL SECRET LABS AB OR THE AUTHOR
+       # BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY
+       # DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+       # WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
+       # ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
+       # OF THIS SOFTWARE.
+       # --------------------------------------------------------------------
+       
+       # Licensed to PSF under a Contributor Agreement.
+       # See http://www.python.org/psf/license for licensing details.
+       
+       ##
+       # Implementation module for XPath support.  There's usually no reason
+       # to import this module directly; the <b>ElementTree</b> does this for
+       # you, if needed.
+       ##
+       
+    1: import re
+       
+    1: xpath_tokenizer_re = re.compile(
+    1:     "("
+           "'[^']*'|\"[^\"]*\"|"
+           "::|"
+           "//?|"
+           "\.\.|"
+           "\(\)|"
+           "[/.*:\[\]\(\)@=])|"
+           "((?:\{[^}]+\})?[^/\[\]\(\)@=\s]+)|"
+           "\s+"
+           )
+       
+    1: def xpath_tokenizer(pattern, namespaces=None):
+ 2694:     for token in xpath_tokenizer_re.findall(pattern):
+ 2035:         tag = token[1]
+ 2035:         if tag and tag[0] != "{" and ":" in tag:
+>>>>>>             try:
+>>>>>>                 prefix, uri = tag.split(":", 1)
+>>>>>>                 if not namespaces:
+>>>>>>                     raise KeyError
+>>>>>>                 yield token[0], "{%s}%s" % (namespaces[prefix], uri)
+>>>>>>             except KeyError:
+>>>>>>                 raise SyntaxError("prefix %r not found in prefix map" % prefix)
+               else:
+ 2035:             yield token
+       
+    1: def get_parent_map(context):
+    8:     parent_map = context.parent_map
+    8:     if parent_map is None:
+    8:         context.parent_map = parent_map = {}
+   53:         for p in context.root.iter():
+   82:             for e in p:
+   37:                 parent_map[e] = p
+    8:     return parent_map
+       
+    1: def prepare_child(next, token):
+  630:     tag = token[1]
+  630:     def select(context, result):
+ 1360:         for elem in result:
+ 2705:             for e in elem:
+ 2041:                 if e.tag == tag:
+   59:                     yield e
+  630:     return select
+       
+    1: def prepare_star(next, token):
+    8:     def select(context, result):
+   16:         for elem in result:
+   30:             for e in elem:
+   21:                 yield e
+    8:     return select
+       
+    1: def prepare_self(next, token):
+  623:     def select(context, result):
+ 1330:         for elem in result:
+  672:             yield elem
+  623:     return select
+       
+    1: def prepare_descendant(next, token):
+   15:     token = next()
+   15:     if token[0] == "*":
+    3:         tag = "*"
+   12:     elif not token[0]:
+   12:         tag = token[1]
+           else:
+>>>>>>         raise SyntaxError("invalid descendant")
+   15:     def select(context, result):
+   35:         for elem in result:
+   74:             for e in elem.iter(tag):
+   56:                 if e is not elem:
+   49:                     yield e
+   15:     return select
+       
+    1: def prepare_parent(next, token):
+    3:     def select(context, result):
+               # FIXME: raise error if .. is applied at toplevel?
+    3:         parent_map = get_parent_map(context)
+    3:         result_map = {}
+    5:         for elem in result:
+    3:             if elem in parent_map:
+    2:                 parent = parent_map[elem]
+    2:                 if parent not in result_map:
+    2:                     result_map[parent] = None
+    2:                     yield parent
+    3:     return select
+       
+    1: def prepare_predicate(next, token):
+           # FIXME: replace with real parser!!! refs:
+           # http://effbot.org/zone/simple-iterator-parser.htm
+           # http://javascript.crockford.com/tdop/tdop.html
+   11:     signature = []
+   11:     predicate = []
+   11:     while 1:
+   35:         token = next()
+   35:         if token[0] == "]":
+   11:             break
+   24:         if token[0] and token[0][:1] in "'\"":
+    2:             token = "'", token[0][1:-1]
+   24:         signature.append(token[0] or "-")
+   24:         predicate.append(token[1])
+   11:     signature = "".join(signature)
+           # use signature to determine predicate type
+   11:     if signature == "@-":
+               # [@attribute] predicate
+    2:         key = predicate[1]
+    2:         def select(context, result):
+   10:             for elem in result:
+    8:                 if elem.get(key) is not None:
+    4:                     yield elem
+    2:         return select
+    9:     if signature == "@-='":
+               # [@attribute='value']
+    2:         key = predicate[1]
+    2:         value = predicate[-1]
+    2:         def select(context, result):
+   10:             for elem in result:
+    8:                 if elem.get(key) == value:
+    3:                     yield elem
+    2:         return select
+    7:     if signature == "-" and not re.match("\d+$", predicate[0]):
+               # [tag]
+    2:         tag = predicate[0]
+    2:         def select(context, result):
+    4:             for elem in result:
+    2:                 if elem.find(tag) is not None:
+    1:                     yield elem
+    2:         return select
+    5:     if signature == "-='" and not re.match("\d+$", predicate[0]):
+               # [tag='value']
+>>>>>>         tag = predicate[0]
+>>>>>>         value = predicate[-1]
+>>>>>>         def select(context, result):
+>>>>>>             for elem in result:
+>>>>>>                 for e in elem.findall(tag):
+>>>>>>                     if "".join(e.itertext()) == value:
+>>>>>>                         yield elem
+>>>>>>                         break
+>>>>>>         return select
+    5:     if signature == "-" or signature == "-()" or signature == "-()-":
+               # [index] or [last()] or [last()-index]
+    5:         if signature == "-":
+    2:             index = int(predicate[0]) - 1
+               else:
+    3:             if predicate[0] != "last":
+>>>>>>                 raise SyntaxError("unsupported function")
+    3:             if signature == "-()-":
+    2:                 try:
+    2:                     index = int(predicate[2]) - 1
+>>>>>>                 except ValueError:
+>>>>>>                     raise SyntaxError("unsupported expression")
+                   else:
+    1:                 index = -1
+    5:         def select(context, result):
+    5:             parent_map = get_parent_map(context)
+   12:             for elem in result:
+   12:                 try:
+   12:                     parent = parent_map[elem]
+                           # FIXME: what if the selector is "*" ?
+   12:                     elems = list(parent.findall(elem.tag))
+   12:                     if elems[index] is elem:
+    5:                         yield elem
+    5:                 except (IndexError, KeyError):
+>>>>>>                     pass
+    5:         return select
+>>>>>>     raise SyntaxError("invalid predicate")
+       
+    1: ops = {
+    1:     "": prepare_child,
+    1:     "*": prepare_star,
+    1:     ".": prepare_self,
+    1:     "..": prepare_parent,
+    1:     "//": prepare_descendant,
+    1:     "[": prepare_predicate,
+           }
+       
+    1: _cache = {}
+       
+    2: class _SelectorContext:
+    1:     parent_map = None
+    1:     def __init__(self, root):
+  699:         self.root = root
+       
+       # --------------------------------------------------------------------
+       
+       ##
+       # Generate all matching objects.
+       
+    1: def iterfind(elem, path, namespaces=None):
+           # compile selector pattern
+  700:     if path[-1:] == "/":
+    1:         path = path + "*" # implicit all (FIXME: keep this?)
+  700:     try:
+  700:         selector = _cache[path]
+  640:     except KeyError:
+  640:         if len(_cache) > 100:
+    6:             _cache.clear()
+  640:         if path[:1] == "/":
+    1:             raise SyntaxError("cannot use absolute path on element")
+  639:         next = iter(xpath_tokenizer(path, namespaces)).next
+  639:         token = next()
+  639:         selector = []
+  639:         while 1:
+ 1290:             try:
+ 1290:                 selector.append(ops[token[0]](next, token))
+>>>>>>             except StopIteration:
+>>>>>>                 raise SyntaxError("invalid path")
+ 1290:             try:
+ 1290:                 token = next()
+  651:                 if token[0] == "/":
+  625:                     token = next()
+  639:             except StopIteration:
+  639:                 break
+  639:         _cache[path] = selector
+           # execute selector pattern
+  699:     result = [elem]
+  699:     context = _SelectorContext(elem)
+ 2107:     for select in selector:
+ 1408:         result = select(context, result)
+  699:     return result
+       
+       ##
+       # Find first matching object.
+       
+    1: def find(elem, path, namespaces=None):
+  655:     try:
+  655:         return iterfind(elem, path, namespaces).next()
+  641:     except StopIteration:
+  641:         return None
+       
+       ##
+       # Find all matching objects.
+       
+    1: def findall(elem, path, namespaces=None):
+   31:     return list(iterfind(elem, path, namespaces))
+       
+       ##
+       # Find text for first matching object.
+       
+    1: def findtext(elem, path, default=None, namespaces=None):
+   10:     try:
+   10:         elem = iterfind(elem, path, namespaces).next()
+    8:         return elem.text or ""
+    2:     except StopIteration:
+    2:         return default

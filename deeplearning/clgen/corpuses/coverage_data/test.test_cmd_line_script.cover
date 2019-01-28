@@ -1,0 +1,281 @@
+       # Tests command line execution of scripts
+       
+    1: import contextlib
+    1: import unittest
+    1: import os
+    1: import os.path
+    1: import test.test_support
+    1: from test.script_helper import (run_python,
+                                       temp_dir, make_script, compile_script,
+                                       assert_python_failure, make_pkg,
+                                       make_zip_script, make_zip_pkg)
+       
+    1: verbose = test.test_support.verbose
+       
+       
+    1: example_args = ['test1', 'test2', 'test3']
+       
+       test_source = """\
+       # Script may be run with optimisation enabled, so don't rely on assert
+       # statements being executed
+       def assertEqual(lhs, rhs):
+           if lhs != rhs:
+               raise AssertionError('%r != %r' % (lhs, rhs))
+       def assertIdentical(lhs, rhs):
+           if lhs is not rhs:
+               raise AssertionError('%r is not %r' % (lhs, rhs))
+       # Check basic code execution
+       result = ['Top level assignment']
+       def f():
+           result.append('Lower level reference')
+       f()
+       assertEqual(result, ['Top level assignment', 'Lower level reference'])
+       # Check population of magic variables
+       assertEqual(__name__, '__main__')
+       print '__file__==%r' % __file__
+       print '__package__==%r' % __package__
+       # Check the sys module
+       import sys
+       assertIdentical(globals(), sys.modules[__name__].__dict__)
+       print 'sys.argv[0]==%r' % sys.argv[0]
+    1: """
+       
+    1: def _make_test_script(script_dir, script_basename, source=test_source):
+   12:     return make_script(script_dir, script_basename, source)
+       
+       def _make_test_zip_pkg(zip_dir, zip_basename, pkg_name, script_basename,
+    1:                        source=test_source, depth=1):
+    2:     return make_zip_pkg(zip_dir, zip_basename, pkg_name, script_basename,
+    2:                         source, depth)
+       
+       # There's no easy way to pass the script directory in to get
+       # -m to work (avoiding that is the whole point of making
+       # directories and zipfiles executable!)
+       # So we fake it for testing purposes with a custom launch script
+       launch_source = """\
+       import sys, os.path, runpy
+       sys.path.insert(0, %s)
+       runpy._run_module_as_main(%r)
+    1: """
+       
+    1: def _make_launch_script(script_dir, script_basename, module_name, path=None):
+    7:     if path is None:
+    5:         path = "os.path.dirname(__file__)"
+           else:
+    2:         path = repr(path)
+    7:     source = launch_source % (path, module_name)
+    7:     return make_script(script_dir, script_basename, source)
+       
+    2: class CmdLineTest(unittest.TestCase):
+    1:     def _check_script(self, script_name, expected_file,
+                                   expected_argv0, expected_package,
+                                   *cmd_line_switches):
+   11:         run_args = cmd_line_switches + (script_name,)
+   11:         exit_code, data = run_python(*run_args)
+   11:         if verbose:
+>>>>>>             print 'Output from test script %r:' % script_name
+>>>>>>             print data
+   11:         self.assertEqual(exit_code, 0)
+   11:         printed_file = '__file__==%r' % expected_file
+   11:         printed_argv0 = 'sys.argv[0]==%r' % expected_argv0
+   11:         printed_package = '__package__==%r' % expected_package
+   11:         if verbose:
+>>>>>>             print 'Expected output:'
+>>>>>>             print printed_file
+>>>>>>             print printed_package
+>>>>>>             print printed_argv0
+   11:         self.assertIn(printed_file, data)
+   11:         self.assertIn(printed_package, data)
+   11:         self.assertIn(printed_argv0, data)
+       
+    1:     def _check_import_error(self, script_name, expected_msg,
+                                   *cmd_line_switches):
+    4:         run_args = cmd_line_switches + (script_name,)
+    4:         exit_code, data = run_python(*run_args)
+    4:         if verbose:
+>>>>>>             print 'Output from test script %r:' % script_name
+>>>>>>             print data
+>>>>>>             print 'Expected output: %r' % expected_msg
+    4:         self.assertIn(expected_msg, data)
+       
+    1:     def test_basic_script(self):
+    1:         with temp_dir() as script_dir:
+    1:             script_name = _make_test_script(script_dir, 'script')
+    1:             self._check_script(script_name, script_name, script_name, None)
+       
+    1:     def test_script_compiled(self):
+    1:         with temp_dir() as script_dir:
+    1:             script_name = _make_test_script(script_dir, 'script')
+    1:             compiled_name = compile_script(script_name)
+    1:             os.remove(script_name)
+    1:             self._check_script(compiled_name, compiled_name, compiled_name, None)
+       
+    1:     def test_directory(self):
+    1:         with temp_dir() as script_dir:
+    1:             script_name = _make_test_script(script_dir, '__main__')
+    1:             self._check_script(script_dir, script_name, script_dir, '')
+       
+    1:     def test_directory_compiled(self):
+    1:         with temp_dir() as script_dir:
+    1:             script_name = _make_test_script(script_dir, '__main__')
+    1:             compiled_name = compile_script(script_name)
+    1:             os.remove(script_name)
+    1:             self._check_script(script_dir, compiled_name, script_dir, '')
+       
+    1:     def test_directory_error(self):
+    1:         with temp_dir() as script_dir:
+    1:             msg = "can't find '__main__' module in %r" % script_dir
+    1:             self._check_import_error(script_dir, msg)
+       
+    1:     def test_zipfile(self):
+    1:         with temp_dir() as script_dir:
+    1:             script_name = _make_test_script(script_dir, '__main__')
+    1:             zip_name, run_name = make_zip_script(script_dir, 'test_zip', script_name)
+    1:             self._check_script(zip_name, run_name, zip_name, '')
+       
+    1:     def test_zipfile_compiled(self):
+    1:         with temp_dir() as script_dir:
+    1:             script_name = _make_test_script(script_dir, '__main__')
+    1:             compiled_name = compile_script(script_name)
+    1:             zip_name, run_name = make_zip_script(script_dir, 'test_zip', compiled_name)
+    1:             self._check_script(zip_name, run_name, zip_name, '')
+       
+    1:     def test_zipfile_error(self):
+    1:         with temp_dir() as script_dir:
+    1:             script_name = _make_test_script(script_dir, 'not_main')
+    1:             zip_name, run_name = make_zip_script(script_dir, 'test_zip', script_name)
+    1:             msg = "can't find '__main__' module in %r" % zip_name
+    1:             self._check_import_error(zip_name, msg)
+       
+    1:     def test_module_in_package(self):
+    1:         with temp_dir() as script_dir:
+    1:             pkg_dir = os.path.join(script_dir, 'test_pkg')
+    1:             make_pkg(pkg_dir)
+    1:             script_name = _make_test_script(pkg_dir, 'script')
+    1:             launch_name = _make_launch_script(script_dir, 'launch', 'test_pkg.script')
+    1:             self._check_script(launch_name, script_name, script_name, 'test_pkg')
+       
+    1:     def test_module_in_package_in_zipfile(self):
+    1:         with temp_dir() as script_dir:
+    1:             zip_name, run_name = _make_test_zip_pkg(script_dir, 'test_zip', 'test_pkg', 'script')
+    1:             launch_name = _make_launch_script(script_dir, 'launch', 'test_pkg.script', zip_name)
+    1:             self._check_script(launch_name, run_name, run_name, 'test_pkg')
+       
+    1:     def test_module_in_subpackage_in_zipfile(self):
+    1:         with temp_dir() as script_dir:
+    1:             zip_name, run_name = _make_test_zip_pkg(script_dir, 'test_zip', 'test_pkg', 'script', depth=2)
+    1:             launch_name = _make_launch_script(script_dir, 'launch', 'test_pkg.test_pkg.script', zip_name)
+    1:             self._check_script(launch_name, run_name, run_name, 'test_pkg.test_pkg')
+       
+    1:     def test_package(self):
+    1:         with temp_dir() as script_dir:
+    1:             pkg_dir = os.path.join(script_dir, 'test_pkg')
+    1:             make_pkg(pkg_dir)
+    1:             script_name = _make_test_script(pkg_dir, '__main__')
+    1:             launch_name = _make_launch_script(script_dir, 'launch', 'test_pkg')
+    1:             self._check_script(launch_name, script_name,
+    1:                                script_name, 'test_pkg')
+       
+    1:     def test_package_compiled(self):
+    1:         with temp_dir() as script_dir:
+    1:             pkg_dir = os.path.join(script_dir, 'test_pkg')
+    1:             make_pkg(pkg_dir)
+    1:             script_name = _make_test_script(pkg_dir, '__main__')
+    1:             compiled_name = compile_script(script_name)
+    1:             os.remove(script_name)
+    1:             launch_name = _make_launch_script(script_dir, 'launch', 'test_pkg')
+    1:             self._check_script(launch_name, compiled_name,
+    1:                                compiled_name, 'test_pkg')
+       
+    1:     def test_package_error(self):
+    1:         with temp_dir() as script_dir:
+    1:             pkg_dir = os.path.join(script_dir, 'test_pkg')
+    1:             make_pkg(pkg_dir)
+    1:             msg = ("'test_pkg' is a package and cannot "
+                          "be directly executed")
+    1:             launch_name = _make_launch_script(script_dir, 'launch', 'test_pkg')
+    1:             self._check_import_error(launch_name, msg)
+       
+    1:     def test_package_recursion(self):
+    1:         with temp_dir() as script_dir:
+    1:             pkg_dir = os.path.join(script_dir, 'test_pkg')
+    1:             make_pkg(pkg_dir)
+    1:             main_dir = os.path.join(pkg_dir, '__main__')
+    1:             make_pkg(main_dir)
+    1:             msg = ("Cannot use package as __main__ module; "
+                          "'test_pkg' is a package and cannot "
+                          "be directly executed")
+    1:             launch_name = _make_launch_script(script_dir, 'launch', 'test_pkg')
+    1:             self._check_import_error(launch_name, msg)
+       
+    1:     @contextlib.contextmanager
+           def setup_test_pkg(self, *args):
+    6:         with temp_dir() as script_dir, \
+    6:                 test.test_support.change_cwd(script_dir):
+    6:             pkg_dir = os.path.join(script_dir, 'test_pkg')
+    6:             make_pkg(pkg_dir, *args)
+    6:             yield pkg_dir
+       
+    1:     def check_dash_m_failure(self, *args):
+    6:         rc, out, err = assert_python_failure('-m', *args)
+    6:         if verbose > 1:
+>>>>>>             print(out)
+    6:         self.assertEqual(rc, 1)
+    6:         return err
+       
+    1:     def test_dash_m_error_code_is_one(self):
+               # If a module is invoked with the -m command line flag
+               # and results in an error that the return code to the
+               # shell is '1'
+    1:         with self.setup_test_pkg() as pkg_dir:
+    1:             script_name = _make_test_script(pkg_dir, 'other', "if __name__ == '__main__': raise ValueError")
+    1:             err = self.check_dash_m_failure('test_pkg.other', *example_args)
+    1:             self.assertIn(b'ValueError', err)
+       
+    1:     def test_dash_m_errors(self):
+               # Exercise error reporting for various invalid package executions
+               tests = (
+    1:             ('__builtin__', br'No code object available'),
+    1:             ('__builtin__.x', br'No module named'),
+    1:             ('__builtin__.x.y', br'No module named'),
+    1:             ('os.path', br'Loader.*cannot handle'),
+    1:             ('importlib', br'No module named.*'
+                       br'is a package and cannot be directly executed'),
+    1:             ('importlib.nonexistant', br'No module named'),
+               )
+    7:         for name, regex in tests:
+    6:             rc, _, err = assert_python_failure('-m', name)
+    6:             self.assertEqual(rc, 1)
+    6:             self.assertRegexpMatches(err, regex)
+    6:             self.assertNotIn(b'Traceback', err)
+       
+    1:     def test_dash_m_init_traceback(self):
+               # These were wrapped in an ImportError and tracebacks were
+               # suppressed; see Issue 14285
+    1:         exceptions = (ImportError, AttributeError, TypeError, ValueError)
+    5:         for exception in exceptions:
+    4:             exception = exception.__name__
+    4:             init = "raise {0}('Exception in __init__.py')".format(exception)
+    4:             with self.setup_test_pkg(init) as pkg_dir:
+    4:                 err = self.check_dash_m_failure('test_pkg')
+    4:                 self.assertIn(exception.encode('ascii'), err)
+    4:                 self.assertIn(b'Exception in __init__.py', err)
+    4:                 self.assertIn(b'Traceback', err)
+       
+    1:     def test_dash_m_main_traceback(self):
+               # Ensure that an ImportError's traceback is reported
+    1:         with self.setup_test_pkg() as pkg_dir:
+    1:             main = "raise ImportError('Exception in __main__ module')"
+    1:             _make_test_script(pkg_dir, '__main__', main)
+    1:             err = self.check_dash_m_failure('test_pkg')
+    1:             self.assertIn(b'ImportError', err)
+    1:             self.assertIn(b'Exception in __main__ module', err)
+    1:             self.assertIn(b'Traceback', err)
+       
+       
+    1: def test_main():
+    1:     test.test_support.run_unittest(CmdLineTest)
+    1:     test.test_support.reap_children()
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

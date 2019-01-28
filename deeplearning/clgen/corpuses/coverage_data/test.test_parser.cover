@@ -1,0 +1,732 @@
+    1: import copy
+    1: import parser
+    1: import pickle
+    1: import unittest
+    1: import sys
+    1: import struct
+    1: from test import test_support as support
+    1: from test.script_helper import assert_python_failure
+       
+       #
+       #  First, we test that we can generate trees from valid source fragments,
+       #  and that these valid trees are indeed allowed by the tree-loading side
+       #  of the parser module.
+       #
+       
+    2: class RoundtripLegalSyntaxTestCase(unittest.TestCase):
+       
+    1:     def roundtrip(self, f, s):
+  160:         st1 = f(s)
+  160:         t = st1.totuple()
+  160:         try:
+  160:             st2 = parser.sequence2st(t)
+>>>>>>         except parser.ParserError, why:
+>>>>>>             self.fail("could not roundtrip %r: %s" % (s, why))
+       
+  160:         self.assertEqual(t, st2.totuple(),
+  160:                          "could not re-generate syntax tree")
+       
+    1:     def check_expr(self, s):
+   62:         self.roundtrip(parser.expr, s)
+       
+    1:     def test_flags_passed(self):
+               # The unicode literals flags has to be passed from the paser to AST
+               # generation.
+    1:         suite = parser.suite("from __future__ import unicode_literals; x = ''")
+    1:         code = suite.compile()
+    1:         scope = {}
+    1:         exec code in scope
+    1:         self.assertIsInstance(scope["x"], unicode)
+       
+    1:     def check_suite(self, s):
+   98:         self.roundtrip(parser.suite, s)
+       
+    1:     def test_yield_statement(self):
+    1:         self.check_suite("def f(): yield 1")
+    1:         self.check_suite("def f(): yield")
+    1:         self.check_suite("def f(): x += yield")
+    1:         self.check_suite("def f(): x = yield 1")
+    1:         self.check_suite("def f(): x = y = yield 1")
+    1:         self.check_suite("def f(): x = yield")
+    1:         self.check_suite("def f(): x = y = yield")
+    1:         self.check_suite("def f(): 1 + (yield)*2")
+    1:         self.check_suite("def f(): (yield 1)*2")
+    1:         self.check_suite("def f(): return; yield 1")
+    1:         self.check_suite("def f(): yield 1; return")
+    1:         self.check_suite("def f():\n"
+                                "    for x in range(30):\n"
+                                "        yield x\n")
+    1:         self.check_suite("def f():\n"
+                                "    if (yield):\n"
+                                "        yield x\n")
+       
+    1:     def test_expressions(self):
+    1:         self.check_expr("foo(1)")
+    1:         self.check_expr("{1:1}")
+    1:         self.check_expr("{1:1, 2:2, 3:3}")
+    1:         self.check_expr("{1:1, 2:2, 3:3,}")
+    1:         self.check_expr("{1}")
+    1:         self.check_expr("{1, 2, 3}")
+    1:         self.check_expr("{1, 2, 3,}")
+    1:         self.check_expr("[]")
+    1:         self.check_expr("[1]")
+    1:         self.check_expr("[1, 2, 3]")
+    1:         self.check_expr("[1, 2, 3,]")
+    1:         self.check_expr("()")
+    1:         self.check_expr("(1,)")
+    1:         self.check_expr("(1, 2, 3)")
+    1:         self.check_expr("(1, 2, 3,)")
+    1:         self.check_expr("[x**3 for x in range(20)]")
+    1:         self.check_expr("[x**3 for x in range(20) if x % 3]")
+    1:         self.check_expr("[x**3 for x in range(20) if x % 2 if x % 3]")
+    1:         self.check_expr("[x+y for x in range(30) for y in range(20) if x % 2 if y % 3]")
+               #self.check_expr("[x for x in lambda: True, lambda: False if x()]")
+    1:         self.check_expr("list(x**3 for x in range(20))")
+    1:         self.check_expr("list(x**3 for x in range(20) if x % 3)")
+    1:         self.check_expr("list(x**3 for x in range(20) if x % 2 if x % 3)")
+    1:         self.check_expr("list(x+y for x in range(30) for y in range(20) if x % 2 if y % 3)")
+    1:         self.check_expr("{x**3 for x in range(30)}")
+    1:         self.check_expr("{x**3 for x in range(30) if x % 3}")
+    1:         self.check_expr("{x**3 for x in range(30) if x % 2 if x % 3}")
+    1:         self.check_expr("{x+y for x in range(30) for y in range(20) if x % 2 if y % 3}")
+    1:         self.check_expr("{x**3: y**2 for x, y in zip(range(30), range(30))}")
+    1:         self.check_expr("{x**3: y**2 for x, y in zip(range(30), range(30)) if x % 3}")
+    1:         self.check_expr("{x**3: y**2 for x, y in zip(range(30), range(30)) if x % 3 if y % 3}")
+    1:         self.check_expr("{x:y for x in range(30) for y in range(20) if x % 2 if y % 3}")
+    1:         self.check_expr("foo(*args)")
+    1:         self.check_expr("foo(*args, **kw)")
+    1:         self.check_expr("foo(**kw)")
+    1:         self.check_expr("foo(key=value)")
+    1:         self.check_expr("foo(key=value, *args)")
+    1:         self.check_expr("foo(key=value, *args, **kw)")
+    1:         self.check_expr("foo(key=value, **kw)")
+    1:         self.check_expr("foo(a, b, c, *args)")
+    1:         self.check_expr("foo(a, b, c, *args, **kw)")
+    1:         self.check_expr("foo(a, b, c, **kw)")
+    1:         self.check_expr("foo(a, *args, keyword=23)")
+    1:         self.check_expr("foo + bar")
+    1:         self.check_expr("foo - bar")
+    1:         self.check_expr("foo * bar")
+    1:         self.check_expr("foo / bar")
+    1:         self.check_expr("foo // bar")
+    1:         self.check_expr("lambda: 0")
+    1:         self.check_expr("lambda x: 0")
+    1:         self.check_expr("lambda *y: 0")
+    1:         self.check_expr("lambda *y, **z: 0")
+    1:         self.check_expr("lambda **z: 0")
+    1:         self.check_expr("lambda x, y: 0")
+    1:         self.check_expr("lambda foo=bar: 0")
+    1:         self.check_expr("lambda foo=bar, spaz=nifty+spit: 0")
+    1:         self.check_expr("lambda foo=bar, **z: 0")
+    1:         self.check_expr("lambda foo=bar, blaz=blat+2, **z: 0")
+    1:         self.check_expr("lambda foo=bar, blaz=blat+2, *y, **z: 0")
+    1:         self.check_expr("lambda x, *y, **z: 0")
+    1:         self.check_expr("lambda x: 5 if x else 2")
+    1:         self.check_expr("(x for x in range(10))")
+    1:         self.check_expr("foo(x for x in range(10))")
+       
+    1:     def test_print(self):
+    1:         self.check_suite("print")
+    1:         self.check_suite("print 1")
+    1:         self.check_suite("print 1,")
+    1:         self.check_suite("print >>fp")
+    1:         self.check_suite("print >>fp, 1")
+    1:         self.check_suite("print >>fp, 1,")
+       
+    1:     def test_simple_expression(self):
+               # expr_stmt
+    1:         self.check_suite("a")
+       
+    1:     def test_simple_assignments(self):
+    1:         self.check_suite("a = b")
+    1:         self.check_suite("a = b = c = d = e")
+       
+    1:     def test_simple_augmented_assignments(self):
+    1:         self.check_suite("a += b")
+    1:         self.check_suite("a -= b")
+    1:         self.check_suite("a *= b")
+    1:         self.check_suite("a /= b")
+    1:         self.check_suite("a //= b")
+    1:         self.check_suite("a %= b")
+    1:         self.check_suite("a &= b")
+    1:         self.check_suite("a |= b")
+    1:         self.check_suite("a ^= b")
+    1:         self.check_suite("a <<= b")
+    1:         self.check_suite("a >>= b")
+    1:         self.check_suite("a **= b")
+       
+    1:     def test_function_defs(self):
+    1:         self.check_suite("def f(): pass")
+    1:         self.check_suite("def f(*args): pass")
+    1:         self.check_suite("def f(*args, **kw): pass")
+    1:         self.check_suite("def f(**kw): pass")
+    1:         self.check_suite("def f(foo=bar): pass")
+    1:         self.check_suite("def f(foo=bar, *args): pass")
+    1:         self.check_suite("def f(foo=bar, *args, **kw): pass")
+    1:         self.check_suite("def f(foo=bar, **kw): pass")
+       
+    1:         self.check_suite("def f(a, b): pass")
+    1:         self.check_suite("def f(a, b, *args): pass")
+    1:         self.check_suite("def f(a, b, *args, **kw): pass")
+    1:         self.check_suite("def f(a, b, **kw): pass")
+    1:         self.check_suite("def f(a, b, foo=bar): pass")
+    1:         self.check_suite("def f(a, b, foo=bar, *args): pass")
+    1:         self.check_suite("def f(a, b, foo=bar, *args, **kw): pass")
+    1:         self.check_suite("def f(a, b, foo=bar, **kw): pass")
+       
+    1:         self.check_suite("@staticmethod\n"
+                                "def f(): pass")
+    1:         self.check_suite("@staticmethod\n"
+                                "@funcattrs(x, y)\n"
+                                "def f(): pass")
+    1:         self.check_suite("@funcattrs()\n"
+                                "def f(): pass")
+       
+    1:     def test_class_defs(self):
+    1:         self.check_suite("class foo():pass")
+    1:         self.check_suite("@class_decorator\n"
+                                "class foo():pass")
+    1:         self.check_suite("@class_decorator(arg)\n"
+                                "class foo():pass")
+    1:         self.check_suite("@decorator1\n"
+                                "@decorator2\n"
+                                "class foo():pass")
+       
+       
+    1:     def test_import_from_statement(self):
+    1:         self.check_suite("from sys.path import *")
+    1:         self.check_suite("from sys.path import dirname")
+    1:         self.check_suite("from sys.path import (dirname)")
+    1:         self.check_suite("from sys.path import (dirname,)")
+    1:         self.check_suite("from sys.path import dirname as my_dirname")
+    1:         self.check_suite("from sys.path import (dirname as my_dirname)")
+    1:         self.check_suite("from sys.path import (dirname as my_dirname,)")
+    1:         self.check_suite("from sys.path import dirname, basename")
+    1:         self.check_suite("from sys.path import (dirname, basename)")
+    1:         self.check_suite("from sys.path import (dirname, basename,)")
+    1:         self.check_suite(
+    1:             "from sys.path import dirname as my_dirname, basename")
+    1:         self.check_suite(
+    1:             "from sys.path import (dirname as my_dirname, basename)")
+    1:         self.check_suite(
+    1:             "from sys.path import (dirname as my_dirname, basename,)")
+    1:         self.check_suite(
+    1:             "from sys.path import dirname, basename as my_basename")
+    1:         self.check_suite(
+    1:             "from sys.path import (dirname, basename as my_basename)")
+    1:         self.check_suite(
+    1:             "from sys.path import (dirname, basename as my_basename,)")
+    1:         self.check_suite("from .bogus import x")
+       
+    1:     def test_basic_import_statement(self):
+    1:         self.check_suite("import sys")
+    1:         self.check_suite("import sys as system")
+    1:         self.check_suite("import sys, math")
+    1:         self.check_suite("import sys as system, math")
+    1:         self.check_suite("import sys, math as my_math")
+       
+    1:     def test_relative_imports(self):
+    1:         self.check_suite("from . import name")
+    1:         self.check_suite("from .. import name")
+    1:         self.check_suite("from .pkg import name")
+    1:         self.check_suite("from ..pkg import name")
+       
+    1:     def test_pep263(self):
+    1:         self.check_suite("# -*- coding: iso-8859-1 -*-\n"
+                                "pass\n")
+       
+    1:     def test_assert(self):
+    1:         self.check_suite("assert alo < ahi and blo < bhi\n")
+       
+    1:     def test_with(self):
+    1:         self.check_suite("with open('x'): pass\n")
+    1:         self.check_suite("with open('x') as f: pass\n")
+    1:         self.check_suite("with open('x') as f, open('y') as g: pass\n")
+       
+    1:     def test_try_stmt(self):
+    1:         self.check_suite("try: pass\nexcept: pass\n")
+    1:         self.check_suite("try: pass\nfinally: pass\n")
+    1:         self.check_suite("try: pass\nexcept A: pass\nfinally: pass\n")
+    1:         self.check_suite("try: pass\nexcept A: pass\nexcept: pass\n"
+                                "finally: pass\n")
+    1:         self.check_suite("try: pass\nexcept: pass\nelse: pass\n")
+    1:         self.check_suite("try: pass\nexcept: pass\nelse: pass\n"
+                                "finally: pass\n")
+       
+    1:     def test_except_clause(self):
+    1:         self.check_suite("try: pass\nexcept: pass\n")
+    1:         self.check_suite("try: pass\nexcept A: pass\n")
+    1:         self.check_suite("try: pass\nexcept A, e: pass\n")
+    1:         self.check_suite("try: pass\nexcept A as e: pass\n")
+       
+    1:     def test_position(self):
+               # An absolutely minimal test of position information.  Better
+               # tests would be a big project.
+    1:         code = "def f(x):\n    return x + 1"
+    1:         st1 = parser.suite(code)
+    1:         st2 = st1.totuple(line_info=1, col_info=1)
+       
+    1:         def walk(tree):
+   48:             node_type = tree[0]
+   48:             next = tree[1]
+   48:             if isinstance(next, tuple):
+   79:                 for elt in tree[1:]:
+  181:                     for x in walk(elt):
+  134:                         yield x
+                   else:
+   16:                 yield tree
+       
+    1:         terminals = list(walk(st2))
+    1:         self.assertEqual([
+    1:             (1, 'def', 1, 0),
+    1:             (1, 'f', 1, 4),
+    1:             (7, '(', 1, 5),
+    1:             (1, 'x', 1, 6),
+    1:             (8, ')', 1, 7),
+    1:             (11, ':', 1, 8),
+    1:             (4, '', 1, 9),
+    1:             (5, '', 2, -1),
+    1:             (1, 'return', 2, 4),
+    1:             (1, 'x', 2, 11),
+    1:             (14, '+', 2, 13),
+    1:             (2, '1', 2, 15),
+    1:             (4, '', 2, 16),
+    1:             (6, '', 2, -1),
+    1:             (4, '', 2, -1),
+    1:             (0, '', 2, -1)],
+    1:                          terminals)
+       
+       
+       #
+       #  Second, we take *invalid* trees and make sure we get ParserError
+       #  rejections for them.
+       #
+       
+    2: class IllegalSyntaxTestCase(unittest.TestCase):
+       
+    1:     def check_bad_tree(self, tree, label):
+   14:         try:
+   14:             parser.sequence2st(tree)
+   14:         except parser.ParserError:
+   14:             pass
+               else:
+>>>>>>             self.fail("did not detect invalid tree for %r" % label)
+       
+    1:     def test_junk(self):
+               # not even remotely valid:
+    1:         self.check_bad_tree((1, 2, 3), "<junk>")
+       
+    1:     def test_illegal_terminal(self):
+               tree = \
+    1:             (257,
+    1:              (267,
+    1:               (268,
+    1:                (269,
+    1:                 (274,
+    1:                  (1,))),
+    1:                (4, ''))),
+    1:              (4, ''),
+    1:              (0, ''))
+    1:         self.check_bad_tree(tree, "too small items in terminal node")
+               tree = \
+    1:             (257,
+    1:              (267,
+    1:               (268,
+    1:                (269,
+    1:                 (274,
+    1:                  (1, u'pass'))),
+    1:                (4, ''))),
+    1:              (4, ''),
+    1:              (0, ''))
+    1:         self.check_bad_tree(tree, "non-string second item in terminal node")
+               tree = \
+    1:             (257,
+    1:              (267,
+    1:               (268,
+    1:                (269,
+    1:                 (274,
+    1:                  (1, 'pass', '0', 0))),
+    1:                (4, ''))),
+    1:              (4, ''),
+    1:              (0, ''))
+    1:         self.check_bad_tree(tree, "non-integer third item in terminal node")
+               tree = \
+    1:             (257,
+    1:              (267,
+    1:               (268,
+    1:                (269,
+    1:                 (274,
+    1:                  (1, 'pass', 0, 0))),
+    1:                (4, ''))),
+    1:              (4, ''),
+    1:              (0, ''))
+    1:         self.check_bad_tree(tree, "too many items in terminal node")
+       
+    1:     def test_illegal_yield_1(self):
+               # Illegal yield statement: def f(): return 1; yield 1
+               tree = \
+    1:         (257,
+    1:          (264,
+    1:           (285,
+    1:            (259,
+    1:             (1, 'def'),
+    1:             (1, 'f'),
+    1:             (260, (7, '('), (8, ')')),
+    1:             (11, ':'),
+    1:             (291,
+    1:              (4, ''),
+    1:              (5, ''),
+    1:              (264,
+    1:               (265,
+    1:                (266,
+    1:                 (272,
+    1:                  (275,
+    1:                   (1, 'return'),
+    1:                   (313,
+    1:                    (292,
+    1:                     (293,
+    1:                      (294,
+    1:                       (295,
+    1:                        (297,
+    1:                         (298,
+    1:                          (299,
+    1:                           (300,
+    1:                            (301,
+    1:                             (302, (303, (304, (305, (2, '1')))))))))))))))))),
+    1:                (264,
+    1:                 (265,
+    1:                  (266,
+    1:                   (272,
+    1:                    (276,
+    1:                     (1, 'yield'),
+    1:                     (313,
+    1:                      (292,
+    1:                       (293,
+    1:                        (294,
+    1:                         (295,
+    1:                          (297,
+    1:                           (298,
+    1:                            (299,
+    1:                             (300,
+    1:                              (301,
+    1:                               (302,
+    1:                                (303, (304, (305, (2, '1')))))))))))))))))),
+    1:                  (4, ''))),
+    1:                (6, ''))))),
+    1:            (4, ''),
+    1:            (0, ''))))
+    1:         self.check_bad_tree(tree, "def f():\n  return 1\n  yield 1")
+       
+    1:     def test_illegal_yield_2(self):
+               # Illegal return in generator: def f(): return 1; yield 1
+               tree = \
+    1:         (257,
+    1:          (264,
+    1:           (265,
+    1:            (266,
+    1:             (278,
+    1:              (1, 'from'),
+    1:              (281, (1, '__future__')),
+    1:              (1, 'import'),
+    1:              (279, (1, 'generators')))),
+    1:            (4, ''))),
+    1:          (264,
+    1:           (285,
+    1:            (259,
+    1:             (1, 'def'),
+    1:             (1, 'f'),
+    1:             (260, (7, '('), (8, ')')),
+    1:             (11, ':'),
+    1:             (291,
+    1:              (4, ''),
+    1:              (5, ''),
+    1:              (264,
+    1:               (265,
+    1:                (266,
+    1:                 (272,
+    1:                  (275,
+    1:                   (1, 'return'),
+    1:                   (313,
+    1:                    (292,
+    1:                     (293,
+    1:                      (294,
+    1:                       (295,
+    1:                        (297,
+    1:                         (298,
+    1:                          (299,
+    1:                           (300,
+    1:                            (301,
+    1:                             (302, (303, (304, (305, (2, '1')))))))))))))))))),
+    1:                (264,
+    1:                 (265,
+    1:                  (266,
+    1:                   (272,
+    1:                    (276,
+    1:                     (1, 'yield'),
+    1:                     (313,
+    1:                      (292,
+    1:                       (293,
+    1:                        (294,
+    1:                         (295,
+    1:                          (297,
+    1:                           (298,
+    1:                            (299,
+    1:                             (300,
+    1:                              (301,
+    1:                               (302,
+    1:                                (303, (304, (305, (2, '1')))))))))))))))))),
+    1:                  (4, ''))),
+    1:                (6, ''))))),
+    1:            (4, ''),
+    1:            (0, ''))))
+    1:         self.check_bad_tree(tree, "def f():\n  return 1\n  yield 1")
+       
+    1:     def test_print_chevron_comma(self):
+               # Illegal input: print >>fp,
+               tree = \
+    1:         (257,
+    1:          (264,
+    1:           (265,
+    1:            (266,
+    1:             (268,
+    1:              (1, 'print'),
+    1:              (35, '>>'),
+    1:              (290,
+    1:               (291,
+    1:                (292,
+    1:                 (293,
+    1:                  (295,
+    1:                   (296,
+    1:                    (297,
+    1:                     (298, (299, (300, (301, (302, (303, (1, 'fp')))))))))))))),
+    1:              (12, ','))),
+    1:            (4, ''))),
+    1:          (0, ''))
+    1:         self.check_bad_tree(tree, "print >>fp,")
+       
+    1:     def test_a_comma_comma_c(self):
+               # Illegal input: a,,c
+               tree = \
+    1:         (258,
+    1:          (311,
+    1:           (290,
+    1:            (291,
+    1:             (292,
+    1:              (293,
+    1:               (295,
+    1:                (296,
+    1:                 (297,
+    1:                  (298, (299, (300, (301, (302, (303, (1, 'a')))))))))))))),
+    1:           (12, ','),
+    1:           (12, ','),
+    1:           (290,
+    1:            (291,
+    1:             (292,
+    1:              (293,
+    1:               (295,
+    1:                (296,
+    1:                 (297,
+    1:                  (298, (299, (300, (301, (302, (303, (1, 'c'))))))))))))))),
+    1:          (4, ''),
+    1:          (0, ''))
+    1:         self.check_bad_tree(tree, "a,,c")
+       
+    1:     def test_illegal_operator(self):
+               # Illegal input: a $= b
+               tree = \
+    1:         (257,
+    1:          (264,
+    1:           (265,
+    1:            (266,
+    1:             (267,
+    1:              (312,
+    1:               (291,
+    1:                (292,
+    1:                 (293,
+    1:                  (294,
+    1:                   (296,
+    1:                    (297,
+    1:                     (298,
+    1:                      (299,
+    1:                       (300, (301, (302, (303, (304, (1, 'a'))))))))))))))),
+    1:              (268, (37, '$=')),
+    1:              (312,
+    1:               (291,
+    1:                (292,
+    1:                 (293,
+    1:                  (294,
+    1:                   (296,
+    1:                    (297,
+    1:                     (298,
+    1:                      (299,
+    1:                       (300, (301, (302, (303, (304, (1, 'b'))))))))))))))))),
+    1:            (4, ''))),
+    1:          (0, ''))
+    1:         self.check_bad_tree(tree, "a $= b")
+       
+    1:     def test_malformed_global(self):
+               #doesn't have global keyword in ast
+    1:         tree = (257,
+    1:                 (264,
+    1:                  (265,
+    1:                   (266,
+    1:                    (282, (1, 'foo'))), (4, ''))),
+    1:                 (4, ''),
+    1:                 (0, ''))
+    1:         self.check_bad_tree(tree, "malformed global ast")
+       
+    1:     def test_missing_import_source(self):
+               # from import a
+               tree = \
+    1:             (257,
+    1:              (267,
+    1:               (268,
+    1:                (269,
+    1:                 (281,
+    1:                  (283, (1, 'from'), (1, 'import'),
+    1:                   (286, (284, (1, 'fred')))))),
+    1:                (4, ''))),
+    1:              (4, ''), (0, ''))
+    1:         self.check_bad_tree(tree, "from import a")
+       
+    1:     def test_illegal_encoding(self):
+               # Illegal encoding declaration
+               tree = \
+    1:             (339,
+    1:              (257, (0, '')))
+    1:         self.check_bad_tree(tree, "missed encoding")
+               tree = \
+    1:             (339,
+    1:              (257, (0, '')),
+    1:               u'iso-8859-1')
+    1:         self.check_bad_tree(tree, "non-string encoding")
+       
+       
+    2: class CompileTestCase(unittest.TestCase):
+       
+           # These tests are very minimal. :-(
+       
+    1:     def test_compile_expr(self):
+    1:         st = parser.expr('2 + 3')
+    1:         code = parser.compilest(st)
+    1:         self.assertEqual(eval(code), 5)
+       
+    1:     def test_compile_suite(self):
+    1:         st = parser.suite('x = 2; y = x + 3')
+    1:         code = parser.compilest(st)
+    1:         globs = {}
+    1:         exec code in globs
+    1:         self.assertEqual(globs['y'], 5)
+       
+    1:     def test_compile_error(self):
+    1:         st = parser.suite('1 = 3 + 4')
+    1:         self.assertRaises(SyntaxError, parser.compilest, st)
+       
+    1:     def test_compile_badunicode(self):
+    1:         st = parser.suite('a = u"\U12345678"')
+    1:         self.assertRaises(SyntaxError, parser.compilest, st)
+    1:         st = parser.suite('a = u"\u1"')
+    1:         self.assertRaises(SyntaxError, parser.compilest, st)
+       
+    1:     def test_issue_9011(self):
+               # Issue 9011: compilation of an unary minus expression changed
+               # the meaning of the ST, so that a second compilation produced
+               # incorrect results.
+    1:         st = parser.expr('-3')
+    1:         code1 = parser.compilest(st)
+    1:         self.assertEqual(eval(code1), -3)
+    1:         code2 = parser.compilest(st)
+    1:         self.assertEqual(eval(code2), -3)
+       
+       
+    2: class ParserStackLimitTestCase(unittest.TestCase):
+           """try to push the parser to/over its limits.
+           see http://bugs.python.org/issue1881 for a discussion
+    1:     """
+    1:     def _nested_expression(self, level):
+    2:         return "["*level+"]"*level
+       
+    1:     def test_deeply_nested_list(self):
+    1:         e = self._nested_expression(99)
+    1:         st = parser.expr(e)
+    1:         st.compile()
+       
+    1:     def test_trigger_memory_error(self):
+    1:         e = self._nested_expression(100)
+    1:         rc, out, err = assert_python_failure('-c', e)
+               # parsing the expression will result in an error message
+               # followed by a MemoryError (see #11963)
+    1:         self.assertIn(b's_push: parser stack overflow', err)
+    1:         self.assertIn(b'MemoryError', err)
+       
+    2: class STObjectTestCase(unittest.TestCase):
+    1:     """Test operations on ST objects themselves"""
+       
+    1:     def test_copy_pickle(self):
+               sts = [
+    1:             parser.expr('2 + 3'),
+    1:             parser.suite('x = 2; y = x + 3'),
+    1:             parser.expr('list(x**3 for x in range(20))')
+               ]
+    4:         for st in sts:
+    3:             st_copy = copy.copy(st)
+    3:             self.assertEqual(st_copy.totuple(), st.totuple())
+    3:             st_copy = copy.deepcopy(st)
+    3:             self.assertEqual(st_copy.totuple(), st.totuple())
+   12:             for proto in range(pickle.HIGHEST_PROTOCOL+1):
+    9:                 st_copy = pickle.loads(pickle.dumps(st, proto))
+    9:                 self.assertEqual(st_copy.totuple(), st.totuple())
+       
+    1:     check_sizeof = support.check_sizeof
+       
+    1:     @support.cpython_only
+           def test_sizeof(self):
+    1:         def XXXROUNDUP(n):
+14103:             if n <= 1:
+14092:                 return n
+   11:             if n <= 128:
+   10:                 return (n + 3) & ~3
+    1:             return 1 << (n - 1).bit_length()
+       
+    1:         basesize = support.calcobjsize('Pii')
+    1:         nodesize = struct.calcsize('hP3iP0h')
+    1:         def sizeofchildren(node):
+16129:             if node is None:
+>>>>>>                 return 0
+16129:             res = 0
+16129:             hasstr = len(node) > 1 and isinstance(node[-1], str)
+16129:             if hasstr:
+ 2027:                 res += len(node[-1]) + 1
+16129:             children = node[1:-1] if hasstr else node[1:]
+16129:             if children:
+14103:                 res += XXXROUNDUP(len(children)) * nodesize
+30226:                 for child in children:
+16123:                     res += sizeofchildren(child)
+16129:             return res
+       
+    1:         def check_st_sizeof(st):
+    6:             self.check_sizeof(st, basesize + nodesize +
+    6:                                   sizeofchildren(st.totuple()))
+       
+    1:         check_st_sizeof(parser.expr('2 + 3'))
+    1:         check_st_sizeof(parser.expr('2 + 3 + 4'))
+    1:         check_st_sizeof(parser.suite('x = 2 + 3'))
+    1:         check_st_sizeof(parser.suite(''))
+    1:         check_st_sizeof(parser.suite('# -*- coding: utf-8 -*-'))
+    1:         check_st_sizeof(parser.expr('[' + '2,' * 1000 + ']'))
+       
+       
+           # XXX tests for pickling and unpickling of ST objects should go here
+       
+    1: def test_main():
+    1:     support.run_unittest(
+    1:         RoundtripLegalSyntaxTestCase,
+    1:         IllegalSyntaxTestCase,
+    1:         CompileTestCase,
+    1:         ParserStackLimitTestCase,
+    1:         STObjectTestCase,
+           )
+       
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

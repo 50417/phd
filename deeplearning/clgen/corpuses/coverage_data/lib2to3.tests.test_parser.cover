@@ -1,0 +1,343 @@
+       """Test suite for 2to3's parser and grammar files.
+       
+       This is the place to add tests for changes to 2to3's grammar, such as those
+       merging the grammars for Python 2 and 3. In addition to specific tests for
+       parts of the grammar we've changed, we also make sure we can parse the
+       test_grammar.py files from both Python 2 and Python 3.
+    1: """
+       
+       # Testing imports
+    1: from . import support
+    1: from .support import driver, test_dir
+       
+       # Python imports
+    1: import os
+    1: import shutil
+    1: import subprocess
+    1: import sys
+    1: import tempfile
+    1: import unittest
+       
+       # Local imports
+    1: from lib2to3.pgen2 import driver as pgen2_driver
+    1: from lib2to3.pgen2 import tokenize
+    1: from ..pgen2.parse import ParseError
+    1: from lib2to3.pygram import python_symbols as syms
+       
+       
+    2: class TestDriver(support.TestCase):
+       
+    1:     def test_formfeed(self):
+    1:         s = """print 1\n\x0Cprint 2\n"""
+    1:         t = driver.parse_string(s)
+    1:         self.assertEqual(t.children[0].children[0].type, syms.print_stmt)
+    1:         self.assertEqual(t.children[1].children[0].type, syms.print_stmt)
+       
+       
+    2: class TestPgen2Caching(support.TestCase):
+    1:     def test_load_grammar_from_txt_file(self):
+    1:         pgen2_driver.load_grammar(support.grammar_path, save=False, force=True)
+       
+    1:     def test_load_grammar_from_pickle(self):
+               # Make a copy of the grammar file in a temp directory we are
+               # guaranteed to be able to write to.
+    1:         tmpdir = tempfile.mkdtemp()
+    1:         try:
+    1:             grammar_copy = os.path.join(
+    1:                     tmpdir, os.path.basename(support.grammar_path))
+    1:             shutil.copy(support.grammar_path, grammar_copy)
+    1:             pickle_name = pgen2_driver._generate_pickle_name(grammar_copy)
+       
+    1:             pgen2_driver.load_grammar(grammar_copy, save=True, force=True)
+    1:             self.assertTrue(os.path.exists(pickle_name))
+       
+    1:             os.unlink(grammar_copy)  # Only the pickle remains...
+    1:             pgen2_driver.load_grammar(grammar_copy, save=False, force=False)
+               finally:
+    1:             shutil.rmtree(tmpdir)
+       
+    1:     @unittest.skipIf(sys.executable is None, 'sys.executable required')
+           def test_load_grammar_from_subprocess(self):
+    1:         tmpdir = tempfile.mkdtemp()
+    1:         tmpsubdir = os.path.join(tmpdir, 'subdir')
+    1:         try:
+    1:             os.mkdir(tmpsubdir)
+    1:             grammar_base = os.path.basename(support.grammar_path)
+    1:             grammar_copy = os.path.join(tmpdir, grammar_base)
+    1:             grammar_sub_copy = os.path.join(tmpsubdir, grammar_base)
+    1:             shutil.copy(support.grammar_path, grammar_copy)
+    1:             shutil.copy(support.grammar_path, grammar_sub_copy)
+    1:             pickle_name = pgen2_driver._generate_pickle_name(grammar_copy)
+    1:             pickle_sub_name = pgen2_driver._generate_pickle_name(
+    1:                      grammar_sub_copy)
+    1:             self.assertNotEqual(pickle_name, pickle_sub_name)
+       
+                   # Generate a pickle file from this process.
+    1:             pgen2_driver.load_grammar(grammar_copy, save=True, force=True)
+    1:             self.assertTrue(os.path.exists(pickle_name))
+       
+                   # Generate a new pickle file in a subprocess with a most likely
+                   # different hash randomization seed.
+    1:             sub_env = dict(os.environ)
+    1:             sub_env['PYTHONHASHSEED'] = 'random'
+    1:             subprocess.check_call(
+    1:                     [sys.executable, '-c', """
+       from lib2to3.pgen2 import driver as pgen2_driver
+       pgen2_driver.load_grammar(%r, save=True, force=True)
+    1:                     """ % (grammar_sub_copy,)],
+    1:                     env=sub_env)
+    1:             self.assertTrue(os.path.exists(pickle_sub_name))
+       
+    1:             with open(pickle_name, 'rb') as pickle_f_1, \
+    1:                     open(pickle_sub_name, 'rb') as pickle_f_2:
+    1:                 self.assertEqual(
+    1:                     pickle_f_1.read(), pickle_f_2.read(),
+    1:                     msg='Grammar caches generated using different hash seeds'
+                           ' were not identical.')
+               finally:
+    1:             shutil.rmtree(tmpdir)
+       
+       
+       
+    2: class GrammarTest(support.TestCase):
+    1:     def validate(self, code):
+   47:         support.parse_string(code)
+       
+    1:     def invalid_syntax(self, code):
+    8:         try:
+    8:             self.validate(code)
+    8:         except ParseError:
+    8:             pass
+               else:
+>>>>>>             raise AssertionError("Syntax shouldn't have been valid")
+       
+       
+    2: class TestMatrixMultiplication(GrammarTest):
+    1:     def test_matrix_multiplication_operator(self):
+    1:         self.validate("a @ b")
+    1:         self.validate("a @= b")
+       
+       
+    2: class TestYieldFrom(GrammarTest):
+    1:     def test_matrix_multiplication_operator(self):
+    1:         self.validate("yield from x")
+    1:         self.validate("(yield from x) + y")
+    1:         self.invalid_syntax("yield from")
+       
+       
+    2: class TestRaiseChanges(GrammarTest):
+    1:     def test_2x_style_1(self):
+    1:         self.validate("raise")
+       
+    1:     def test_2x_style_2(self):
+    1:         self.validate("raise E, V")
+       
+    1:     def test_2x_style_3(self):
+    1:         self.validate("raise E, V, T")
+       
+    1:     def test_2x_style_invalid_1(self):
+    1:         self.invalid_syntax("raise E, V, T, Z")
+       
+    1:     def test_3x_style(self):
+    1:         self.validate("raise E1 from E2")
+       
+    1:     def test_3x_style_invalid_1(self):
+    1:         self.invalid_syntax("raise E, V from E1")
+       
+    1:     def test_3x_style_invalid_2(self):
+    1:         self.invalid_syntax("raise E from E1, E2")
+       
+    1:     def test_3x_style_invalid_3(self):
+    1:         self.invalid_syntax("raise from E1, E2")
+       
+    1:     def test_3x_style_invalid_4(self):
+    1:         self.invalid_syntax("raise E from")
+       
+       
+       # Modelled after Lib/test/test_grammar.py:TokenTests.test_funcdef issue2292
+       # and Lib/test/text_parser.py test_list_displays, test_set_displays,
+       # test_dict_displays, test_argument_unpacking, ... changes.
+    2: class TestUnpackingGeneralizations(GrammarTest):
+    1:     def test_mid_positional_star(self):
+    1:         self.validate("""func(1, *(2, 3), 4)""")
+       
+    1:     def test_double_star_dict_literal(self):
+    1:         self.validate("""func(**{'eggs':'scrambled', 'spam':'fried'})""")
+       
+    1:     def test_double_star_dict_literal_after_keywords(self):
+    1:         self.validate("""func(spam='fried', **{'eggs':'scrambled'})""")
+       
+    1:     def test_list_display(self):
+    1:         self.validate("""[*{2}, 3, *[4]]""")
+       
+    1:     def test_set_display(self):
+    1:         self.validate("""{*{2}, 3, *[4]}""")
+       
+    1:     def test_dict_display_1(self):
+    1:         self.validate("""{**{}}""")
+       
+    1:     def test_dict_display_2(self):
+    1:         self.validate("""{**{}, 3:4, **{5:6, 7:8}}""")
+       
+    1:     def test_argument_unpacking_1(self):
+    1:         self.validate("""f(a, *b, *c, d)""")
+       
+    1:     def test_argument_unpacking_2(self):
+    1:         self.validate("""f(**a, **b)""")
+       
+    1:     def test_argument_unpacking_3(self):
+    1:         self.validate("""f(2, *a, *b, **b, **c, **d)""")
+       
+       
+       # Adaptated from Python 3's Lib/test/test_grammar.py:GrammarTests.testFuncdef
+    2: class TestFunctionAnnotations(GrammarTest):
+    1:     def test_1(self):
+    1:         self.validate("""def f(x) -> list: pass""")
+       
+    1:     def test_2(self):
+    1:         self.validate("""def f(x:int): pass""")
+       
+    1:     def test_3(self):
+    1:         self.validate("""def f(*x:str): pass""")
+       
+    1:     def test_4(self):
+    1:         self.validate("""def f(**x:float): pass""")
+       
+    1:     def test_5(self):
+    1:         self.validate("""def f(x, y:1+2): pass""")
+       
+    1:     def test_6(self):
+    1:         self.validate("""def f(a, (b:1, c:2, d)): pass""")
+       
+    1:     def test_7(self):
+    1:         self.validate("""def f(a, (b:1, c:2, d), e:3=4, f=5, *g:6): pass""")
+       
+    1:     def test_8(self):
+               s = """def f(a, (b:1, c:2, d), e:3=4, f=5,
+    1:                         *g:6, h:7, i=8, j:9=10, **k:11) -> 12: pass"""
+    1:         self.validate(s)
+       
+       
+    2: class TestExcept(GrammarTest):
+    1:     def test_new(self):
+               s = """
+                   try:
+                       x
+                   except E as N:
+    1:                 y"""
+    1:         self.validate(s)
+       
+    1:     def test_old(self):
+               s = """
+                   try:
+                       x
+                   except E, N:
+    1:                 y"""
+    1:         self.validate(s)
+       
+       
+       # Adapted from Python 3's Lib/test/test_grammar.py:GrammarTests.testAtoms
+    2: class TestSetLiteral(GrammarTest):
+    1:     def test_1(self):
+    1:         self.validate("""x = {'one'}""")
+       
+    1:     def test_2(self):
+    1:         self.validate("""x = {'one', 1,}""")
+       
+    1:     def test_3(self):
+    1:         self.validate("""x = {'one', 'two', 'three'}""")
+       
+    1:     def test_4(self):
+    1:         self.validate("""x = {2, 3, 4,}""")
+       
+       
+    2: class TestNumericLiterals(GrammarTest):
+    1:     def test_new_octal_notation(self):
+    1:         self.validate("""0o7777777777777""")
+    1:         self.invalid_syntax("""0o7324528887""")
+       
+    1:     def test_new_binary_notation(self):
+    1:         self.validate("""0b101010""")
+    1:         self.invalid_syntax("""0b0101021""")
+       
+       
+    2: class TestClassDef(GrammarTest):
+    1:     def test_new_syntax(self):
+    1:         self.validate("class B(t=7): pass")
+    1:         self.validate("class B(t, *args): pass")
+    1:         self.validate("class B(t, **kwargs): pass")
+    1:         self.validate("class B(t, *args, **kwargs): pass")
+    1:         self.validate("class B(t, y=9, *args, **kwargs): pass")
+       
+       
+    2: class TestParserIdempotency(support.TestCase):
+       
+    1:     """A cut-down version of pytree_idempotency.py."""
+       
+    1:     def test_all_project_files(self):
+    1:         if sys.platform.startswith("win"):
+                   # XXX something with newlines goes wrong on Windows.
+>>>>>>             return
+   99:         for filepath in support.all_project_files():
+   98:             with open(filepath, "rb") as fp:
+   98:                 encoding = tokenize.detect_encoding(fp.readline)[0]
+   98:             self.assertIsNotNone(encoding,
+   98:                                  "can't detect encoding for %s" % filepath)
+   98:             with open(filepath, "r") as fp:
+   98:                 source = fp.read()
+   98:                 source = source.decode(encoding)
+   98:             tree = driver.parse_string(source)
+   98:             new = unicode(tree)
+   98:             if diff(filepath, new, encoding):
+>>>>>>                 self.fail("Idempotency failed: %s" % filepath)
+       
+    1:     def test_extended_unpacking(self):
+    1:         driver.parse_string("a, *b, c = x\n")
+    1:         driver.parse_string("[*a, b] = x\n")
+    1:         driver.parse_string("(z, *y, w) = m\n")
+    1:         driver.parse_string("for *z, m in d: pass\n")
+       
+    2: class TestLiterals(GrammarTest):
+       
+    1:     def validate(self, s):
+    3:         driver.parse_string(support.dedent(s) + "\n\n")
+       
+    1:     def test_multiline_bytes_literals(self):
+               s = """
+                   md5test(b"\xaa" * 80,
+                           (b"Test Using Larger Than Block-Size Key "
+                            b"and Larger Than One Block-Size Data"),
+                           "6f630fad67cda0ee1fb1f562db3aa53e")
+    1:             """
+    1:         self.validate(s)
+       
+    1:     def test_multiline_bytes_tripquote_literals(self):
+               s = '''
+                   b"""
+                   <?xml version="1.0" encoding="UTF-8"?>
+                   <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN">
+                   """
+    1:             '''
+    1:         self.validate(s)
+       
+    1:     def test_multiline_str_literals(self):
+               s = """
+                   md5test("\xaa" * 80,
+                           ("Test Using Larger Than Block-Size Key "
+                            "and Larger Than One Block-Size Data"),
+                           "6f630fad67cda0ee1fb1f562db3aa53e")
+    1:             """
+    1:         self.validate(s)
+       
+       
+    1: def diff(fn, result, encoding):
+   98:     f = open("@", "w")
+   98:     try:
+   98:         f.write(result.encode(encoding))
+           finally:
+   98:         f.close()
+   98:     try:
+   98:         fn = fn.replace('"', '\\"')
+   98:         return os.system('diff -u "%s" @' % fn)
+           finally:
+   98:         os.remove("@")

@@ -1,0 +1,253 @@
+       """A dumb and slow but simple dbm clone.
+       
+       For database spam, spam.dir contains the index (a text file),
+       spam.bak *may* contain a backup of the index (also a text file),
+       while spam.dat contains the data (a binary file).
+       
+       XXX TO DO:
+       
+       - seems to contain a bug when updating...
+       
+       - reclaim free space (currently, space once occupied by deleted or expanded
+       items is never reused)
+       
+       - support concurrent access (currently, if two processes take turns making
+       updates, they can mess up the index)
+       
+       - support efficient access to large databases (currently, the whole index
+       is read when the database is opened, and some updates rewrite the whole index)
+       
+       - support opening for read-only (flag = 'm')
+       
+    1: """
+       
+    1: import ast as _ast
+    1: import os as _os
+    1: import __builtin__
+    1: import UserDict
+       
+    1: _open = __builtin__.open
+       
+    1: _BLOCKSIZE = 512
+       
+    1: error = IOError                         # For anydbm
+       
+    2: class _Database(UserDict.DictMixin):
+       
+           # The on-disk directory and data files can remain in mutually
+           # inconsistent states for an arbitrarily long time (see comments
+           # at the end of __setitem__).  This is only repaired when _commit()
+           # gets called.  One place _commit() gets called is from __del__(),
+           # and if that occurs at program shutdown time, module globals may
+           # already have gotten rebound to None.  Since it's crucial that
+           # _commit() finish successfully, we can't ignore shutdown races
+           # here, and _commit() must not reference any globals.
+    1:     _os = _os       # for _commit()
+    1:     _open = _open   # for _commit()
+       
+    1:     def __init__(self, filebasename, mode, flag='c'):
+   28:         self._mode = mode
+   28:         self._readonly = (flag == 'r')
+       
+               # The directory file is a text file.  Each line looks like
+               #    "%r, (%d, %d)\n" % (key, pos, siz)
+               # where key is the string key, pos is the offset into the dat
+               # file of the associated value's first byte, and siz is the number
+               # of bytes in the associated value.
+   28:         self._dirfile = filebasename + _os.extsep + 'dir'
+       
+               # The data file is a binary file pointed into by the directory
+               # file, and holds the values associated with keys.  Each value
+               # begins at a _BLOCKSIZE-aligned byte offset, and is a raw
+               # binary 8-bit string value.
+   28:         self._datfile = filebasename + _os.extsep + 'dat'
+   28:         self._bakfile = filebasename + _os.extsep + 'bak'
+       
+               # The index is an in-memory dict, mirroring the directory file.
+   28:         self._index = None  # maps keys to (pos, siz) pairs
+       
+               # Mod by Jack: create data file if needed
+   28:         try:
+   28:             f = _open(self._datfile, 'r')
+   12:         except IOError:
+   12:             with _open(self._datfile, 'w') as f:
+   12:                 self._chmod(self._datfile)
+               else:
+   16:             f.close()
+   28:         self._update()
+       
+           # Read directory file into the in-memory index dict.
+    1:     def _update(self):
+   28:         self._index = {}
+   28:         try:
+   28:             f = _open(self._dirfile)
+   11:         except IOError:
+   11:             self._modified = not self._readonly
+               else:
+   17:             self._modified = False
+   17:             with f:
+  147:                 for line in f:
+  131:                     line = line.rstrip()
+  131:                     key, pos_and_siz_pair = _ast.literal_eval(line)
+  130:                     self._index[key] = pos_and_siz_pair
+       
+           # Write the index dict to the directory file.  The original directory
+           # file (if any) is renamed with a .bak extension first.  If a .bak
+           # file currently exists, it's deleted.
+    1:     def _commit(self):
+               # CAUTION:  It's vital that _commit() succeed, and _commit() can
+               # be called from __del__().  Therefore we must never reference a
+               # global in this routine.
+  123:         if self._index is None or not self._modified:
+   25:             return  # nothing to do
+       
+   98:         try:
+   98:             self._os.unlink(self._bakfile)
+   12:         except self._os.error:
+   12:             pass
+       
+   98:         try:
+   98:             self._os.rename(self._dirfile, self._bakfile)
+    2:         except self._os.error:
+    2:             pass
+       
+   98:         with self._open(self._dirfile, 'w') as f:
+   98:             self._chmod(self._dirfile)
+  969:             for key, pos_and_siz_pair in self._index.iteritems():
+  871:                 f.write("%r, %r\n" % (key, pos_and_siz_pair))
+       
+    1:     sync = _commit
+       
+    1:     def __getitem__(self, key):
+  474:         pos, siz = self._index[key]     # may raise KeyError
+  474:         with _open(self._datfile, 'rb') as f:
+  474:             f.seek(pos)
+  474:             dat = f.read(siz)
+  474:         return dat
+       
+           # Append val to the data file, starting at a _BLOCKSIZE-aligned
+           # offset.  The data file is first padded with NUL bytes (if needed)
+           # to get to an aligned offset.  Return pair
+           #     (starting offset of val, len(val))
+    1:     def _addval(self, val):
+  278:         with _open(self._datfile, 'rb+') as f:
+  278:             f.seek(0, 2)
+  278:             pos = int(f.tell())
+  278:             npos = ((pos + _BLOCKSIZE - 1) // _BLOCKSIZE) * _BLOCKSIZE
+  278:             f.write('\0'*(npos-pos))
+  278:             pos = npos
+  278:             f.write(val)
+  278:         return (pos, len(val))
+       
+           # Write val to the data file, starting at offset pos.  The caller
+           # is responsible for ensuring that there's enough room starting at
+           # pos to hold val, without overwriting some other value.  Return
+           # pair (pos, len(val)).
+    1:     def _setval(self, pos, val):
+  159:         with _open(self._datfile, 'rb+') as f:
+  159:             f.seek(pos)
+  159:             f.write(val)
+  159:         return (pos, len(val))
+       
+           # key is a new key whose associated value starts in the data file
+           # at offset pos and with length siz.  Add an index record to
+           # the in-memory index dict, and append one to the directory file.
+    1:     def _addkey(self, key, pos_and_siz_pair):
+  130:         self._index[key] = pos_and_siz_pair
+  130:         with _open(self._dirfile, 'a') as f:
+  130:             self._chmod(self._dirfile)
+  130:             f.write("%r, %r\n" % (key, pos_and_siz_pair))
+       
+    1:     def __setitem__(self, key, val):
+  437:         if not type(key) == type('') == type(val):
+>>>>>>             raise TypeError, "keys and values must be strings"
+  437:         self._modified = True
+  437:         if key not in self._index:
+  130:             self._addkey(key, self._addval(val))
+               else:
+                   # See whether the new value is small enough to fit in the
+                   # (padded) space currently occupied by the old value.
+  307:             pos, siz = self._index[key]
+  307:             oldblocks = (siz + _BLOCKSIZE - 1) // _BLOCKSIZE
+  307:             newblocks = (len(val) + _BLOCKSIZE - 1) // _BLOCKSIZE
+  307:             if newblocks <= oldblocks:
+  159:                 self._index[key] = self._setval(pos, val)
+                   else:
+                       # The new value doesn't fit in the (padded) space used
+                       # by the old value.  The blocks used by the old value are
+                       # forever lost.
+  148:                 self._index[key] = self._addval(val)
+       
+                   # Note that _index may be out of synch with the directory
+                   # file now:  _setval() and _addval() don't update the directory
+                   # file.  This also means that the on-disk directory and data
+                   # files are in a mutually inconsistent state, and they'll
+                   # remain that way until _commit() is called.  Note that this
+                   # is a disaster (for the database) if the program crashes
+                   # (so that _commit() never gets called).
+       
+    1:     def __delitem__(self, key):
+   81:         self._modified = True
+               # The blocks used by the associated value are lost.
+   81:         del self._index[key]
+               # XXX It's unclear why we do a _commit() here (the code always
+               # XXX has, so I'm not changing it).  _setitem__ doesn't try to
+               # XXX keep the directory file in synch.  Why should we?  Or
+               # XXX why shouldn't __setitem__?
+   81:         self._commit()
+       
+    1:     def keys(self):
+    7:         return self._index.keys()
+       
+    1:     def has_key(self, key):
+>>>>>>         return key in self._index
+       
+    1:     def __contains__(self, key):
+>>>>>>         return key in self._index
+       
+    1:     def iterkeys(self):
+    5:         return self._index.iterkeys()
+    1:     __iter__ = iterkeys
+       
+    1:     def __len__(self):
+>>>>>>         return len(self._index)
+       
+    1:     def close(self):
+   42:         try:
+   42:             self._commit()
+               finally:
+   42:             self._index = self._datfile = self._dirfile = self._bakfile = None
+       
+    1:     __del__ = close
+       
+    1:     def _chmod (self, file):
+  240:         if hasattr(self._os, 'chmod'):
+  240:             self._os.chmod(file, self._mode)
+       
+       
+    1: def open(file, flag=None, mode=0666):
+           """Open the database file, filename, and return corresponding object.
+       
+           The flag argument, used to control how the database is opened in the
+           other DBM implementations, is ignored in the dumbdbm module; the
+           database is always opened for update, and will be created if it does
+           not exist.
+       
+           The optional mode argument is the UNIX mode of the file, used only when
+           the database has to be created.  It defaults to octal code 0666 (and
+           will be modified by the prevailing umask).
+       
+           """
+           # flag argument is currently ignored
+       
+           # Modify mode depending on the umask
+   28:     try:
+   28:         um = _os.umask(0)
+   28:         _os.umask(um)
+>>>>>>     except AttributeError:
+>>>>>>         pass
+           else:
+               # Turn off any bits that are set in the umask
+   28:         mode = mode & (~um)
+       
+   28:     return _Database(file, mode, flag)

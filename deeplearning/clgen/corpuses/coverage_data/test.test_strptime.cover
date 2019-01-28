@@ -1,0 +1,625 @@
+    1: """PyUnit testing against strptime"""
+       
+    1: import unittest
+    1: import time
+    1: import locale
+    1: import re
+    1: import os
+    1: import sys
+    1: from test import test_support as support
+    1: from datetime import date as datetime_date
+       
+    1: import _strptime
+       
+    2: class getlang_Tests(unittest.TestCase):
+    1:     """Test _getlang"""
+    1:     def test_basic(self):
+    1:         self.assertEqual(_strptime._getlang(), locale.getlocale(locale.LC_TIME))
+       
+    2: class LocaleTime_Tests(unittest.TestCase):
+           """Tests for _strptime.LocaleTime.
+       
+           All values are lower-cased when stored in LocaleTime, so make sure to
+           compare values after running ``lower`` on them.
+       
+    1:     """
+       
+    1:     def setUp(self):
+               """Create time tuple based on current time."""
+    6:         self.time_tuple = time.localtime()
+    6:         self.LT_ins = _strptime.LocaleTime()
+       
+    1:     def compare_against_time(self, testing, directive, tuple_position,
+                                    error_msg):
+               """Helper method that tests testing against directive based on the
+               tuple_position of time_tuple.  Uses error_msg as error message.
+       
+               """
+    4:         strftime_output = time.strftime(directive, self.time_tuple).lower()
+    4:         comparison = testing[self.time_tuple[tuple_position]]
+    4:         self.assertIn(strftime_output, testing,
+    4:                       "%s: not found in tuple" % error_msg)
+    4:         self.assertEqual(comparison, strftime_output,
+    4:                          "%s: position within tuple incorrect; %s != %s" %
+    4:                          (error_msg, comparison, strftime_output))
+       
+    1:     def test_weekday(self):
+               # Make sure that full and abbreviated weekday names are correct in
+               # both string and position with tuple
+    1:         self.compare_against_time(self.LT_ins.f_weekday, '%A', 6,
+    1:                                   "Testing of full weekday name failed")
+    1:         self.compare_against_time(self.LT_ins.a_weekday, '%a', 6,
+    1:                                   "Testing of abbreviated weekday name failed")
+       
+    1:     def test_month(self):
+               # Test full and abbreviated month names; both string and position
+               # within the tuple
+    1:         self.compare_against_time(self.LT_ins.f_month, '%B', 1,
+    1:                                   "Testing against full month name failed")
+    1:         self.compare_against_time(self.LT_ins.a_month, '%b', 1,
+    1:                                   "Testing against abbreviated month name failed")
+       
+    1:     def test_am_pm(self):
+               # Make sure AM/PM representation done properly
+    1:         strftime_output = time.strftime("%p", self.time_tuple).lower()
+    1:         self.assertIn(strftime_output, self.LT_ins.am_pm,
+    1:                       "AM/PM representation not in tuple")
+    1:         if self.time_tuple[3] < 12: position = 0
+    1:         else: position = 1
+    1:         self.assertEqual(self.LT_ins.am_pm[position], strftime_output,
+    1:                          "AM/PM representation in the wrong position within the tuple")
+       
+    1:     def test_timezone(self):
+               # Make sure timezone is correct
+    1:         timezone = time.strftime("%Z", self.time_tuple).lower()
+    1:         if timezone:
+    1:             self.assertTrue(timezone in self.LT_ins.timezone[0] or
+    1:                             timezone in self.LT_ins.timezone[1],
+    1:                             "timezone %s not found in %s" %
+    1:                             (timezone, self.LT_ins.timezone))
+       
+    1:     def test_date_time(self):
+               # Check that LC_date_time, LC_date, and LC_time are correct
+               # the magic date is used so as to not have issues with %c when day of
+               #  the month is a single digit and has a leading space.  This is not an
+               #  issue since strptime still parses it correctly.  The problem is
+               #  testing these directives for correctness by comparing strftime
+               #  output.
+    1:         magic_date = (1999, 3, 17, 22, 44, 55, 2, 76, 0)
+    1:         strftime_output = time.strftime("%c", magic_date)
+    1:         self.assertEqual(time.strftime(self.LT_ins.LC_date_time, magic_date),
+    1:                          strftime_output, "LC_date_time incorrect")
+    1:         strftime_output = time.strftime("%x", magic_date)
+    1:         self.assertEqual(time.strftime(self.LT_ins.LC_date, magic_date),
+    1:                          strftime_output, "LC_date incorrect")
+    1:         strftime_output = time.strftime("%X", magic_date)
+    1:         self.assertEqual(time.strftime(self.LT_ins.LC_time, magic_date),
+    1:                          strftime_output, "LC_time incorrect")
+    1:         LT = _strptime.LocaleTime()
+    1:         LT.am_pm = ('', '')
+    1:         self.assertTrue(LT.LC_time, "LocaleTime's LC directives cannot handle "
+                                           "empty strings")
+       
+    1:     def test_lang(self):
+               # Make sure lang is set to what _getlang() returns
+               # Assuming locale has not changed between now and when self.LT_ins was created
+    1:         self.assertEqual(self.LT_ins.lang, _strptime._getlang())
+       
+       
+    2: class TimeRETests(unittest.TestCase):
+    1:     """Tests for TimeRE."""
+       
+    1:     def setUp(self):
+               """Construct generic TimeRE object."""
+    7:         self.time_re = _strptime.TimeRE()
+    7:         self.locale_time = _strptime.LocaleTime()
+       
+    1:     def test_pattern(self):
+               # Test TimeRE.pattern
+    1:         pattern_string = self.time_re.pattern(r"%a %A %d")
+    1:         self.assertTrue(pattern_string.find(self.locale_time.a_weekday[2]) != -1,
+    1:                         "did not find abbreviated weekday in pattern string '%s'" %
+    1:                          pattern_string)
+    1:         self.assertTrue(pattern_string.find(self.locale_time.f_weekday[4]) != -1,
+    1:                         "did not find full weekday in pattern string '%s'" %
+    1:                          pattern_string)
+    1:         self.assertTrue(pattern_string.find(self.time_re['d']) != -1,
+    1:                         "did not find 'd' directive pattern string '%s'" %
+    1:                          pattern_string)
+       
+    1:     def test_pattern_escaping(self):
+               # Make sure any characters in the format string that might be taken as
+               # regex syntax is escaped.
+    1:         pattern_string = self.time_re.pattern("\d+")
+    1:         self.assertIn(r"\\d\+", pattern_string,
+    1:                       "%s does not have re characters escaped properly" %
+    1:                       pattern_string)
+       
+    1:     def test_compile(self):
+               # Check that compiled regex is correct
+    1:         found = self.time_re.compile(r"%A").match(self.locale_time.f_weekday[6])
+    1:         self.assertTrue(found and found.group('A') == self.locale_time.f_weekday[6],
+    1:                         "re object for '%A' failed")
+    1:         compiled = self.time_re.compile(r"%a %b")
+    1:         found = compiled.match("%s %s" % (self.locale_time.a_weekday[4],
+    1:                                self.locale_time.a_month[4]))
+    1:         self.assertTrue(found,
+    1:             "Match failed with '%s' regex and '%s' string" %
+    1:              (compiled.pattern, "%s %s" % (self.locale_time.a_weekday[4],
+    1:                                            self.locale_time.a_month[4])))
+    1:         self.assertTrue(found.group('a') == self.locale_time.a_weekday[4] and
+    1:                          found.group('b') == self.locale_time.a_month[4],
+    1:                         "re object couldn't find the abbreviated weekday month in "
+                                "'%s' using '%s'; group 'a' = '%s', group 'b' = %s'" %
+    1:                          (found.string, found.re.pattern, found.group('a'),
+    1:                           found.group('b')))
+    1:         for directive in ('a','A','b','B','c','d','H','I','j','m','M','p','S',
+   23:                           'U','w','W','x','X','y','Y','Z','%'):
+   22:             compiled = self.time_re.compile("%" + directive)
+   22:             found = compiled.match(time.strftime("%" + directive))
+   22:             self.assertTrue(found, "Matching failed on '%s' using '%s' regex" %
+   22:                                     (time.strftime("%" + directive),
+   22:                                      compiled.pattern))
+       
+    1:     def test_blankpattern(self):
+               # Make sure when tuple or something has no values no regex is generated.
+               # Fixes bug #661354
+    1:         test_locale = _strptime.LocaleTime()
+    1:         test_locale.timezone = (frozenset(), frozenset())
+    1:         self.assertEqual(_strptime.TimeRE(test_locale).pattern("%Z"), '',
+    1:                          "with timezone == ('',''), TimeRE().pattern('%Z') != ''")
+       
+    1:     def test_matching_with_escapes(self):
+               # Make sure a format that requires escaping of characters works
+    1:         compiled_re = self.time_re.compile("\w+ %m")
+    1:         found = compiled_re.match("\w+ 10")
+    1:         self.assertTrue(found, "Escaping failed of format '\w+ 10'")
+       
+    1:     def test_locale_data_w_regex_metacharacters(self):
+               # Check that if locale data contains regex metacharacters they are
+               # escaped properly.
+               # Discovered by bug #1039270 .
+    1:         locale_time = _strptime.LocaleTime()
+    1:         locale_time.timezone = (frozenset(("utc", "gmt",
+    1:                                             "Tokyo (standard time)")),
+    1:                                 frozenset("Tokyo (daylight time)"))
+    1:         time_re = _strptime.TimeRE(locale_time)
+    1:         self.assertTrue(time_re.compile("%Z").match("Tokyo (standard time)"),
+    1:                         "locale data that contains regex metacharacters is not"
+                               " properly escaped")
+       
+    1:     def test_whitespace_substitution(self):
+               # When pattern contains whitespace, make sure it is taken into account
+               # so as to not allow subpatterns to end up next to each other and
+               # "steal" characters from each other.
+    1:         pattern = self.time_re.pattern('%j %H')
+    1:         self.assertFalse(re.match(pattern, "180"))
+    1:         self.assertTrue(re.match(pattern, "18 0"))
+       
+       
+    2: class StrptimeTests(unittest.TestCase):
+    1:     """Tests for _strptime.strptime."""
+       
+    1:     def setUp(self):
+               """Create testing time tuple."""
+   22:         self.time_tuple = time.gmtime()
+       
+    1:     def test_ValueError(self):
+               # Make sure ValueError is raised when match fails or format is bad
+    1:         self.assertRaises(ValueError, _strptime._strptime_time, data_string="%d",
+    1:                           format="%A")
+    4:         for bad_format in ("%", "% ", "%e"):
+    3:             try:
+    3:                 _strptime._strptime_time("2005", bad_format)
+    3:             except ValueError:
+    3:                 continue
+>>>>>>             except Exception, err:
+>>>>>>                 self.fail("'%s' raised %s, not ValueError" %
+>>>>>>                             (bad_format, err.__class__.__name__))
+                   else:
+>>>>>>                 self.fail("'%s' did not raise ValueError" % bad_format)
+       
+    1:     def test_unconverteddata(self):
+               # Check ValueError is raised when there is unconverted data
+    1:         self.assertRaises(ValueError, _strptime._strptime_time, "10 12", "%m")
+       
+    1:     def helper(self, directive, position):
+               """Helper fxn in testing."""
+   25:         strf_output = time.strftime("%" + directive, self.time_tuple)
+   25:         strp_output = _strptime._strptime_time(strf_output, "%" + directive)
+   25:         self.assertTrue(strp_output[position] == self.time_tuple[position],
+   25:                         "testing of '%s' directive failed; '%s' -> %s != %s" %
+   25:                          (directive, strf_output, strp_output[position],
+   25:                           self.time_tuple[position]))
+       
+    1:     def test_year(self):
+               # Test that the year is handled properly
+    3:         for directive in ('y', 'Y'):
+    2:             self.helper(directive, 0)
+               # Must also make sure %y values are correct for bounds set by Open Group
+    3:         for century, bounds in ((1900, ('69', '99')), (2000, ('00', '68'))):
+    6:             for bound in bounds:
+    4:                 strp_output = _strptime._strptime_time(bound, '%y')
+    4:                 expected_result = century + int(bound)
+    4:                 self.assertTrue(strp_output[0] == expected_result,
+    4:                                 "'y' test failed; passed in '%s' "
+    4:                                 "and returned '%s'" % (bound, strp_output[0]))
+       
+    1:     def test_month(self):
+               # Test for month directives
+    4:         for directive in ('B', 'b', 'm'):
+    3:             self.helper(directive, 1)
+       
+    1:     def test_day(self):
+               # Test for day directives
+    1:         self.helper('d', 2)
+       
+    1:     def test_hour(self):
+               # Test hour directives
+    1:         self.helper('H', 3)
+    1:         strf_output = time.strftime("%I %p", self.time_tuple)
+    1:         strp_output = _strptime._strptime_time(strf_output, "%I %p")
+    1:         self.assertTrue(strp_output[3] == self.time_tuple[3],
+    1:                         "testing of '%%I %%p' directive failed; '%s' -> %s != %s" %
+    1:                          (strf_output, strp_output[3], self.time_tuple[3]))
+       
+    1:     def test_minute(self):
+               # Test minute directives
+    1:         self.helper('M', 4)
+       
+    1:     def test_second(self):
+               # Test second directives
+    1:         self.helper('S', 5)
+       
+    1:     def test_fraction(self):
+               # Test microseconds
+    1:         import datetime
+    1:         d = datetime.datetime(2012, 12, 20, 12, 34, 56, 78987)
+    1:         tup, frac = _strptime._strptime(str(d), format="%Y-%m-%d %H:%M:%S.%f")
+    1:         self.assertEqual(frac, d.microsecond)
+       
+    1:     def test_weekday(self):
+               # Test weekday directives
+    4:         for directive in ('A', 'a', 'w'):
+    3:             self.helper(directive,6)
+       
+    1:     def test_julian(self):
+               # Test julian directives
+    1:         self.helper('j', 7)
+       
+    1:     def test_timezone(self):
+               # Test timezone directives.
+               # When gmtime() is used with %Z, entire result of strftime() is empty.
+               # Check for equal timezone names deals with bad locale info when this
+               # occurs; first found in FreeBSD 4.4.
+    1:         strp_output = _strptime._strptime_time("UTC", "%Z")
+    1:         self.assertEqual(strp_output.tm_isdst, 0)
+    1:         strp_output = _strptime._strptime_time("GMT", "%Z")
+    1:         self.assertEqual(strp_output.tm_isdst, 0)
+    1:         time_tuple = time.localtime()
+    1:         strf_output = time.strftime("%Z")  #UTC does not have a timezone
+    1:         strp_output = _strptime._strptime_time(strf_output, "%Z")
+    1:         locale_time = _strptime.LocaleTime()
+    1:         if time.tzname[0] != time.tzname[1] or not time.daylight:
+    1:             self.assertTrue(strp_output[8] == time_tuple[8],
+    1:                             "timezone check failed; '%s' -> %s != %s" %
+    1:                              (strf_output, strp_output[8], time_tuple[8]))
+               else:
+>>>>>>             self.assertTrue(strp_output[8] == -1,
+>>>>>>                             "LocaleTime().timezone has duplicate values and "
+                                    "time.daylight but timezone value not set to -1")
+       
+    1:     def test_bad_timezone(self):
+               # Explicitly test possibility of bad timezone;
+               # when time.tzname[0] == time.tzname[1] and time.daylight
+    1:         tz_name = time.tzname[0]
+    1:         if tz_name.upper() in ("UTC", "GMT"):
+>>>>>>             self.skipTest('need non-UTC/GMT timezone')
+       
+    1:         with support.swap_attr(time, 'tzname', (tz_name, tz_name)), \
+    1:              support.swap_attr(time, 'daylight', 1), \
+    2:              support.swap_attr(time, 'tzset', lambda: None):
+    1:             time.tzname = (tz_name, tz_name)
+    1:             time.daylight = 1
+    1:             tz_value = _strptime._strptime_time(tz_name, "%Z")[8]
+    1:             self.assertEqual(tz_value, -1,
+    1:                     "%s lead to a timezone value of %s instead of -1 when "
+                           "time.daylight set to %s and passing in %s" %
+    1:                     (time.tzname, tz_value, time.daylight, tz_name))
+       
+    1:     def test_date_time(self):
+               # Test %c directive
+    7:         for position in range(6):
+    6:             self.helper('c', position)
+       
+    1:     def test_date(self):
+               # Test %x directive
+    4:         for position in range(0,3):
+    3:             self.helper('x', position)
+       
+    1:     def test_time(self):
+               # Test %X directive
+    4:         for position in range(3,6):
+    3:             self.helper('X', position)
+       
+    1:     def test_percent(self):
+               # Make sure % signs are handled properly
+    1:         strf_output = time.strftime("%m %% %Y", self.time_tuple)
+    1:         strp_output = _strptime._strptime_time(strf_output, "%m %% %Y")
+    1:         self.assertTrue(strp_output[0] == self.time_tuple[0] and
+    1:                          strp_output[1] == self.time_tuple[1],
+    1:                         "handling of percent sign failed")
+       
+    1:     def test_caseinsensitive(self):
+               # Should handle names case-insensitively.
+    1:         strf_output = time.strftime("%B", self.time_tuple)
+    1:         self.assertTrue(_strptime._strptime_time(strf_output.upper(), "%B"),
+    1:                         "strptime does not handle ALL-CAPS names properly")
+    1:         self.assertTrue(_strptime._strptime_time(strf_output.lower(), "%B"),
+    1:                         "strptime does not handle lowercase names properly")
+    1:         self.assertTrue(_strptime._strptime_time(strf_output.capitalize(), "%B"),
+    1:                         "strptime does not handle capword names properly")
+       
+    1:     def test_defaults(self):
+               # Default return value should be (1900, 1, 1, 0, 0, 0, 0, 1, 0)
+    1:         defaults = (1900, 1, 1, 0, 0, 0, 0, 1, -1)
+    1:         strp_output = _strptime._strptime_time('1', '%m')
+    1:         self.assertTrue(strp_output == defaults,
+    1:                         "Default values for strptime() are incorrect;"
+    1:                         " %s != %s" % (strp_output, defaults))
+       
+    1:     def test_escaping(self):
+               # Make sure all characters that have regex significance are escaped.
+               # Parentheses are in a purposeful order; will cause an error of
+               # unbalanced parentheses when the regex is compiled if they are not
+               # escaped.
+               # Test instigated by bug #796149 .
+    1:         need_escaping = ".^$*+?{}\[]|)("
+    1:         self.assertTrue(_strptime._strptime_time(need_escaping, need_escaping))
+       
+    1:     def test_feb29_on_leap_year_without_year(self):
+    1:         time.strptime("Feb 29", "%b %d")
+       
+    1:     def test_mar1_comes_after_feb29_even_when_omitting_the_year(self):
+    1:         self.assertLess(
+    1:                 time.strptime("Feb 29", "%b %d"),
+    1:                 time.strptime("Mar 1", "%b %d"))
+       
+    2: class Strptime12AMPMTests(unittest.TestCase):
+    1:     """Test a _strptime regression in '%I %p' at 12 noon (12 PM)"""
+       
+    1:     def test_twelve_noon_midnight(self):
+    1:         eq = self.assertEqual
+    1:         eq(time.strptime('12 PM', '%I %p')[3], 12)
+    1:         eq(time.strptime('12 AM', '%I %p')[3], 0)
+    1:         eq(_strptime._strptime_time('12 PM', '%I %p')[3], 12)
+    1:         eq(_strptime._strptime_time('12 AM', '%I %p')[3], 0)
+       
+       
+    2: class JulianTests(unittest.TestCase):
+    1:     """Test a _strptime regression that all julian (1-366) are accepted"""
+       
+    1:     def test_all_julian_days(self):
+    1:         eq = self.assertEqual
+  367:         for i in range(1, 367):
+                   # use 2004, since it is a leap year, we have 366 days
+  366:             eq(_strptime._strptime_time('%d 2004' % i, '%j %Y')[7], i)
+       
+    2: class CalculationTests(unittest.TestCase):
+    1:     """Test that strptime() fills in missing info correctly"""
+       
+    1:     def setUp(self):
+    5:         self.time_tuple = time.gmtime()
+       
+    1:     def test_julian_calculation(self):
+               # Make sure that when Julian is missing that it is calculated
+    1:         format_string = "%Y %m %d %H %M %S %w %Z"
+    1:         result = _strptime._strptime_time(time.strftime(format_string, self.time_tuple),
+    1:                                     format_string)
+    1:         self.assertTrue(result.tm_yday == self.time_tuple.tm_yday,
+    1:                         "Calculation of tm_yday failed; %s != %s" %
+    1:                          (result.tm_yday, self.time_tuple.tm_yday))
+       
+    1:     def test_gregorian_calculation(self):
+               # Test that Gregorian date can be calculated from Julian day
+    1:         format_string = "%Y %H %M %S %w %j %Z"
+    1:         result = _strptime._strptime_time(time.strftime(format_string, self.time_tuple),
+    1:                                     format_string)
+    1:         self.assertTrue(result.tm_year == self.time_tuple.tm_year and
+    1:                          result.tm_mon == self.time_tuple.tm_mon and
+    1:                          result.tm_mday == self.time_tuple.tm_mday,
+    1:                         "Calculation of Gregorian date failed;"
+                                "%s-%s-%s != %s-%s-%s" %
+    1:                          (result.tm_year, result.tm_mon, result.tm_mday,
+    1:                           self.time_tuple.tm_year, self.time_tuple.tm_mon,
+    1:                           self.time_tuple.tm_mday))
+       
+    1:     def test_day_of_week_calculation(self):
+               # Test that the day of the week is calculated as needed
+    1:         format_string = "%Y %m %d %H %S %j %Z"
+    1:         result = _strptime._strptime_time(time.strftime(format_string, self.time_tuple),
+    1:                                     format_string)
+    1:         self.assertTrue(result.tm_wday == self.time_tuple.tm_wday,
+    1:                         "Calculation of day of the week failed;"
+    1:                          "%s != %s" % (result.tm_wday, self.time_tuple.tm_wday))
+       
+    1:     def test_week_of_year_and_day_of_week_calculation(self):
+               # Should be able to infer date if given year, week of year (%U or %W)
+               # and day of the week
+    1:         def test_helper(ymd_tuple, test_reason):
+   60:             for directive in ('W', 'U'):
+   40:                 format_string = "%%Y %%%s %%w" % directive
+   40:                 dt_date = datetime_date(*ymd_tuple)
+   40:                 strp_input = dt_date.strftime(format_string)
+   40:                 strp_output = _strptime._strptime_time(strp_input, format_string)
+   40:                 self.assertTrue(strp_output[:3] == ymd_tuple,
+   40:                         "%s(%s) test failed w/ '%s': %s != %s (%s != %s)" %
+   40:                             (test_reason, directive, strp_input,
+   40:                                 strp_output[:3], ymd_tuple,
+   40:                                 strp_output[7], dt_date.timetuple()[7]))
+    1:         test_helper((1901, 1, 3), "week 0")
+    1:         test_helper((1901, 1, 8), "common case")
+    1:         test_helper((1901, 1, 13), "day on Sunday")
+    1:         test_helper((1901, 1, 14), "day on Monday")
+    1:         test_helper((1905, 1, 1), "Jan 1 on Sunday")
+    1:         test_helper((1906, 1, 1), "Jan 1 on Monday")
+    1:         test_helper((1906, 1, 7), "first Sunday in a year starting on Monday")
+    1:         test_helper((1905, 12, 31), "Dec 31 on Sunday")
+    1:         test_helper((1906, 12, 31), "Dec 31 on Monday")
+    1:         test_helper((2008, 12, 29), "Monday in the last week of the year")
+    1:         test_helper((2008, 12, 22), "Monday in the second-to-last week of the "
+                                           "year")
+    1:         test_helper((1978, 10, 23), "randomly chosen date")
+    1:         test_helper((2004, 12, 18), "randomly chosen date")
+    1:         test_helper((1978, 10, 23), "year starting and ending on Monday while "
+                                               "date not on Sunday or Monday")
+    1:         test_helper((1917, 12, 17), "year starting and ending on Monday with "
+                                               "a Monday not at the beginning or end "
+                                               "of the year")
+    1:         test_helper((1917, 12, 31), "Dec 31 on Monday with year starting and "
+                                               "ending on Monday")
+    1:         test_helper((2007, 01, 07), "First Sunday of 2007")
+    1:         test_helper((2007, 01, 14), "Second Sunday of 2007")
+    1:         test_helper((2006, 12, 31), "Last Sunday of 2006")
+    1:         test_helper((2006, 12, 24), "Second to last Sunday of 2006")
+       
+    1:     def test_week_0(self):
+    1:         def check(value, format, *expected):
+   28:             self.assertEqual(_strptime._strptime_time(value, format)[:-1], expected)
+    1:         check('2015 0 0', '%Y %U %w', 2014, 12, 28, 0, 0, 0, 6, 362)
+    1:         check('2015 0 0', '%Y %W %w', 2015, 1, 4, 0, 0, 0, 6, 4)
+    1:         check('2015 0 1', '%Y %U %w', 2014, 12, 29, 0, 0, 0, 0, 363)
+    1:         check('2015 0 1', '%Y %W %w', 2014, 12, 29, 0, 0, 0, 0, 363)
+    1:         check('2015 0 2', '%Y %U %w', 2014, 12, 30, 0, 0, 0, 1, 364)
+    1:         check('2015 0 2', '%Y %W %w', 2014, 12, 30, 0, 0, 0, 1, 364)
+    1:         check('2015 0 3', '%Y %U %w', 2014, 12, 31, 0, 0, 0, 2, 365)
+    1:         check('2015 0 3', '%Y %W %w', 2014, 12, 31, 0, 0, 0, 2, 365)
+    1:         check('2015 0 4', '%Y %U %w', 2015, 1, 1, 0, 0, 0, 3, 1)
+    1:         check('2015 0 4', '%Y %W %w', 2015, 1, 1, 0, 0, 0, 3, 1)
+    1:         check('2015 0 5', '%Y %U %w', 2015, 1, 2, 0, 0, 0, 4, 2)
+    1:         check('2015 0 5', '%Y %W %w', 2015, 1, 2, 0, 0, 0, 4, 2)
+    1:         check('2015 0 6', '%Y %U %w', 2015, 1, 3, 0, 0, 0, 5, 3)
+    1:         check('2015 0 6', '%Y %W %w', 2015, 1, 3, 0, 0, 0, 5, 3)
+       
+    1:         check('2009 0 0', '%Y %U %w', 2008, 12, 28, 0, 0, 0, 6, 363)
+    1:         check('2009 0 0', '%Y %W %w', 2009, 1, 4, 0, 0, 0, 6, 4)
+    1:         check('2009 0 1', '%Y %U %w', 2008, 12, 29, 0, 0, 0, 0, 364)
+    1:         check('2009 0 1', '%Y %W %w', 2008, 12, 29, 0, 0, 0, 0, 364)
+    1:         check('2009 0 2', '%Y %U %w', 2008, 12, 30, 0, 0, 0, 1, 365)
+    1:         check('2009 0 2', '%Y %W %w', 2008, 12, 30, 0, 0, 0, 1, 365)
+    1:         check('2009 0 3', '%Y %U %w', 2008, 12, 31, 0, 0, 0, 2, 366)
+    1:         check('2009 0 3', '%Y %W %w', 2008, 12, 31, 0, 0, 0, 2, 366)
+    1:         check('2009 0 4', '%Y %U %w', 2009, 1, 1, 0, 0, 0, 3, 1)
+    1:         check('2009 0 4', '%Y %W %w', 2009, 1, 1, 0, 0, 0, 3, 1)
+    1:         check('2009 0 5', '%Y %U %w', 2009, 1, 2, 0, 0, 0, 4, 2)
+    1:         check('2009 0 5', '%Y %W %w', 2009, 1, 2, 0, 0, 0, 4, 2)
+    1:         check('2009 0 6', '%Y %U %w', 2009, 1, 3, 0, 0, 0, 5, 3)
+    1:         check('2009 0 6', '%Y %W %w', 2009, 1, 3, 0, 0, 0, 5, 3)
+       
+    2: class CacheTests(unittest.TestCase):
+    1:     """Test that caching works properly."""
+       
+    1:     def test_time_re_recreation(self):
+               # Make sure cache is recreated when current locale does not match what
+               # cached object was created with.
+    1:         _strptime._strptime_time("10", "%d")
+    1:         _strptime._strptime_time("2005", "%Y")
+    1:         _strptime._TimeRE_cache.locale_time.lang = "Ni"
+    1:         original_time_re = _strptime._TimeRE_cache
+    1:         _strptime._strptime_time("10", "%d")
+    1:         self.assertIsNot(original_time_re, _strptime._TimeRE_cache)
+    1:         self.assertEqual(len(_strptime._regex_cache), 1)
+       
+    1:     def test_regex_cleanup(self):
+               # Make sure cached regexes are discarded when cache becomes "full".
+    1:         try:
+    1:             del _strptime._regex_cache['%d']
+>>>>>>         except KeyError:
+>>>>>>             pass
+    1:         bogus_key = 0
+    7:         while len(_strptime._regex_cache) <= _strptime._CACHE_MAX_SIZE:
+    6:             _strptime._regex_cache[bogus_key] = None
+    6:             bogus_key += 1
+    1:         _strptime._strptime_time("10", "%d")
+    1:         self.assertEqual(len(_strptime._regex_cache), 1)
+       
+    1:     def test_new_localetime(self):
+               # A new LocaleTime instance should be created when a new TimeRE object
+               # is created.
+    1:         locale_time_id = _strptime._TimeRE_cache.locale_time
+    1:         _strptime._TimeRE_cache.locale_time.lang = "Ni"
+    1:         _strptime._strptime_time("10", "%d")
+    1:         self.assertIsNot(locale_time_id, _strptime._TimeRE_cache.locale_time)
+       
+    1:     def test_TimeRE_recreation_locale(self):
+               # The TimeRE instance should be recreated upon changing the locale.
+    1:         locale_info = locale.getlocale(locale.LC_TIME)
+    1:         try:
+    1:             locale.setlocale(locale.LC_TIME, ('en_US', 'UTF8'))
+>>>>>>         except locale.Error:
+>>>>>>             self.skipTest('test needs en_US.UTF8 locale')
+    1:         try:
+    1:             _strptime._strptime_time('10', '%d')
+                   # Get id of current cache object.
+    1:             first_time_re = _strptime._TimeRE_cache
+    1:             try:
+                       # Change the locale and force a recreation of the cache.
+    1:                 locale.setlocale(locale.LC_TIME, ('de_DE', 'UTF8'))
+    1:                 _strptime._strptime_time('10', '%d')
+                       # Get the new cache object's id.
+    1:                 second_time_re = _strptime._TimeRE_cache
+                       # They should not be equal.
+    1:                 self.assertIsNot(first_time_re, second_time_re)
+                   # Possible test locale is not supported while initial locale is.
+                   # If this is the case just suppress the exception and fall-through
+                   # to the resetting to the original locale.
+>>>>>>             except locale.Error:
+>>>>>>                 self.skipTest('test needs de_DE.UTF8 locale')
+               # Make sure we don't trample on the locale setting once we leave the
+               # test.
+               finally:
+    1:             locale.setlocale(locale.LC_TIME, locale_info)
+       
+    1:     @support.run_with_tz('STD-1DST')
+           def test_TimeRE_recreation_timezone(self):
+               # The TimeRE instance should be recreated upon changing the timezone.
+    1:         oldtzname = time.tzname
+    1:         tm = _strptime._strptime_time(time.tzname[0], '%Z')
+    1:         self.assertEqual(tm.tm_isdst, 0)
+    1:         tm = _strptime._strptime_time(time.tzname[1], '%Z')
+    1:         self.assertEqual(tm.tm_isdst, 1)
+               # Get id of current cache object.
+    1:         first_time_re = _strptime._TimeRE_cache
+               # Change the timezone and force a recreation of the cache.
+    1:         os.environ['TZ'] = 'EST+05EDT,M3.2.0,M11.1.0'
+    1:         time.tzset()
+    1:         tm = _strptime._strptime_time(time.tzname[0], '%Z')
+    1:         self.assertEqual(tm.tm_isdst, 0)
+    1:         tm = _strptime._strptime_time(time.tzname[1], '%Z')
+    1:         self.assertEqual(tm.tm_isdst, 1)
+               # Get the new cache object's id.
+    1:         second_time_re = _strptime._TimeRE_cache
+               # They should not be equal.
+    1:         self.assertIsNot(first_time_re, second_time_re)
+               # Make sure old names no longer accepted.
+    1:         with self.assertRaises(ValueError):
+    1:             _strptime._strptime_time(oldtzname[0], '%Z')
+    1:         with self.assertRaises(ValueError):
+    1:             _strptime._strptime_time(oldtzname[1], '%Z')
+       
+       
+    1: def test_main():
+    1:     support.run_unittest(
+    1:         getlang_Tests,
+    1:         LocaleTime_Tests,
+    1:         TimeRETests,
+    1:         StrptimeTests,
+    1:         Strptime12AMPMTests,
+    1:         JulianTests,
+    1:         CalculationTests,
+    1:         CacheTests
+           )
+       
+       
+    1: if __name__ == '__main__':
+>>>>>>     test_main()

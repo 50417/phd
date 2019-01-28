@@ -1,0 +1,146 @@
+       r"""Routines to decode AppleSingle files
+    1: """
+       
+    1: from warnings import warnpy3k
+    1: warnpy3k("In 3.x, the applesingle module is removed.", stacklevel=2)
+       
+    1: import struct
+    1: import sys
+    1: try:
+    1:     import MacOS
+    1:     import Carbon.File
+>>>>>> except:
+>>>>>>     class MacOS:
+>>>>>>         def openrf(path, mode):
+>>>>>>             return open(path + '.rsrc', mode)
+>>>>>>         openrf = classmethod(openrf)
+>>>>>>     class Carbon:
+>>>>>>         class File:
+>>>>>>             class FSSpec:
+>>>>>>                 pass
+>>>>>>             class FSRef:
+>>>>>>                 pass
+>>>>>>             class Alias:
+>>>>>>                 pass
+       
+       # all of the errors in this module are really errors in the input
+       # so I think it should test positive against ValueError.
+    2: class Error(ValueError):
+    1:     pass
+       
+       # File header format: magic, version, unused, number of entries
+    1: AS_HEADER_FORMAT=">LL16sh"
+    1: AS_HEADER_LENGTH=26
+       # The flag words for AppleSingle
+    1: AS_MAGIC=0x00051600
+    1: AS_VERSION=0x00020000
+       
+       # Entry header format: id, offset, length
+    1: AS_ENTRY_FORMAT=">lll"
+    1: AS_ENTRY_LENGTH=12
+       
+       # The id values
+    1: AS_DATAFORK=1
+    1: AS_RESOURCEFORK=2
+    1: AS_IGNORE=(3,4,5,6,8,9,10,11,12,13,14,15)
+       
+    2: class AppleSingle(object):
+    1:     datafork = None
+    1:     resourcefork = None
+       
+    1:     def __init__(self, fileobj, verbose=False):
+    2:         header = fileobj.read(AS_HEADER_LENGTH)
+    2:         try:
+    2:             magic, version, ig, nentry = struct.unpack(AS_HEADER_FORMAT, header)
+>>>>>>         except ValueError, arg:
+>>>>>>             raise Error, "Unpack header error: %s" % (arg,)
+    2:         if verbose:
+>>>>>>             print 'Magic:   0x%8.8x' % (magic,)
+>>>>>>             print 'Version: 0x%8.8x' % (version,)
+>>>>>>             print 'Entries: %d' % (nentry,)
+    2:         if magic != AS_MAGIC:
+>>>>>>             raise Error, "Unknown AppleSingle magic number 0x%8.8x" % (magic,)
+    2:         if version != AS_VERSION:
+>>>>>>             raise Error, "Unknown AppleSingle version number 0x%8.8x" % (version,)
+    2:         if nentry <= 0:
+>>>>>>             raise Error, "AppleSingle file contains no forks"
+    6:         headers = [fileobj.read(AS_ENTRY_LENGTH) for i in xrange(nentry)]
+    2:         self.forks = []
+    6:         for hdr in headers:
+    4:             try:
+    4:                 restype, offset, length = struct.unpack(AS_ENTRY_FORMAT, hdr)
+>>>>>>             except ValueError, arg:
+>>>>>>                 raise Error, "Unpack entry error: %s" % (arg,)
+    4:             if verbose:
+>>>>>>                 print "Fork %d, offset %d, length %d" % (restype, offset, length)
+    4:             fileobj.seek(offset)
+    4:             data = fileobj.read(length)
+    4:             if len(data) != length:
+>>>>>>                 raise Error, "Short read: expected %d bytes got %d" % (length, len(data))
+    4:             self.forks.append((restype, data))
+    4:             if restype == AS_DATAFORK:
+    2:                 self.datafork = data
+    2:             elif restype == AS_RESOURCEFORK:
+    2:                 self.resourcefork = data
+       
+    1:     def tofile(self, path, resonly=False):
+    2:         outfile = open(path, 'wb')
+    2:         data = False
+    2:         if resonly:
+    1:             if self.resourcefork is None:
+>>>>>>                 raise Error, "No resource fork found"
+    1:             fp = open(path, 'wb')
+    1:             fp.write(self.resourcefork)
+    1:             fp.close()
+    1:         elif (self.resourcefork is None and self.datafork is None):
+>>>>>>             raise Error, "No useful forks found"
+               else:
+    1:             if self.datafork is not None:
+    1:                 fp = open(path, 'wb')
+    1:                 fp.write(self.datafork)
+    1:                 fp.close()
+    1:             if self.resourcefork is not None:
+    1:                 fp = MacOS.openrf(path, '*wb')
+    1:                 fp.write(self.resourcefork)
+    1:                 fp.close()
+       
+    1: def decode(infile, outpath, resonly=False, verbose=False):
+           """decode(infile, outpath [, resonly=False, verbose=False])
+       
+           Creates a decoded file from an AppleSingle encoded file.
+           If resonly is True, then it will create a regular file at
+           outpath containing only the resource fork from infile.
+           Otherwise it will create an AppleDouble file at outpath
+           with the data and resource forks from infile.  On platforms
+           without the MacOS module, it will create inpath and inpath+'.rsrc'
+           with the data and resource forks respectively.
+       
+           """
+    2:     if not hasattr(infile, 'read'):
+    2:         if isinstance(infile, Carbon.File.Alias):
+>>>>>>             infile = infile.ResolveAlias()[0]
+       
+    2:         if hasattr(Carbon.File, "FSSpec"):
+>>>>>>             if isinstance(infile, (Carbon.File.FSSpec, Carbon.File.FSRef)):
+>>>>>>                 infile = infile.as_pathname()
+               else:
+    2:             if isinstance(infile, Carbon.File.FSRef):
+>>>>>>                 infile = infile.as_pathname()
+    2:         infile = open(infile, 'rb')
+       
+    2:     asfile = AppleSingle(infile, verbose=verbose)
+    2:     asfile.tofile(outpath, resonly=resonly)
+       
+    1: def _test():
+>>>>>>     if len(sys.argv) < 3 or sys.argv[1] == '-r' and len(sys.argv) != 4:
+>>>>>>         print 'Usage: applesingle.py [-r] applesinglefile decodedfile'
+>>>>>>         sys.exit(1)
+>>>>>>     if sys.argv[1] == '-r':
+>>>>>>         resonly = True
+>>>>>>         del sys.argv[1]
+           else:
+>>>>>>         resonly = False
+>>>>>>     decode(sys.argv[1], sys.argv[2], resonly=resonly)
+       
+    1: if __name__ == '__main__':
+>>>>>>     _test()

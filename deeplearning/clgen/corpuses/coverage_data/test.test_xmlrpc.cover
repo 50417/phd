@@ -1,0 +1,1130 @@
+    1: import base64
+    1: import datetime
+    1: import sys
+    1: import time
+    1: import unittest
+    1: import xmlrpclib
+    1: import SimpleXMLRPCServer
+    1: import mimetools
+    1: import httplib
+    1: import socket
+    1: import StringIO
+    1: import os
+    1: import re
+    1: from test import test_support
+       
+    1: try:
+    1:     import threading
+>>>>>> except ImportError:
+>>>>>>     threading = None
+       
+    1: try:
+    1:     import gzip
+>>>>>> except ImportError:
+>>>>>>     gzip = None
+       
+    1: alist = [{'astring': 'foo@bar.baz.spam',
+    1:           'afloat': 7283.43,
+    1:           'anint': 2**20,
+    1:           'ashortlong': 2L,
+    1:           'anotherlist': ['.zyx.41'],
+    1:           'abase64': xmlrpclib.Binary("my dog has fleas"),
+    1:           'boolean': xmlrpclib.False,
+    1:           'datetime1': xmlrpclib.DateTime('20050210T11:41:23'),
+    1:           'datetime2': xmlrpclib.DateTime(
+    1:                         (2005, 02, 10, 11, 41, 23, 0, 1, -1)),
+    1:           'datetime3': xmlrpclib.DateTime(
+    1:                         datetime.datetime(2005, 02, 10, 11, 41, 23)),
+                 }]
+       
+    1: if test_support.have_unicode:
+    1:     alist[0].update({
+    1:           'unicode': test_support.u(r'\u4000\u6000\u8000'),
+    1:           test_support.u(r'ukey\u4000'): 'regular value',
+           })
+       
+    2: class XMLRPCTestCase(unittest.TestCase):
+       
+    1:     def test_dump_load(self):
+    1:         self.assertEqual(alist,
+    1:                          xmlrpclib.loads(xmlrpclib.dumps((alist,)))[0][0])
+       
+    1:     def test_dump_bare_datetime(self):
+               # This checks that an unwrapped datetime.date object can be handled
+               # by the marshalling code.  This can't be done via test_dump_load()
+               # since with use_datetime set to 1 the unmarshaller would create
+               # datetime objects for the 'datetime[123]' keys as well
+    1:         dt = datetime.datetime(2005, 02, 10, 11, 41, 23)
+    1:         s = xmlrpclib.dumps((dt,))
+    1:         (newdt,), m = xmlrpclib.loads(s, use_datetime=1)
+    1:         self.assertEqual(newdt, dt)
+    1:         self.assertEqual(m, None)
+       
+    1:         (newdt,), m = xmlrpclib.loads(s, use_datetime=0)
+    1:         self.assertEqual(newdt, xmlrpclib.DateTime('20050210T11:41:23'))
+       
+    1:     def test_datetime_before_1900(self):
+               # same as before but with a date before 1900
+    1:         dt = datetime.datetime(1, 02, 10, 11, 41, 23)
+    1:         s = xmlrpclib.dumps((dt,))
+    1:         (newdt,), m = xmlrpclib.loads(s, use_datetime=1)
+    1:         self.assertEqual(newdt, dt)
+    1:         self.assertEqual(m, None)
+       
+    1:         (newdt,), m = xmlrpclib.loads(s, use_datetime=0)
+    1:         self.assertEqual(newdt, xmlrpclib.DateTime('00010210T11:41:23'))
+       
+    1:     def test_cmp_datetime_DateTime(self):
+    1:         now = datetime.datetime.now()
+    1:         dt = xmlrpclib.DateTime(now.timetuple())
+    1:         self.assertTrue(dt == now)
+    1:         self.assertTrue(now == dt)
+    1:         then = now + datetime.timedelta(seconds=4)
+    1:         self.assertTrue(then >= dt)
+    1:         self.assertTrue(dt < then)
+       
+    1:     def test_bug_1164912 (self):
+    1:         d = xmlrpclib.DateTime()
+    1:         ((new_d,), dummy) = xmlrpclib.loads(xmlrpclib.dumps((d,),
+    1:                                             methodresponse=True))
+    1:         self.assertIsInstance(new_d.value, str)
+       
+               # Check that the output of dumps() is still an 8-bit string
+    1:         s = xmlrpclib.dumps((new_d,), methodresponse=True)
+    1:         self.assertIsInstance(s, str)
+       
+    1:     def test_newstyle_class(self):
+    2:         class T(object):
+    1:             pass
+    1:         t = T()
+    1:         t.x = 100
+    1:         t.y = "Hello"
+    1:         ((t2,), dummy) = xmlrpclib.loads(xmlrpclib.dumps((t,)))
+    1:         self.assertEqual(t2, t.__dict__)
+       
+    1:     def test_dump_big_long(self):
+    1:         self.assertRaises(OverflowError, xmlrpclib.dumps, (2L**99,))
+       
+    1:     def test_dump_bad_dict(self):
+    1:         self.assertRaises(TypeError, xmlrpclib.dumps, ({(1,2,3): 1},))
+       
+    1:     def test_dump_recursive_seq(self):
+    1:         l = [1,2,3]
+    1:         t = [3,4,5,l]
+    1:         l.append(t)
+    1:         self.assertRaises(TypeError, xmlrpclib.dumps, (l,))
+       
+    1:     def test_dump_recursive_dict(self):
+    1:         d = {'1':1, '2':1}
+    1:         t = {'3':3, 'd':d}
+    1:         d['t'] = t
+    1:         self.assertRaises(TypeError, xmlrpclib.dumps, (d,))
+       
+    1:     def test_dump_big_int(self):
+    1:         if sys.maxint > 2L**31-1:
+    1:             self.assertRaises(OverflowError, xmlrpclib.dumps,
+    1:                               (int(2L**34),))
+       
+    1:         xmlrpclib.dumps((xmlrpclib.MAXINT, xmlrpclib.MININT))
+    1:         self.assertRaises(OverflowError, xmlrpclib.dumps, (xmlrpclib.MAXINT+1,))
+    1:         self.assertRaises(OverflowError, xmlrpclib.dumps, (xmlrpclib.MININT-1,))
+       
+    1:         def dummy_write(s):
+    6:             pass
+       
+    1:         m = xmlrpclib.Marshaller()
+    1:         m.dump_int(xmlrpclib.MAXINT, dummy_write)
+    1:         m.dump_int(xmlrpclib.MININT, dummy_write)
+    1:         self.assertRaises(OverflowError, m.dump_int, xmlrpclib.MAXINT+1, dummy_write)
+    1:         self.assertRaises(OverflowError, m.dump_int, xmlrpclib.MININT-1, dummy_write)
+       
+       
+    1:     def test_dump_none(self):
+    1:         value = alist + [None]
+    1:         arg1 = (alist + [None],)
+    1:         strg = xmlrpclib.dumps(arg1, allow_none=True)
+    1:         self.assertEqual(value,
+    1:                          xmlrpclib.loads(strg)[0][0])
+    1:         self.assertRaises(TypeError, xmlrpclib.dumps, (arg1,))
+       
+    1:     @test_support.requires_unicode
+           def test_dump_encoding(self):
+    1:         value = {test_support.u(r'key\u20ac\xa4'):
+    1:                  test_support.u(r'value\u20ac\xa4')}
+    1:         strg = xmlrpclib.dumps((value,), encoding='iso-8859-15')
+    1:         strg = "<?xml version='1.0' encoding='iso-8859-15'?>" + strg
+    1:         self.assertEqual(xmlrpclib.loads(strg)[0][0], value)
+       
+    1:         strg = xmlrpclib.dumps((value,), encoding='iso-8859-15',
+    1:                                methodresponse=True)
+    1:         self.assertEqual(xmlrpclib.loads(strg)[0][0], value)
+       
+    1:         methodname = test_support.u(r'method\u20ac\xa4')
+    1:         strg = xmlrpclib.dumps((value,), encoding='iso-8859-15',
+    1:                                methodname=methodname)
+    1:         self.assertEqual(xmlrpclib.loads(strg)[0][0], value)
+    1:         self.assertEqual(xmlrpclib.loads(strg)[1], methodname)
+       
+    1:     @test_support.requires_unicode
+           def test_default_encoding_issues(self):
+               # SF bug #1115989: wrong decoding in '_stringify'
+               utf8 = """<?xml version='1.0' encoding='iso-8859-1'?>
+                         <params>
+                           <param><value>
+                             <string>abc \x95</string>
+                             </value></param>
+                           <param><value>
+                             <struct>
+                               <member>
+                                 <name>def \x96</name>
+                                 <value><string>ghi \x97</string></value>
+                                 </member>
+                               </struct>
+                             </value></param>
+                         </params>
+    1:                   """
+       
+               # sys.setdefaultencoding() normally doesn't exist after site.py is
+               # loaded.  Import a temporary fresh copy to get access to it
+               # but then restore the original copy to avoid messing with
+               # other potentially modified sys module attributes
+    1:         old_encoding = sys.getdefaultencoding()
+    1:         with test_support.CleanImport('sys'):
+    1:             import sys as temp_sys
+    1:             temp_sys.setdefaultencoding("iso-8859-1")
+    1:             try:
+    1:                 (s, d), m = xmlrpclib.loads(utf8)
+                   finally:
+    1:                 temp_sys.setdefaultencoding(old_encoding)
+       
+    1:         items = d.items()
+    1:         if test_support.have_unicode:
+    1:             self.assertEqual(s, u"abc \x95")
+    1:             self.assertIsInstance(s, unicode)
+    1:             self.assertEqual(items, [(u"def \x96", u"ghi \x97")])
+    1:             self.assertIsInstance(items[0][0], unicode)
+    1:             self.assertIsInstance(items[0][1], unicode)
+               else:
+>>>>>>             self.assertEqual(s, "abc \xc2\x95")
+>>>>>>             self.assertEqual(items, [("def \xc2\x96", "ghi \xc2\x97")])
+       
+    1:     def test_loads_unsupported(self):
+    1:         ResponseError = xmlrpclib.ResponseError
+    1:         data = '<params><param><value><spam/></value></param></params>'
+    1:         self.assertRaises(ResponseError, xmlrpclib.loads, data)
+    1:         data = ('<params><param><value><array>'
+                       '<value><spam/></value>'
+                       '</array></value></param></params>')
+    1:         self.assertRaises(ResponseError, xmlrpclib.loads, data)
+    1:         data = ('<params><param><value><struct>'
+                       '<member><name>a</name><value><spam/></value></member>'
+                       '<member><name>b</name><value><spam/></value></member>'
+                       '</struct></value></param></params>')
+    1:         self.assertRaises(ResponseError, xmlrpclib.loads, data)
+       
+       
+    2: class HelperTestCase(unittest.TestCase):
+    1:     def test_escape(self):
+    1:         self.assertEqual(xmlrpclib.escape("a&b"), "a&amp;b")
+    1:         self.assertEqual(xmlrpclib.escape("a<b"), "a&lt;b")
+    1:         self.assertEqual(xmlrpclib.escape("a>b"), "a&gt;b")
+       
+    2: class FaultTestCase(unittest.TestCase):
+    1:     def test_repr(self):
+    1:         f = xmlrpclib.Fault(42, 'Test Fault')
+    1:         self.assertEqual(repr(f), "<Fault 42: 'Test Fault'>")
+    1:         self.assertEqual(repr(f), str(f))
+       
+    1:     def test_dump_fault(self):
+    1:         f = xmlrpclib.Fault(42, 'Test Fault')
+    1:         s = xmlrpclib.dumps((f,))
+    1:         (newf,), m = xmlrpclib.loads(s)
+    1:         self.assertEqual(newf, {'faultCode': 42, 'faultString': 'Test Fault'})
+    1:         self.assertEqual(m, None)
+       
+    1:         s = xmlrpclib.Marshaller().dumps(f)
+    1:         self.assertRaises(xmlrpclib.Fault, xmlrpclib.loads, s)
+       
+       
+    2: class DateTimeTestCase(unittest.TestCase):
+    1:     def test_default(self):
+    1:         t = xmlrpclib.DateTime()
+       
+    1:     def test_time(self):
+    1:         d = 1181399930.036952
+    1:         t = xmlrpclib.DateTime(d)
+    1:         self.assertEqual(str(t), time.strftime("%Y%m%dT%H:%M:%S", time.localtime(d)))
+       
+    1:     def test_time_tuple(self):
+    1:         d = (2007,6,9,10,38,50,5,160,0)
+    1:         t = xmlrpclib.DateTime(d)
+    1:         self.assertEqual(str(t), '20070609T10:38:50')
+       
+    1:     def test_time_struct(self):
+    1:         d = time.localtime(1181399930.036952)
+    1:         t = xmlrpclib.DateTime(d)
+    1:         self.assertEqual(str(t),  time.strftime("%Y%m%dT%H:%M:%S", d))
+       
+    1:     def test_datetime_datetime(self):
+    1:         d = datetime.datetime(2007,1,2,3,4,5)
+    1:         t = xmlrpclib.DateTime(d)
+    1:         self.assertEqual(str(t), '20070102T03:04:05')
+       
+    1:     def test_repr(self):
+    1:         d = datetime.datetime(2007,1,2,3,4,5)
+    1:         t = xmlrpclib.DateTime(d)
+    1:         val ="<DateTime '20070102T03:04:05' at %x>" % id(t)
+    1:         self.assertEqual(repr(t), val)
+       
+    1:     def test_decode(self):
+    1:         d = ' 20070908T07:11:13  '
+    1:         t1 = xmlrpclib.DateTime()
+    1:         t1.decode(d)
+    1:         tref = xmlrpclib.DateTime(datetime.datetime(2007,9,8,7,11,13))
+    1:         self.assertEqual(t1, tref)
+       
+    1:         t2 = xmlrpclib._datetime(d)
+    1:         self.assertEqual(t1, tref)
+       
+    2: class BinaryTestCase(unittest.TestCase):
+    1:     def test_default(self):
+    1:         t = xmlrpclib.Binary()
+    1:         self.assertEqual(str(t), '')
+       
+    1:     def test_string(self):
+    1:         d = '\x01\x02\x03abc123\xff\xfe'
+    1:         t = xmlrpclib.Binary(d)
+    1:         self.assertEqual(str(t), d)
+       
+    1:     def test_decode(self):
+    1:         d = '\x01\x02\x03abc123\xff\xfe'
+    1:         de = base64.encodestring(d)
+    1:         t1 = xmlrpclib.Binary()
+    1:         t1.decode(de)
+    1:         self.assertEqual(str(t1), d)
+       
+    1:         t2 = xmlrpclib._binary(de)
+    1:         self.assertEqual(str(t2), d)
+       
+       
+    1: ADDR = PORT = URL = None
+       
+       # The evt is set twice.  First when the server is ready to serve.
+       # Second when the server has been shutdown.  The user must clear
+       # the event after it has been set the first time to catch the second set.
+    1: def http_server(evt, numrequests, requestHandler=None, encoding=None):
+   48:     class TestInstanceClass:
+   24:         def div(self, x, y):
+    1:             return x // y
+       
+   24:         def _methodHelp(self, name):
+    1:             if name == 'div':
+    1:                 return 'This is the div function'
+       
+   24:     def my_function():
+               '''This is my function'''
+>>>>>>         return True
+       
+   48:     class MyXMLRPCServer(SimpleXMLRPCServer.SimpleXMLRPCServer):
+   24:         def get_request(self):
+                   # Ensure the socket is always non-blocking.  On Linux, socket
+                   # attributes are not inherited like they are on *BSD and Windows.
+   25:             s, port = self.socket.accept()
+   25:             s.setblocking(True)
+   25:             return s, port
+       
+   24:     if not requestHandler:
+   17:         requestHandler = SimpleXMLRPCServer.SimpleXMLRPCRequestHandler
+   24:     serv = MyXMLRPCServer(("localhost", 0), requestHandler,
+   24:                           encoding=encoding,
+   24:                           logRequests=False, bind_and_activate=False)
+   24:     try:
+   24:         serv.socket.settimeout(3)
+   24:         serv.server_bind()
+               global ADDR, PORT, URL
+   24:         ADDR, PORT = serv.socket.getsockname()
+               #connect to IP address directly.  This avoids socket.create_connection()
+               #trying to connect to "localhost" using all address families, which
+               #causes slowdown e.g. on vista which supports AF_INET6.  The server listens
+               #on AF_INET only.
+   24:         URL = "http://%s:%d"%(ADDR, PORT)
+   24:         serv.server_activate()
+   24:         serv.register_introspection_functions()
+   24:         serv.register_multicall_functions()
+   24:         serv.register_function(pow)
+   29:         serv.register_function(lambda x,y: x+y, 'add')
+   25:         serv.register_function(lambda x: x, test_support.u(r't\xea\u0161t'))
+   24:         serv.register_function(my_function)
+   24:         serv.register_instance(TestInstanceClass())
+   24:         evt.set()
+       
+               # handle up to 'numrequests' requests
+   50:         while numrequests > 0:
+   26:             serv.handle_request()
+   26:             numrequests -= 1
+       
+>>>>>>     except socket.timeout:
+>>>>>>         pass
+           finally:
+   24:         serv.socket.close()
+   24:         PORT = None
+   24:         evt.set()
+       
+    1: def http_multi_server(evt, numrequests, requestHandler=None):
+    4:     class TestInstanceClass:
+    2:         def div(self, x, y):
+>>>>>>             return x // y
+       
+    2:         def _methodHelp(self, name):
+>>>>>>             if name == 'div':
+>>>>>>                 return 'This is the div function'
+       
+    2:     def my_function():
+               '''This is my function'''
+>>>>>>         return True
+       
+    4:     class MyXMLRPCServer(SimpleXMLRPCServer.MultiPathXMLRPCServer):
+    2:         def get_request(self):
+                   # Ensure the socket is always non-blocking.  On Linux, socket
+                   # attributes are not inherited like they are on *BSD and Windows.
+    4:             s, port = self.socket.accept()
+    4:             s.setblocking(True)
+    4:             return s, port
+       
+    2:     if not requestHandler:
+    2:         requestHandler = SimpleXMLRPCServer.SimpleXMLRPCRequestHandler
+    4:     class MyRequestHandler(requestHandler):
+    2:         rpc_paths = []
+       
+    2:     serv = MyXMLRPCServer(("localhost", 0), MyRequestHandler,
+    2:                           logRequests=False, bind_and_activate=False)
+    2:     serv.socket.settimeout(3)
+    2:     serv.server_bind()
+    2:     try:
+               global ADDR, PORT, URL
+    2:         ADDR, PORT = serv.socket.getsockname()
+               #connect to IP address directly.  This avoids socket.create_connection()
+               #trying to connect to "localhost" using all address families, which
+               #causes slowdown e.g. on vista which supports AF_INET6.  The server listens
+               #on AF_INET only.
+    2:         URL = "http://%s:%d"%(ADDR, PORT)
+    2:         serv.server_activate()
+    2:         paths = ["/foo", "/foo/bar"]
+    6:         for path in paths:
+    4:             d = serv.add_dispatcher(path, SimpleXMLRPCServer.SimpleXMLRPCDispatcher())
+    4:             d.register_introspection_functions()
+    4:             d.register_multicall_functions()
+    2:         serv.get_dispatcher(paths[0]).register_function(pow)
+    3:         serv.get_dispatcher(paths[1]).register_function(lambda x,y: x+y, 'add')
+    2:         evt.set()
+       
+               # handle up to 'numrequests' requests
+    6:         while numrequests > 0:
+    4:             serv.handle_request()
+    4:             numrequests -= 1
+       
+>>>>>>     except socket.timeout:
+>>>>>>         pass
+           finally:
+    2:         serv.socket.close()
+    2:         PORT = None
+    2:         evt.set()
+       
+       # This function prevents errors like:
+       #    <ProtocolError for localhost:57527/RPC2: 500 Internal Server Error>
+    1: def is_unavailable_exception(e):
+           '''Returns True if the given ProtocolError is the product of a server-side
+              exception caused by the 'temporarily unavailable' response sometimes
+              given by operations on non-blocking sockets.'''
+       
+           # sometimes we get a -1 error code and/or empty headers
+    2:     try:
+    2:         if e.errcode == -1 or e.headers is None:
+>>>>>>             return True
+    2:         exc_mess = e.headers.get('X-exception')
+>>>>>>     except AttributeError:
+               # Ignore socket.errors here.
+>>>>>>         exc_mess = str(e)
+       
+    2:     if exc_mess and 'temporarily unavailable' in exc_mess.lower():
+>>>>>>         return True
+       
+    2:     return False
+       
+    2: @unittest.skipUnless(threading, 'Threading required for this test.')
+    1: class BaseServerTestCase(unittest.TestCase):
+    1:     requestHandler = None
+    1:     request_count = 1
+    1:     threadFunc = staticmethod(http_server)
+       
+    1:     def setUp(self):
+               # enable traceback reporting
+   23:         SimpleXMLRPCServer.SimpleXMLRPCServer._send_traceback_header = True
+       
+   23:         self.evt = threading.Event()
+               # start server thread to handle requests
+   23:         serv_args = (self.evt, self.request_count, self.requestHandler)
+   23:         threading.Thread(target=self.threadFunc, args=serv_args).start()
+       
+               # wait for the server to be ready
+   23:         self.evt.wait(10)
+   23:         self.evt.clear()
+       
+    1:     def tearDown(self):
+               # wait on the server thread to terminate
+   23:         self.evt.wait(10)
+       
+               # disable traceback reporting
+   23:         SimpleXMLRPCServer.SimpleXMLRPCServer._send_traceback_header = False
+       
+       # NOTE: The tests in SimpleServerTestCase will ignore failures caused by
+       # "temporarily unavailable" exceptions raised in SimpleXMLRPCServer.  This
+       # condition occurs infrequently on some platforms, frequently on others, and
+       # is apparently caused by using SimpleXMLRPCServer with a non-blocking socket
+       # If the server class is updated at some point in the future to handle this
+       # situation more gracefully, these tests should be modified appropriately.
+       
+    2: class SimpleServerTestCase(BaseServerTestCase):
+    1:     def test_simple1(self):
+    2:         try:
+    2:             p = xmlrpclib.ServerProxy(URL)
+    2:             self.assertEqual(p.pow(6,8), 6**8)
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     @test_support.requires_unicode
+           def test_nonascii(self):
+    1:         start_string = test_support.u(r'P\N{LATIN SMALL LETTER Y WITH CIRCUMFLEX}t')
+    1:         end_string = test_support.u(r'h\N{LATIN SMALL LETTER O WITH HORN}n')
+       
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             self.assertEqual(p.add(start_string, end_string),
+    1:                              start_string + end_string)
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error) as e:
+                   # ignore failures due to non-blocking socket unavailable errors.
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     @test_support.requires_unicode
+           def test_unicode_host(self):
+    1:         server = xmlrpclib.ServerProxy(u"http://%s:%d/RPC2"%(ADDR, PORT))
+    1:         self.assertEqual(server.add("a", u"\xe9"), u"a\xe9")
+       
+    1:     @test_support.requires_unicode
+           def test_client_encoding(self):
+    1:         start_string = unichr(0x20ac)
+    1:         end_string = unichr(0xa4)
+       
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL, encoding='iso-8859-15')
+    1:             self.assertEqual(p.add(start_string, end_string),
+    1:                              start_string + end_string)
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error) as e:
+                   # ignore failures due to non-blocking socket unavailable errors.
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     @test_support.requires_unicode
+           def test_nonascii_methodname(self):
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL, encoding='iso-8859-15')
+    1:             m = getattr(p, 't\xea\xa8t')
+    1:             self.assertEqual(m(42), 42)
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error) as e:
+                   # ignore failures due to non-blocking socket unavailable errors.
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+           # [ch] The test 404 is causing lots of false alarms.
+    1:     def XXXtest_404(self):
+               # send POST with httplib, it should return 404 header and
+               # 'Not Found' message.
+>>>>>>         conn = httplib.HTTPConnection(ADDR, PORT)
+>>>>>>         conn.request('POST', '/this-is-not-valid')
+>>>>>>         response = conn.getresponse()
+>>>>>>         conn.close()
+       
+>>>>>>         self.assertEqual(response.status, 404)
+>>>>>>         self.assertEqual(response.reason, 'Not Found')
+       
+    1:     def test_introspection1(self):
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             meth = p.system.listMethods()
+    1:             expected_methods = set(['pow', 'div', 'my_function', 'add',
+    1:                                     test_support.u(r't\xea\u0161t'),
+    1:                                     'system.listMethods', 'system.methodHelp',
+    1:                                     'system.methodSignature', 'system.multicall'])
+    1:             self.assertEqual(set(meth), expected_methods)
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     def test_introspection2(self):
+    1:         try:
+                   # test _methodHelp()
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             divhelp = p.system.methodHelp('div')
+    1:             self.assertEqual(divhelp, 'This is the div function')
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     @unittest.skipIf(sys.flags.optimize >= 2,
+    1:                      "Docstrings are omitted with -O2 and above")
+           def test_introspection3(self):
+    1:         try:
+                   # test native doc
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             myfunction = p.system.methodHelp('my_function')
+    1:             self.assertEqual(myfunction, 'This is my function')
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     def test_introspection4(self):
+               # the SimpleXMLRPCServer doesn't support signatures, but
+               # at least check that we can try making the call
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             divsig = p.system.methodSignature('div')
+    1:             self.assertEqual(divsig, 'signatures not supported')
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     def test_multicall(self):
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             multicall = xmlrpclib.MultiCall(p)
+    1:             multicall.add(2,3)
+    1:             multicall.pow(6,8)
+    1:             multicall.div(127,42)
+    1:             add_result, pow_result, div_result = multicall()
+    1:             self.assertEqual(add_result, 2+3)
+    1:             self.assertEqual(pow_result, 6**8)
+    1:             self.assertEqual(div_result, 127//42)
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     def test_non_existing_multicall(self):
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             multicall = xmlrpclib.MultiCall(p)
+    1:             multicall.this_is_not_exists()
+    1:             result = multicall()
+       
+                   # result.results contains;
+                   # [{'faultCode': 1, 'faultString': '<type \'exceptions.Exception\'>:'
+                   #   'method "this_is_not_exists" is not supported'>}]
+       
+    1:             self.assertEqual(result.results[0]['faultCode'], 1)
+    1:             self.assertEqual(result.results[0]['faultString'],
+    1:                 '<type \'exceptions.Exception\'>:method "this_is_not_exists" '
+                       'is not supported')
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     def test_dotted_attribute(self):
+               # Raises an AttributeError because private methods are not allowed.
+    1:         self.assertRaises(AttributeError,
+    1:                           SimpleXMLRPCServer.resolve_dotted_attribute, str, '__add')
+       
+    1:         self.assertTrue(SimpleXMLRPCServer.resolve_dotted_attribute(str, 'title'))
+               # Get the test to run faster by sending a request with test_simple1.
+               # This avoids waiting for the socket timeout.
+    1:         self.test_simple1()
+       
+    1:     def test_partial_post(self):
+               # Check that a partial POST doesn't make the server loop: issue #14001.
+    1:         conn = httplib.HTTPConnection(ADDR, PORT)
+    1:         conn.request('POST', '/RPC2 HTTP/1.0\r\nContent-Length: 100\r\n\r\nbye')
+    1:         conn.close()
+       
+    2: class SimpleServerEncodingTestCase(BaseServerTestCase):
+    1:     @staticmethod
+    1:     def threadFunc(evt, numrequests, requestHandler=None, encoding=None):
+    1:         http_server(evt, numrequests, requestHandler, 'iso-8859-15')
+       
+    1:     @test_support.requires_unicode
+           def test_server_encoding(self):
+    1:         start_string = unichr(0x20ac)
+    1:         end_string = unichr(0xa4)
+       
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             self.assertEqual(p.add(start_string, end_string),
+    1:                              start_string + end_string)
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error) as e:
+                   # ignore failures due to non-blocking socket unavailable errors.
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+       
+    2: class MultiPathServerTestCase(BaseServerTestCase):
+    1:     threadFunc = staticmethod(http_multi_server)
+    1:     request_count = 2
+    1:     def test_path1(self):
+    1:         p = xmlrpclib.ServerProxy(URL+"/foo")
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         self.assertRaises(xmlrpclib.Fault, p.add, 6, 8)
+    1:     def test_path2(self):
+    1:         p = xmlrpclib.ServerProxy(URL+"/foo/bar")
+    1:         self.assertEqual(p.add(6,8), 6+8)
+    1:         self.assertRaises(xmlrpclib.Fault, p.pow, 6, 8)
+       
+       #A test case that verifies that a server using the HTTP/1.1 keep-alive mechanism
+       #does indeed serve subsequent requests on the same connection
+    2: class BaseKeepaliveServerTestCase(BaseServerTestCase):
+           #a request handler that supports keep-alive and logs requests into a
+           #class variable
+    2:     class RequestHandler(SimpleXMLRPCServer.SimpleXMLRPCRequestHandler):
+    1:         parentClass = SimpleXMLRPCServer.SimpleXMLRPCRequestHandler
+    1:         protocol_version = 'HTTP/1.1'
+    1:         myRequests = []
+    1:         def handle(self):
+    5:             self.myRequests.append([])
+    5:             self.reqidx = len(self.myRequests)-1
+    5:             return self.parentClass.handle(self)
+    1:         def handle_one_request(self):
+   16:             result = self.parentClass.handle_one_request(self)
+   16:             self.myRequests[self.reqidx].append(self.raw_requestline)
+   16:             return result
+       
+    1:     requestHandler = RequestHandler
+    1:     def setUp(self):
+               #clear request log
+    3:         self.RequestHandler.myRequests = []
+    3:         return BaseServerTestCase.setUp(self)
+       
+       #A test case that verifies that a server using the HTTP/1.1 keep-alive mechanism
+       #does indeed serve subsequent requests on the same connection
+    2: class KeepaliveServerTestCase1(BaseKeepaliveServerTestCase):
+    1:     def test_two(self):
+    1:         p = xmlrpclib.ServerProxy(URL)
+               #do three requests.
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+       
+               #they should have all been handled by a single request handler
+    1:         self.assertEqual(len(self.RequestHandler.myRequests), 1)
+       
+               #check that we did at least two (the third may be pending append
+               #due to thread scheduling)
+    1:         self.assertGreaterEqual(len(self.RequestHandler.myRequests[-1]), 2)
+       
+       #test special attribute access on the serverproxy, through the __call__
+       #function.
+    2: class KeepaliveServerTestCase2(BaseKeepaliveServerTestCase):
+           #ask for two keepalive requests to be handled.
+    1:     request_count=2
+       
+    1:     def test_close(self):
+    1:         p = xmlrpclib.ServerProxy(URL)
+               #do some requests with close.
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         p("close")() #this should trigger a new keep-alive request
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+       
+               #they should have all been two request handlers, each having logged at least
+               #two complete requests
+    1:         self.assertEqual(len(self.RequestHandler.myRequests), 2)
+    1:         self.assertGreaterEqual(len(self.RequestHandler.myRequests[-1]), 2)
+    1:         self.assertGreaterEqual(len(self.RequestHandler.myRequests[-2]), 2)
+       
+    1:     def test_transport(self):
+    1:         p = xmlrpclib.ServerProxy(URL)
+               #do some requests with close.
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         p("transport").close() #same as above, really.
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         self.assertEqual(len(self.RequestHandler.myRequests), 2)
+       
+       #A test case that verifies that gzip encoding works in both directions
+       #(for a request and the response)
+    2: @unittest.skipUnless(gzip, 'gzip not available')
+    1: class GzipServerTestCase(BaseServerTestCase):
+           #a request handler that supports keep-alive and logs requests into a
+           #class variable
+    2:     class RequestHandler(SimpleXMLRPCServer.SimpleXMLRPCRequestHandler):
+    1:         parentClass = SimpleXMLRPCServer.SimpleXMLRPCRequestHandler
+    1:         protocol_version = 'HTTP/1.1'
+       
+    1:         def do_POST(self):
+                   #store content of last request in class
+    5:             self.__class__.content_length = int(self.headers["content-length"])
+    5:             return self.parentClass.do_POST(self)
+    1:     requestHandler = RequestHandler
+       
+    2:     class Transport(xmlrpclib.Transport):
+               #custom transport, stores the response length for our perusal
+    1:         fake_gzip = False
+    1:         def parse_response(self, response):
+    4:             self.response_length=int(response.getheader("content-length", 0))
+    4:             return xmlrpclib.Transport.parse_response(self, response)
+       
+    1:         def send_content(self, connection, body):
+    5:             if self.fake_gzip:
+                       #add a lone gzip header to induce decode error remotely
+    1:                 connection.putheader("Content-Encoding", "gzip")
+    5:             return xmlrpclib.Transport.send_content(self, connection, body)
+       
+    1:     def setUp(self):
+    4:         BaseServerTestCase.setUp(self)
+       
+    1:     def test_gzip_request(self):
+    1:         t = self.Transport()
+    1:         t.encode_threshold = None
+    1:         p = xmlrpclib.ServerProxy(URL, transport=t)
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         a = self.RequestHandler.content_length
+    1:         t.encode_threshold = 0 #turn on request encoding
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         b = self.RequestHandler.content_length
+    1:         self.assertTrue(a>b)
+       
+    1:     def test_bad_gzip_request(self):
+    1:         t = self.Transport()
+    1:         t.encode_threshold = None
+    1:         t.fake_gzip = True
+    1:         p = xmlrpclib.ServerProxy(URL, transport=t)
+    1:         cm = self.assertRaisesRegexp(xmlrpclib.ProtocolError,
+    1:                                      re.compile(r"\b400\b"))
+    1:         with cm:
+    1:             p.pow(6, 8)
+       
+    1:     def test_gzip_response(self):
+    1:         t = self.Transport()
+    1:         p = xmlrpclib.ServerProxy(URL, transport=t)
+    1:         old = self.requestHandler.encode_threshold
+    1:         self.requestHandler.encode_threshold = None #no encoding
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         a = t.response_length
+    1:         self.requestHandler.encode_threshold = 0 #always encode
+    1:         self.assertEqual(p.pow(6,8), 6**8)
+    1:         b = t.response_length
+    1:         self.requestHandler.encode_threshold = old
+    1:         self.assertTrue(a>b)
+       
+    1:     def test_gzip_decode_limit(self):
+    1:         max_gzip_decode = 20 * 1024 * 1024
+    1:         data = '\0' * max_gzip_decode
+    1:         encoded = xmlrpclib.gzip_encode(data)
+    1:         decoded = xmlrpclib.gzip_decode(encoded)
+    1:         self.assertEqual(len(decoded), max_gzip_decode)
+       
+    1:         data = '\0' * (max_gzip_decode + 1)
+    1:         encoded = xmlrpclib.gzip_encode(data)
+       
+    1:         with self.assertRaisesRegexp(ValueError,
+    1:                                      "max gzipped payload length exceeded"):
+    1:             xmlrpclib.gzip_decode(encoded)
+       
+    1:         xmlrpclib.gzip_decode(encoded, max_decode=-1)
+       
+       
+       #Test special attributes of the ServerProxy object
+    2: class ServerProxyTestCase(unittest.TestCase):
+    1:     def setUp(self):
+    2:         unittest.TestCase.setUp(self)
+    2:         if threading:
+    2:             self.url = URL
+               else:
+                   # Without threading, http_server() and http_multi_server() will not
+                   # be executed and URL is still equal to None. 'http://' is a just
+                   # enough to choose the scheme (HTTP)
+>>>>>>             self.url = 'http://'
+       
+    1:     def test_close(self):
+    1:         p = xmlrpclib.ServerProxy(self.url)
+    1:         self.assertEqual(p('close')(), None)
+       
+    1:     def test_transport(self):
+    1:         t = xmlrpclib.Transport()
+    1:         p = xmlrpclib.ServerProxy(self.url, transport=t)
+    1:         self.assertEqual(p('transport'), t)
+       
+       # This is a contrived way to make a failure occur on the server side
+       # in order to test the _send_traceback_header flag on the server
+    2: class FailingMessageClass(mimetools.Message):
+    1:     def __getitem__(self, key):
+    2:         key = key.lower()
+    2:         if key == 'content-length':
+    2:             return 'I am broken'
+>>>>>>         return mimetools.Message.__getitem__(self, key)
+       
+       
+    2: @unittest.skipUnless(threading, 'Threading required for this test.')
+    1: class FailingServerTestCase(unittest.TestCase):
+    1:     def setUp(self):
+    3:         self.evt = threading.Event()
+               # start server thread to handle requests
+    3:         serv_args = (self.evt, 1)
+    3:         threading.Thread(target=http_server, args=serv_args).start()
+       
+               # wait for the server to be ready
+    3:         self.evt.wait()
+    3:         self.evt.clear()
+       
+    1:     def tearDown(self):
+               # wait on the server thread to terminate
+    3:         self.evt.wait()
+               # reset flag
+    3:         SimpleXMLRPCServer.SimpleXMLRPCServer._send_traceback_header = False
+               # reset message class
+    3:         SimpleXMLRPCServer.SimpleXMLRPCRequestHandler.MessageClass = mimetools.Message
+       
+    1:     def test_basic(self):
+               # check that flag is false by default
+    1:         flagval = SimpleXMLRPCServer.SimpleXMLRPCServer._send_traceback_header
+    1:         self.assertEqual(flagval, False)
+       
+               # enable traceback reporting
+    1:         SimpleXMLRPCServer.SimpleXMLRPCServer._send_traceback_header = True
+       
+               # test a call that shouldn't fail just as a smoke test
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             self.assertEqual(p.pow(6,8), 6**8)
+>>>>>>         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+>>>>>>             if not is_unavailable_exception(e):
+                       # protocol error; provide additional information in test output
+>>>>>>                 self.fail("%s\n%s" % (e, getattr(e, "headers", "")))
+       
+    1:     def test_fail_no_info(self):
+               # use the broken message class
+    1:         SimpleXMLRPCServer.SimpleXMLRPCRequestHandler.MessageClass = FailingMessageClass
+       
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             p.pow(6,8)
+    1:         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+    1:             if not is_unavailable_exception(e) and hasattr(e, "headers"):
+                       # The two server-side error headers shouldn't be sent back in this case
+    1:                 self.assertTrue(e.headers.get("X-exception") is None)
+    1:                 self.assertTrue(e.headers.get("X-traceback") is None)
+               else:
+>>>>>>             self.fail('ProtocolError not raised')
+       
+    1:     def test_fail_with_info(self):
+               # use the broken message class
+    1:         SimpleXMLRPCServer.SimpleXMLRPCRequestHandler.MessageClass = FailingMessageClass
+       
+               # Check that errors in the server send back exception/traceback
+               # info when flag is set
+    1:         SimpleXMLRPCServer.SimpleXMLRPCServer._send_traceback_header = True
+       
+    1:         try:
+    1:             p = xmlrpclib.ServerProxy(URL)
+    1:             p.pow(6,8)
+    1:         except (xmlrpclib.ProtocolError, socket.error), e:
+                   # ignore failures due to non-blocking socket 'unavailable' errors
+    1:             if not is_unavailable_exception(e) and hasattr(e, "headers"):
+                       # We should get error info in the response
+    1:                 expected_err = "invalid literal for int() with base 10: 'I am broken'"
+    1:                 self.assertEqual(e.headers.get("x-exception"), expected_err)
+    1:                 self.assertTrue(e.headers.get("x-traceback") is not None)
+               else:
+>>>>>>             self.fail('ProtocolError not raised')
+       
+    2: class CGIHandlerTestCase(unittest.TestCase):
+    1:     def setUp(self):
+    2:         self.cgi = SimpleXMLRPCServer.CGIXMLRPCRequestHandler()
+       
+    1:     def tearDown(self):
+    2:         self.cgi = None
+       
+    1:     def test_cgi_get(self):
+    1:         with test_support.EnvironmentVarGuard() as env:
+    1:             env['REQUEST_METHOD'] = 'GET'
+                   # if the method is GET and no request_text is given, it runs handle_get
+                   # get sysout output
+    1:             with test_support.captured_stdout() as data_out:
+    1:                 self.cgi.handle_request()
+       
+                   # parse Status header
+    1:             data_out.seek(0)
+    1:             handle = data_out.read()
+    1:             status = handle.split()[1]
+    1:             message = ' '.join(handle.split()[2:4])
+       
+    1:             self.assertEqual(status, '400')
+    1:             self.assertEqual(message, 'Bad Request')
+       
+       
+    1:     def test_cgi_xmlrpc_response(self):
+               data = """<?xml version='1.0'?>
+               <methodCall>
+                   <methodName>test_method</methodName>
+                   <params>
+                       <param>
+                           <value><string>foo</string></value>
+                       </param>
+                       <param>
+                           <value><string>bar</string></value>
+                       </param>
+                   </params>
+               </methodCall>
+    1:         """
+       
+    1:         with test_support.EnvironmentVarGuard() as env, \
+    1:              test_support.captured_stdout() as data_out, \
+    1:              test_support.captured_stdin() as data_in:
+    1:             data_in.write(data)
+    1:             data_in.seek(0)
+    1:             env['CONTENT_LENGTH'] = str(len(data))
+    1:             self.cgi.handle_request()
+    1:         data_out.seek(0)
+       
+               # will respond exception, if so, our goal is achieved ;)
+    1:         handle = data_out.read()
+       
+               # start with 44th char so as not to get http header, we just need only xml
+    1:         self.assertRaises(xmlrpclib.Fault, xmlrpclib.loads, handle[44:])
+       
+               # Also test the content-length returned  by handle_request
+               # Using the same test method inorder to avoid all the datapassing
+               # boilerplate code.
+               # Test for bug: http://bugs.python.org/issue5040
+       
+    1:         content = handle[handle.find("<?xml"):]
+       
+    1:         self.assertEqual(
+    1:             int(re.search('Content-Length: (\d+)', handle).group(1)),
+    1:             len(content))
+       
+       
+    2: class FakeSocket:
+       
+    1:     def __init__(self):
+    4:         self.data = StringIO.StringIO()
+       
+    1:     def send(self, buf):
+>>>>>>         self.data.write(buf)
+>>>>>>         return len(buf)
+       
+    1:     def sendall(self, buf):
+    4:         self.data.write(buf)
+       
+    1:     def getvalue(self):
+    4:         return self.data.getvalue()
+       
+    1:     def makefile(self, x='r', y=-1):
+    4:         raise RuntimeError
+       
+    1:     def close(self):
+    4:         pass
+       
+    2: class FakeTransport(xmlrpclib.Transport):
+           """A Transport instance that records instead of sending a request.
+       
+           This class replaces the actual socket used by httplib with a
+           FakeSocket object that records the request.  It doesn't provide a
+           response.
+    1:     """
+       
+    1:     def make_connection(self, host):
+    4:         conn = xmlrpclib.Transport.make_connection(self, host)
+    4:         conn.sock = self.fake_socket = FakeSocket()
+    4:         return conn
+       
+    2: class TransportSubclassTestCase(unittest.TestCase):
+       
+    1:     def issue_request(self, transport_class):
+               """Return an HTTP request made via transport_class."""
+    4:         transport = transport_class()
+    4:         proxy = xmlrpclib.ServerProxy("http://example.com/",
+    4:                                       transport=transport)
+    4:         try:
+    4:             proxy.pow(6, 8)
+    4:         except RuntimeError:
+    4:             return transport.fake_socket.getvalue()
+>>>>>>         return None
+       
+    1:     def test_custom_user_agent(self):
+    2:         class TestTransport(FakeTransport):
+       
+    1:             def send_user_agent(self, conn):
+    1:                 xmlrpclib.Transport.send_user_agent(self, conn)
+    1:                 conn.putheader("X-Test", "test_custom_user_agent")
+       
+    1:         req = self.issue_request(TestTransport)
+    1:         self.assertIn("X-Test: test_custom_user_agent\r\n", req)
+       
+    1:     def test_send_host(self):
+    2:         class TestTransport(FakeTransport):
+       
+    1:             def send_host(self, conn, host):
+    1:                 xmlrpclib.Transport.send_host(self, conn, host)
+    1:                 conn.putheader("X-Test", "test_send_host")
+       
+    1:         req = self.issue_request(TestTransport)
+    1:         self.assertIn("X-Test: test_send_host\r\n", req)
+       
+    1:     def test_send_request(self):
+    2:         class TestTransport(FakeTransport):
+       
+    1:             def send_request(self, conn, url, body):
+    1:                 xmlrpclib.Transport.send_request(self, conn, url, body)
+    1:                 conn.putheader("X-Test", "test_send_request")
+       
+    1:         req = self.issue_request(TestTransport)
+    1:         self.assertIn("X-Test: test_send_request\r\n", req)
+       
+    1:     def test_send_content(self):
+    2:         class TestTransport(FakeTransport):
+       
+    1:             def send_content(self, conn, body):
+    1:                 conn.putheader("X-Test", "test_send_content")
+    1:                 xmlrpclib.Transport.send_content(self, conn, body)
+       
+    1:         req = self.issue_request(TestTransport)
+    1:         self.assertIn("X-Test: test_send_content\r\n", req)
+       
+    1: @test_support.reap_threads
+       def test_main():
+    1:     xmlrpc_tests = [XMLRPCTestCase, HelperTestCase, DateTimeTestCase,
+    1:          BinaryTestCase, FaultTestCase, TransportSubclassTestCase]
+    1:     xmlrpc_tests.append(SimpleServerTestCase)
+    1:     xmlrpc_tests.append(SimpleServerEncodingTestCase)
+    1:     xmlrpc_tests.append(KeepaliveServerTestCase1)
+    1:     xmlrpc_tests.append(KeepaliveServerTestCase2)
+    1:     xmlrpc_tests.append(GzipServerTestCase)
+    1:     xmlrpc_tests.append(MultiPathServerTestCase)
+    1:     xmlrpc_tests.append(ServerProxyTestCase)
+    1:     xmlrpc_tests.append(FailingServerTestCase)
+    1:     xmlrpc_tests.append(CGIHandlerTestCase)
+       
+    1:     test_support.run_unittest(*xmlrpc_tests)
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()

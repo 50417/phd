@@ -1,0 +1,143 @@
+       # Tests invocation of the interpreter with various command line arguments
+       # All tests are executed with environment variables ignored
+       # See test_cmd_line_script.py for testing of script execution
+       
+    1: import test.test_support
+    1: import sys
+    1: import unittest
+    1: from test.script_helper import (
+           assert_python_ok, assert_python_failure, spawn_python, kill_python,
+           python_exit_code
+       )
+       
+       
+    2: class CmdLineTest(unittest.TestCase):
+    1:     def start_python(self, *args):
+   13:         p = spawn_python(*args)
+   13:         return kill_python(p)
+       
+    1:     def exit_code(self, *args):
+    9:         return python_exit_code(*args)
+       
+    1:     def test_directories(self):
+    1:         self.assertNotEqual(self.exit_code('.'), 0)
+    1:         self.assertNotEqual(self.exit_code('< .'), 0)
+       
+    1:     def verify_valid_flag(self, cmd_line):
+    8:         data = self.start_python(cmd_line)
+    8:         self.assertTrue(data == '' or data.endswith('\n'))
+    8:         self.assertNotIn('Traceback', data)
+       
+    1:     def test_optimize(self):
+    1:         self.verify_valid_flag('-O')
+    1:         self.verify_valid_flag('-OO')
+       
+    1:     def test_q(self):
+    1:         self.verify_valid_flag('-Qold')
+    1:         self.verify_valid_flag('-Qnew')
+    1:         self.verify_valid_flag('-Qwarn')
+    1:         self.verify_valid_flag('-Qwarnall')
+       
+    1:     def test_site_flag(self):
+    1:         self.verify_valid_flag('-S')
+       
+    1:     def test_usage(self):
+    1:         self.assertIn('usage', self.start_python('-h'))
+       
+    1:     def test_version(self):
+    1:         version = 'Python %d.%d' % sys.version_info[:2]
+    1:         self.assertTrue(self.start_python('-V').startswith(version))
+       
+    1:     def test_run_module(self):
+               # Test expected operation of the '-m' switch
+               # Switch needs an argument
+    1:         self.assertNotEqual(self.exit_code('-m'), 0)
+               # Check we get an error for a nonexistent module
+    1:         self.assertNotEqual(
+    1:             self.exit_code('-m', 'fnord43520xyz'),
+    1:             0)
+               # Check the runpy module also gives an error for
+               # a nonexistent module
+    1:         self.assertNotEqual(
+    1:             self.exit_code('-m', 'runpy', 'fnord43520xyz'),
+    1:             0)
+               # All good if module is located and run successfully
+    1:         self.assertEqual(
+    1:             self.exit_code('-m', 'timeit', '-n', '1'),
+    1:             0)
+       
+    1:     def test_run_module_bug1764407(self):
+               # -m and -i need to play well together
+               # Runs the timeit module and checks the __main__
+               # namespace has been populated appropriately
+    1:         p = spawn_python('-i', '-m', 'timeit', '-n', '1')
+    1:         p.stdin.write('Timer\n')
+    1:         p.stdin.write('exit()\n')
+    1:         data = kill_python(p)
+    1:         self.assertTrue(data.startswith('1 loop'))
+    1:         self.assertIn('__main__.Timer', data)
+       
+    1:     def test_run_code(self):
+               # Test expected operation of the '-c' switch
+               # Switch needs an argument
+    1:         self.assertNotEqual(self.exit_code('-c'), 0)
+               # Check we get an error for an uncaught exception
+    1:         self.assertNotEqual(
+    1:             self.exit_code('-c', 'raise Exception'),
+    1:             0)
+               # All good if execution is successful
+    1:         self.assertEqual(
+    1:             self.exit_code('-c', 'pass'),
+    1:             0)
+       
+    1:     def test_hash_randomization(self):
+               # Verify that -R enables hash randomization:
+    1:         self.verify_valid_flag('-R')
+    1:         hashes = []
+    3:         for i in range(2):
+    2:             code = 'print(hash("spam"))'
+    2:             data = self.start_python('-R', '-c', code)
+    2:             hashes.append(data)
+    1:         self.assertNotEqual(hashes[0], hashes[1])
+       
+               # Verify that sys.flags contains hash_randomization
+    1:         code = 'import sys; print sys.flags'
+    1:         data = self.start_python('-R', '-c', code)
+    1:         self.assertTrue('hash_randomization=1' in data)
+       
+    1:     def test_del___main__(self):
+               # Issue #15001: PyRun_SimpleFileExFlags() did crash because it kept a
+               # borrowed reference to the dict of __main__ module and later modify
+               # the dict whereas the module was destroyed
+    1:         filename = test.test_support.TESTFN
+    1:         self.addCleanup(test.test_support.unlink, filename)
+    1:         with open(filename, "w") as script:
+    1:             print >>script, "import sys"
+    1:             print >>script, "del sys.modules['__main__']"
+    1:         assert_python_ok(filename)
+       
+    1:     def test_unknown_options(self):
+    1:         rc, out, err = assert_python_failure('-E', '-z')
+    1:         self.assertIn(b'Unknown option: -z', err)
+    1:         self.assertEqual(err.splitlines().count(b'Unknown option: -z'), 1)
+    1:         self.assertEqual(b'', out)
+               # Add "without='-E'" to prevent _assert_python to append -E
+               # to env_vars and change the output of stderr
+    1:         rc, out, err = assert_python_failure('-z', without='-E')
+    1:         self.assertIn(b'Unknown option: -z', err)
+    1:         self.assertEqual(err.splitlines().count(b'Unknown option: -z'), 1)
+    1:         self.assertEqual(b'', out)
+    1:         rc, out, err = assert_python_failure('-a', '-z', without='-E')
+    1:         self.assertIn(b'Unknown option: -a', err)
+               # only the first unknown option is reported
+    1:         self.assertNotIn(b'Unknown option: -z', err)
+    1:         self.assertEqual(err.splitlines().count(b'Unknown option: -a'), 1)
+    1:         self.assertEqual(b'', out)
+       
+       
+    1: def test_main():
+    1:     test.test_support.run_unittest(CmdLineTest)
+    1:     test.test_support.reap_children()
+       
+    1: if __name__ == "__main__":
+>>>>>>     test_main()
