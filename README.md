@@ -1,3 +1,9 @@
+#### Using Deep Learning to find bugs in Cyber Physical System Tool chain
+The purpose of this project to test and find bugs in cyber-physical system development tool chains such as Simulink 
+
+The prototype implementation is developed extending DeepSmith code base. 
+
+####How to use
 The entire project is built using [Bazel](https://bazel.build), with a
 preliminary [configure](/configure) script to setup the build. 
 
