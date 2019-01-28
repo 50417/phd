@@ -1,20 +1,8 @@
-# My PhD
-
-This is the forked repo of Chris Cummins Phd Folder. 
-This is the working copy of the Project for 6324
-
-The work is inspired by 
-1. Chris Cummins, Pavlos Petoumenos, Alastair Murray, Hugh Leather.
-   "**DeepSmith: Compiler Fuzzing through Deep Learning**".
-   ACACES '18.
-   [[source code]](/docs/2018_07_acaces).
-   [[pdf]](https://chriscummins.cc/pub/2018-acaces.pdf).
-
 The entire project is built using [Bazel](https://bazel.build), with a
 preliminary [configure](/configure) script to setup the build. 
 
 Please create virtual environment so that the installation doesnot conflict with system wide installs.  
-This project can only be built on a modern version of Ubuntu Linux . There are issues on macOS
+This project can only be built on a modern version of Ubuntu Linux . There are issues on macOS right now.
 
 #### Installing Ubuntu requirements
 
@@ -32,7 +20,7 @@ $ sudo apt install -y --no-install-recommends \
 ```
 
 Please note that this list of packages is for Ubuntu 18.04. On older
-distributions some of the packages may not exist. For example, Ubuntu
+distributions, some of the packages may not exist. For example, Ubuntu
 distributions prior to 16.10 require a custom PPA to provide the `python3.6`
 package.
 
@@ -43,9 +31,7 @@ $ curl -L -o /tmp/bazel.sh https://github.com/bazelbuild/bazel/releases/download
 $ sudo bash /tmp/bazel.sh && rm /tmp/bazel.sh
 ```
 
-macOS installation requirements are on Chris's repo. But the installation is not straightforward and have issues. 
-
-Install the requirements which are common across platforms:
+Now install the requirements which are common across platforms:
 Install julia : 
 
 
@@ -59,7 +45,7 @@ $ julia
 Clone this project:(as of now clone in /var directory)
 
 ```
-$ git clone https://github.com/50417/phd.git
+$ git clone [repo]
 $ cd phd
 ```
 
@@ -84,7 +70,7 @@ $ source $PWD/.env
 ```
 
 Now build or test whatever bazel targets you'd like. Use `bazel query //...` to
-list the available targets. E.g. to run the entire test suite, run:
+list the available targets. E.g. to run the specific test suite, run:
 
 ```bash
 $ bazel test //lib/labm8:fs_test
