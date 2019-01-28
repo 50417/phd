@@ -40,9 +40,49 @@ int main(int argc, char** argv) {
 }  
 """
 
+def test_RemoveAnnotationOnSimulink_program():
+  """Test that RemoveAnnotationOnSimulink produce correct output """
+
+  assert common.RemoveAnnotationOnSimulink("""
+Annotation {
+  name value
+}
+AnnotationDefaults {
+  parameter value
+  param2 value
+} 
+""") == """
+"""
+
+def test_RemoveCommentsOnSimulink_program():
+  """Test that RemoveCommentsOnSimulink produce correct output """
+
+  assert common.RemoveCommentsOnSimulink("""
+# 123
+Model{
+# Name
+}
+""") == """
+Model{
+}
+"""
+
+def test_RemoveUnnecessaryOnSimulink_program():
+  """Test that RemoveUnnecessaryOnSimulink produce correct output """
+
+  assert common.RemoveUnnecessaryOnSimulink("""
+Model{
+Name test
+Position [1,2]
+ZOrder 3
+}
+""") == """
+Model{
+Name test
+}
+"""
 
 # StripDuplicateEmptyLines() tests.
-
 def test_StripDuplicateEmptyLines_empty_input():
   """Test StripDuplicateEmptyLines accepts an empty input."""
   assert common.StripDuplicateEmptyLines('') == ''
@@ -50,6 +90,18 @@ def test_StripDuplicateEmptyLines_empty_input():
 def test_SStripDuplicateWhiteSpaces_empty_input():
   """Test StripDuplicateWhiteSpaces accepts an empty input."""
   assert common.StripDuplicateWhiteSpaces('') == ''
+
+def test_RemoveAnnotationOnSimulink_empty_input():
+  """Test RemoveAnnotationOnSimulink accepts an empty input."""
+  assert common.RemoveAnnotationOnSimulink('') == ''
+
+def test_RemoveCommentsOnSimulink_empty_input():
+  """Test RemoveCommentsOnSimulink accepts an empty input."""
+  assert common.RemoveCommentsOnSimulink('') == ''
+
+def test_RemoveUnnecessaryOnSimulink_empty_input():
+  """Test RemoveUnnecessaryOnSimulink accepts an empty input."""
+  assert common.RemoveUnnecessaryOnSimulink('') == ''
 
 # Benchmarks.
 
@@ -59,6 +111,31 @@ HELLO_WORLD_C = """
 int main(int argc, char** argv) {
   printf("Hello,   world!\\n");
   return 0;
+}
+"""
+ANNOTATION_SIMULINK= """
+
+Annotation {
+  name value
+}
+AnnotationDefaults{
+  parameter value
+  param2 value
+}
+"""
+
+COMMENTS_SIMULINK= """
+# 123
+Model{
+# Name
+}
+"""
+
+Unnecessary_SIMULINK= """
+Model{
+Name test
+Position [1,2]
+ZOrder 3
 }
 """
 
@@ -76,6 +153,17 @@ def test_benchmark_StripDuplicateWhiteSpaces_c_hello_world(benchmark):
   """Benchmark StripDuplicateWhiteSpaces on a "hello world!" C program."""
   benchmark(common.StripDuplicateWhiteSpaces, HELLO_WORLD_C)
 
+def test_benchmark_RemoveAnnotation(benchmark):
+  """Benchmark RemoveAnnotationOnSimulink on a "ANNOTATION_SIMULINK"""
+  benchmark(common.RemoveAnnotationOnSimulink, ANNOTATION_SIMULINK)
+
+def test_benchmark_RemoveComments(benchmark):
+  """Benchmark RemoveCommentsOnSimulink on a "COMMENTS_SIMULINK"""
+  benchmark(common.RemoveCommentsOnSimulink, COMMENTS_SIMULINK)
+
+def test_benchmark_RemoveUnnecessary(benchmark):
+  """Benchmark RemoveUnnecessaryOnSimulink on a "Unnecessary_SIMULINK"""
+  benchmark(common.RemoveUnnecessaryOnSimulink, Unnecessary_SIMULINK)
 
 def main(argv):
   """Main entry point."""

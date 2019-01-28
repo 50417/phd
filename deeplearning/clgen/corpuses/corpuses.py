@@ -174,6 +174,8 @@ class Corpus(object):
       logging.info('%s: %s tokens in %s ms', type(atomizer).__name__,
                    humanize.intcomma(atomizer.vocab_size),
                    humanize.intcomma(int((time.time() - start_time) * 1000)))
+      for key, value in atomizer.vocab.items():
+        logging.info('atomizer.vocab  %s : %s', key, value)
       self.encoded.Create(self.preprocessed, atomizer,
                           self.config.contentfile_separator)
 

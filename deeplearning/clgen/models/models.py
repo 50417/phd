@@ -64,7 +64,6 @@ class Model(object):
     self.config = model_pb2.Model()
     self.config.CopyFrom(builders.AssertIsBuildable(config))
     self.corpus = corpuses.Corpus(config.corpus)
-    print(self.corpus)
     self.hash = self._ComputeHash(self.corpus, self.config)
     self.cache = cache.mkcache('model', self.hash)
     # Create the necessary cache directories.
@@ -191,8 +190,8 @@ class Model(object):
         encoded.
     """
     self.Train()
-
-    sample_count = 1
+    min_num_samples=500
+    sample_count = 1 #For logging purposes only
     self.SamplerCache(sampler).mkdir(exist_ok=True)
     with logutil.TeeLogsToFile(
         f'sampler_{sampler.hash}', self.cache.path / 'logs'):
@@ -205,7 +204,7 @@ class Model(object):
       atomizer = self.corpus.atomizer
       sampler.Specialize(atomizer)
       batch_size = self.backend.InitSampling(sampler, seed)
-
+      print("Sampling Batch Size :"+str(batch_size))
       samples = []
       sample_dir = self.SamplerCache(sampler)
 
@@ -215,7 +214,9 @@ class Model(object):
         samples_in_progress = [
           sampler.tokenized_start_text.copy()
           for _ in range(batch_size)]
+        #print (samples_in_progress)
         done = np.zeros(batch_size, dtype=np.bool)
+        #print(done)
         start_time = labdate.MillisecondsTimestamp()
         wall_time_start = start_time
 
@@ -224,7 +225,7 @@ class Model(object):
         # Sampling loop. Continues until all samples in the batch are done.
         while True:
           indices = self.backend.SampleNextIndices(sampler, batch_size)
-
+          #print(indices)
           # Iterate over all samples in batch to determine whether they're
           # done.
           for i in range(batch_size):
@@ -244,12 +245,12 @@ class Model(object):
                   num_tokens=len(samples_in_progress[i]))
               print(f'=== BEGIN CLGEN SAMPLE {sample_count} '
                     f'===\n\n{sample.text}\n')
-              
               sample_count += 1
-              sample_id = crypto.sha256_str(sample.text)
-              sample_path = sample_dir / f'{sample_id}.mdl'
-              print(sample_path)
-              pbutil.ToFile(sample, sample_path)
+              #sample_id = crypto.sha256_str(sample.text)
+              sample_path = sample_dir / f'Sample{sample_count}.mdl' #previously .txt #name of the samples 
+              with open(sample_path, 'w') as samplefile:
+                samplefile.write(''.join(samples_in_progress[i]))
+              #pbutil.ToFile(sample, sample_path)
               if min_num_samples > 0:
                 samples.append(sample)
               wall_time_start = labdate.MillisecondsTimestamp()
@@ -327,7 +328,7 @@ class Model(object):
         # Sampling loop. Continues until all samples in the batch are done.
         while True:
           indices = self.backend.SampleNextIndices(sampler, batch_size)
-
+          print("Done :" + str(done))
           # Iterate over all samples in batch to determine whether they're
           # done.
           for i in range(batch_size):

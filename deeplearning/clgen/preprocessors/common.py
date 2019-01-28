@@ -12,7 +12,7 @@ FLAGS = flags.FLAGS
 def _MinimumLineCount(text: str, min_line_count: int) -> str:
   """Private implementation of minimum number of lines.
 
-  Args:
+  Args:e
     text: The source to verify the line count of.
 
   Returns:
@@ -96,4 +96,71 @@ def StripDuplicateWhiteSpaces(text: str) -> str:
     lines.append(line) 
   return "\n".join(lines)
 
+@public.clgen_preprocessor
+def RemoveAnnotationOnSimulink(text: str) -> str:
+  """
 
+  Remove Annotation{} and AnnotationDefaults{} blocks 
+
+  Args:
+    text: The Simulink MdlFile source to preprocess.
+
+  Returns:
+    Simulink source code with blocks removed
+  """
+  lines = []
+  count = 0 
+  for line in text.split("\n"):
+    if count == 1 and line.strip()=='}':
+      count = 0
+      continue
+    if count == 1:
+      continue
+    if(line.strip()=="Annotation {" or line.strip()=="AnnotationDefaults {"):
+      count = 1
+      continue
+    lines.append(line) 
+  return "\n".join(lines)
+
+@public.clgen_preprocessor
+def RemoveCommentsOnSimulink(text: str) -> str:
+  """
+
+  Remove Comments which start with #
+
+  Args:
+    text: The Simulink MdlFile source to preprocess.
+
+  Returns:
+    Simulink source code with comments removed
+  """
+  lines = []
+  count = 0
+  for line in text.split("\n"):
+    line = line.lstrip()
+    if line != '':
+      if line[0] == '#':
+        continue
+    lines.append(line)
+  return "\n".join(lines)
+
+@public.clgen_preprocessor
+def RemoveUnnecessaryOnSimulink(text: str) -> str:
+  """
+
+  Remove Unnecessary keywords
+
+  Args:
+    text: The Simulink MdlFile source to preprocess.
+
+  Returns:
+    Simulink source code with Unnecessary keywords removed
+  """
+  lines = []
+  count = 0
+  for line in text.split("\n"):
+    line = line.lstrip()
+    if line.startswith('Position') or line.startswith('ZOrder'):
+      continue
+    lines.append(line)
+  return "\n".join(lines)
